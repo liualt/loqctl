@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib.util
 import collections
+import errno
 import json
 import math
 import os
@@ -261,6 +262,8 @@ class Hardware:
         except PermissionError as exc:
             raise ControlError("Permission denied. Use sudo or start the privileged loqctl server.") from exc
         except OSError as exc:
+            if exc.errno == errno.EBUSY:
+                raise ControlError("Limits are only editable in custom mode. Select custom first.") from exc
             raise ControlError(f"Firmware rejected the write: {exc.strerror}") from exc
         actual = read(path)
         if actual != str(value):
@@ -782,6 +785,11 @@ class Dashboard:
                 plot.append(SPARK[min(7, max(0, round(value / max(1, ceiling) * 7)))])
         self.put(y, x, "".join(plot).rjust(width), color)
 
+    @staticmethod
+    def locked(state):
+        # Gate on the LIVE mode; a staged mode never unlocks limit rows.
+        return state.get("mode") != "custom"
+
     def rows(self, state):
         attrs = state.get("attributes") or {}
         return ["mode"] + [k for k in FIELDS if k in attrs]
@@ -884,6 +892,10 @@ class Dashboard:
                 label, current, unit = item["label"], item["current_value"], item["unit"]
             staged = self.pending.get(key)
             value = f"{current if current is not None else 'N/A'}{unit}"
+            if key != "mode" and self.locked(state):
+                line = f"{marker} {label:<20} {value}"
+                self.put(yy, x + 1, line[: width - 3], self.theme.TEXT, bold=chosen, dim=True)
+                continue
             if staged is not None:
                 value += f" → {staged}"
             color = self.theme.WARN if staged is not None else (self.theme.ACCENT if chosen else self.theme.TEXT)
@@ -898,6 +910,11 @@ class Dashboard:
             modes = " ".join(state.get("modes") or []) or "none"
             self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
             self.put(detail_y + 2, x + 2, f"Available: {modes}"[: width - 4], self.theme.TEXT, dim=True)
+        elif self.locked(state):
+            self.put(detail_y + 1, x + 2, f"Limits are locked in {state.get('mode') or 'N/A'} mode"[: width - 4],
+                     self.theme.WARN)
+            self.put(detail_y + 2, x + 2, "Select custom on the mode row and press Enter."[: width - 4],
+                     self.theme.TEXT, dim=True)
         else:
             item = state["attributes"][key]
             step = item["scalar_increment"]
@@ -1117,6 +1134,10 @@ class Dashboard:
             if value not in state.get("modes", []):
                 raise ControlError("Unsupported mode.")
             current = state.get("mode")
+            dropped = [k for k in self.pending if k != "mode"]
+            if value != current:
+                for k in dropped:
+                    del self.pending[k]
         else:
             item = state["attributes"][key]
             if not item["available"]:
@@ -1125,11 +1146,17 @@ class Dashboard:
             if not lo <= value <= hi or (value - lo) % step:
                 raise ControlError(f"Use {lo}–{hi} in steps of {step}.")
             current = item["current_value"]
+            dropped_mode = self.pending.pop("mode", None) is not None
         if value == current:
             self.pending.pop(key, None)
         else:
             self.pending[key] = value
         self.notice = "Edit staged. Press a to apply."
+        if key == "mode":
+            if value != current and dropped:
+                self.notice = "Staged limit edits dropped: limits apply only in custom mode."
+        elif dropped_mode:
+            self.notice = "Staged mode change dropped: apply mode and limits separately."
 
     def write_one(self, key, value):
         if self.backend.remote or os.geteuid() == 0:
@@ -1163,8 +1190,8 @@ class Dashboard:
         self.show_results = True
         completed = 0
         stopped = None
-        blocked = (any(k != "mode" for k in self.pending)
-                   and self.pending.get("mode", state.get("mode")) != "custom")
+        if any(k != "mode" for k in self.pending) and self.locked(state):
+            raise ControlError(f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter.")
         for key, value in changes:
             result = {"key": key, "requested": value, "before": None,
                       "current": None, "status": "NOT SENT", "error": None}
@@ -1178,8 +1205,6 @@ class Dashboard:
                 continue
             error = None
             try:
-                if blocked:
-                    raise ControlError("Stage custom mode before applying power or temperature limits.")
                 self.write_one(key, value)
             except (ControlError, OSError, ValueError, http_client.HTTPException) as exc:
                 error = str(exc)
@@ -1367,6 +1392,10 @@ class Dashboard:
             self.selected = (self.selected + 1) % len(rows)
         elif ch in (curses.KEY_UP, ord("k")):
             self.selected = (self.selected - 1) % len(rows)
+        elif key != "mode" and self.locked(state) and (
+                ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("+"), ord("-"), ord("="), ord("d"), *range(48, 58))
+                or (ch in (10, 13, curses.KEY_ENTER) and not self.pending)):
+            self.notice = f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter."
         elif ch == ord("r"):
             self.pending.clear()
             self.notice = "Pending edits discarded."

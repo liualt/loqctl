@@ -63,7 +63,7 @@ loqctl
 | `?` | Help |
 | `q` | Quit |
 
-Power and temperature limits only take effect in **custom** mode. The other modes (low-power, balanced, performance) are managed by the firmware. To tune limits, stage `custom` on the *Platform mode* row, then edit the limits and press `a`.
+Power and temperature limits are only editable in **custom** mode. The other modes (low-power, balanced, performance, and max-power where the firmware offers it) are managed by the firmware, so the limit rows are dimmed and read-only there. To tune limits, select `custom` on the *Platform mode* row and press `Enter` to apply it. The limit rows then unlock with fresh values. Mode changes and limit edits are never applied together.
 
 Nothing is written on start or exit.
 
@@ -120,7 +120,7 @@ Writes check the firmware's min, max and step, write once, then read the value b
 | `gpu_nv_ac_offset` | GPU AC power baseline offset | W |
 | `gpu_temp` | GPU temperature limit | °C |
 
-Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Defaults are the firmware's values for the active mode. Read-back confirms the configuration, not real workload wattage.
+Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show the active mode's live values, which may sit outside that range. Read-back confirms the configuration, not real workload wattage.
 
 ### Keyboard CLI
 
@@ -175,7 +175,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | Symptom | Likely cause |
 | --- | --- |
 | "No firmware attributes exposed" | Kernel lacks the Lenovo WMI drivers, or your model isn't supported by them |
-| "Select custom mode before changing firmware limits" | Limits are only writable in `custom` mode |
+| "Select custom mode before changing firmware limits" or "Limits are only editable in custom mode. Select custom first." | Limits are only writable in `custom` mode; select `custom` on the mode row and press Enter |
 | "RAPL needs root access" | CPU power reads are root-only; run `sudo loqctl serve` or `sudo loqctl` |
 | "Socket already exists" | Stale socket from a crashed server; delete it and retry |
 | "legionaura not found" | Install LegionAura (AUR package `legionaura` on Arch) |

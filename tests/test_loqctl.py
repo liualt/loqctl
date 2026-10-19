@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import contextlib
+import errno
 import fcntl
 import io
 import importlib.util
@@ -120,22 +121,107 @@ class FirmwareTests(unittest.TestCase):
         for value in ("[N/A]", "nan", "inf", None, "Not Supported"):
             self.assertIsNone(loq.number(value))
 
+    def add_attr(self, key, current, lo, hi, step, default):
+        path = self.attr.parent / key
+        path.mkdir(exist_ok=True)
+        for name, value in {"current_value": current, "min_value": lo, "max_value": hi,
+                            "default_value": default, "scalar_increment": step}.items():
+            (path / name).write_text(str(value))
+
     def test_ui_partial_apply_retains_only_unapplied_edits(self):
-        dashboard = object.__new__(loq.Dashboard)
-        dashboard.pending = {"mode": "custom", "ppt_pl1_spl": 60, "cpu_temp": 90}
-        backend = type("Backend", (), {"remote": True})()
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        state = self.hw.capabilities()
+        # First write fails: nothing sent after it.
+        dashboard = self.dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
         calls = []
-        def write(key, value):
+        def reject(key, value):
             calls.append(key)
-            if key == "ppt_pl1_spl":
-                raise loq.ControlError("rejected")
-        backend.write = write
-        backend.controls = self.hw.capabilities
-        dashboard.backend = backend
-        with self.assertRaisesRegex(loq.ControlError, "after 1 writes"):
-            dashboard.apply({"mode": "balanced"})
-        self.assertEqual(calls, ["mode", "ppt_pl1_spl"])
+            raise loq.ControlError("rejected")
+        dashboard.backend.write = reject
+        with self.assertRaisesRegex(loq.ControlError, "after 0 writes"):
+            dashboard.apply(state)
+        self.assertEqual(calls, ["ppt_pl1_spl"])
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60, "cpu_temp": 90})
+        self.assertEqual([r["status"] for r in dashboard.apply_results], ["FAILED", "NOT SENT"])
+        # First write succeeds, second fails: only the failed key stays staged.
+        dashboard = self.dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        def partial(key, value):
+            if key == "cpu_temp":
+                raise loq.ControlError("rejected")
+            self.hw.set_value(key, value)
+        dashboard.backend.write = partial
+        with self.assertRaisesRegex(loq.ControlError, "after 1 writes"):
+            dashboard.apply(state)
+        self.assertEqual(dashboard.pending, {"cpu_temp": 90})
+        self.assertEqual([r["status"] for r in dashboard.apply_results], ["APPLIED", "FAILED"])
+
+    def test_locked_rows_reject_edits_in_non_custom_mode(self):
+        self.hw.set_mode("balanced")
+        state = self.hw.capabilities()
+        for key in (ord("6"), loq.curses.KEY_LEFT, ord("d"), 10):
+            dashboard = self.dashboard()
+            dashboard.handle(key, state)
+            self.assertEqual(dashboard.pending, {})
+            self.assertIn("locked in balanced mode", dashboard.notice)
+
+    def test_staging_custom_does_not_unlock_limits(self):
+        self.hw.set_mode("balanced")
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.selected = 0
+        for _ in range(4):
+            dashboard.handle(loq.curses.KEY_RIGHT, state)
+            if dashboard.pending.get("mode") == "custom":
+                break
+        self.assertEqual(dashboard.pending, {"mode": "custom"})
+        dashboard.selected = 1
+        for key in (ord("6"), loq.curses.KEY_RIGHT):
+            dashboard.handle(key, state)
+            self.assertEqual(dashboard.pending, {"mode": "custom"})
+            self.assertIn("locked in balanced mode", dashboard.notice)
+
+    def test_mode_and_limit_edits_never_batched(self):
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.stage(state, "ppt_pl1_spl", 60)
+        dashboard.stage(state, "mode", "balanced")
+        self.assertEqual(dashboard.pending, {"mode": "balanced"})
+        self.assertIn("limit edits dropped", dashboard.notice)
+        dashboard.stage(state, "ppt_pl1_spl", 60)
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+        self.assertIn("mode change dropped", dashboard.notice)
+        dashboard.stage(state, "mode", "custom")
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+
+    def test_apply_refuses_limits_when_live_mode_not_custom(self):
+        self.hw.set_mode("balanced")
+        dashboard = self.dashboard()
+        dashboard.backend.write = Mock()
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        with self.assertRaisesRegex(loq.ControlError, "locked in balanced mode"):
+            dashboard.apply(self.hw.capabilities())
+        dashboard.backend.write.assert_not_called()
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+
+    def test_ebusy_maps_to_custom_mode_message(self):
+        with patch.object(Path, "write_text", side_effect=OSError(errno.EBUSY, "busy")):
+            with self.assertRaisesRegex(loq.ControlError, "custom mode"):
+                self.hw.set_value("ppt_pl1_spl", 60)
+
+    def test_draw_dims_locked_rows(self):
+        self.hw.set_mode("balanced")
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+        calls = []
+        dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color, dim))
+        dashboard.box = Mock()
+        dashboard.draw_controls(state, 0, 0, 20, 50)
+        row = next(c for c in calls if "CPU sustained" in c[0] or "PL1" in c[0] or c[0].startswith("▶"))
+        self.assertEqual(row[1:], (7, True))
+        self.assertTrue(any("locked in balanced mode" in c[0] for c in calls))
 
     def dashboard(self):
         dashboard = object.__new__(loq.Dashboard)
