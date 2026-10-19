@@ -633,13 +633,23 @@ class Keyboard:
         self.brightness = 2
         self.wave_dir = "ltr"
         self.zones = ["ffffff"] * self.ZONES
+        self.dirty = False  # in-memory edits not yet confirmed applied; load() leaves them alone
+        self.last_message = ""
+        self.last_seq = 0
+        self._cond = threading.Condition()
+        self._job = None
+        self._running = False
+        self._stop = False
+        self._thread = None
         self.load()
 
     @property
     def available(self):
         return bool(shutil.which(self.binary) or Path(self.binary).is_file())
 
-    def load(self):
+    def load(self, force=False):
+        if self.dirty and not force:
+            return
         try:
             data = json.loads(self.config.read_text())
         except (OSError, json.JSONDecodeError, TypeError):
@@ -680,26 +690,74 @@ class Keyboard:
         if result.returncode:
             detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
             raise ControlError("legionaura: " + detail)
-        self.load()
         return (result.stdout or "").strip() or "OK"
 
-    def apply_current(self):
+    def command(self):
         effect = self.effect
         if effect == "off":
-            return self._run(["off"])
+            return ["off"]
         if effect == "apply":
-            return self._run(["apply"])
+            return ["apply"]
         brightness = ["--brightness", str(clamp(self.brightness, 1, 2))]
         speed = ["--speed", str(clamp(self.speed, 1, 4))]
         if effect == "static":
-            return self._run(["static", *self.zones, *brightness])
+            return ["static", *self.zones, *brightness]
         if effect == "breath":
-            return self._run(["breath", *self.zones, *speed, *brightness])
+            return ["breath", *self.zones, *speed, *brightness]
         if effect == "wave":
-            return self._run(["wave", self.wave_dir, *speed, *brightness])
+            return ["wave", self.wave_dir, *speed, *brightness]
         if effect == "hue":
-            return self._run(["hue", *speed, *brightness])
+            return ["hue", *speed, *brightness]
         raise ControlError(f"Unknown keyboard effect {effect!r}.")
+
+    def apply_current(self):
+        return self._run(self.command())
+
+    @property
+    def busy(self):
+        with self._cond:
+            return self._job is not None or self._running
+
+    def submit(self, args, label):
+        """Queue one legionaura run; a newer submit replaces one that has not started."""
+        with self._cond:
+            self._job = (list(args), label)
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._worker, daemon=True)
+                self._thread.start()
+            self._cond.notify_all()
+
+    def _worker(self):
+        while True:
+            with self._cond:
+                while self._job is None and not self._stop:
+                    self._cond.wait()
+                if self._stop:
+                    return
+                args, label = self._job
+                self._job = None
+                self._running = True
+            ok = False
+            try:
+                message = f"Keyboard applied ({label}). {self._run(args)}"
+                ok = True
+            except ControlError as exc:
+                message = str(exc)
+            except Exception as exc:
+                message = f"legionaura: {exc}"
+            with self._cond:
+                self._running = False
+                if ok and self._job is None:
+                    self.dirty = False
+                self.last_message = message
+                self.last_seq += 1
+
+    def close(self):
+        with self._cond:
+            self._stop = True
+            self._cond.notify_all()
+        if self._thread is not None:
+            self._thread.join(0.1)
 
     def set_brightness(self, value):
         self.brightness = clamp(int(value), 1, 2)
@@ -730,6 +788,7 @@ class Dashboard:
         self.kb_zone = 0
         self.kb_channel = 0  # 0=H 1=S 2=V
         self.kb_live = True
+        self.kb_seen = 0
         self._set_escdelay()
         try:
             curses.curs_set(0)
@@ -820,6 +879,9 @@ class Dashboard:
         self.last_timestamp = stamp
 
     def draw(self, state):
+        if self.keyboard.last_seq != self.kb_seen:
+            self.kb_seen = self.keyboard.last_seq
+            self.notice = self.keyboard.last_message
         self.s.erase()
         h, w = self.s.getmaxyx()
         if h < self.MIN_H or w < self.MIN_W:
@@ -1307,15 +1369,16 @@ class Dashboard:
         self.notice = f"Applied and verified {completed} change(s)."
 
     def kb_set_hsv(self, h, s, v):
-        self.keyboard.zones[self.kb_zone] = rgb_to_hex(*hsv_to_rgb(h, s, v))
+        kb = self.keyboard
+        kb.zones[self.kb_zone] = rgb_to_hex(*hsv_to_rgb(h, s, v))
+        kb.dirty = True
         if self.kb_live:
+            # Live tweaking uses static so zone colors are visible regardless of effect.
             try:
-                # Live tweaking uses static so zone colors are visible regardless of effect.
-                if self.keyboard.effect in ("static", "breath"):
-                    self.keyboard.apply_current()
+                if kb.effect in ("static", "breath"):
+                    kb.submit(kb.command(), kb.effect)
                 else:
-                    self.keyboard._run(["static", *self.keyboard.zones,
-                                        "--brightness", str(self.keyboard.brightness)])
+                    kb.submit(["static", *kb.zones, "--brightness", str(kb.brightness)], "static")
             except ControlError as exc:
                 self.notice = str(exc)
 
@@ -1364,36 +1427,40 @@ class Dashboard:
         elif ch == ord("e"):
             idx = kb.EFFECTS.index(kb.effect) if kb.effect in kb.EFFECTS else 0
             kb.effect = kb.EFFECTS[(idx + 1) % len(kb.EFFECTS)]
+            kb.dirty = True
             self.notice = f"Effect → {kb.effect}"
             if self.kb_live:
                 try:
-                    kb.apply_current()
+                    kb.submit(kb.command(), kb.effect)
                 except ControlError as exc:
                     self.notice = str(exc)
         elif ch == ord("b"):
             kb.brightness = 1 if kb.brightness == 2 else 2
+            kb.dirty = True
             self.notice = f"Brightness → {'low' if kb.brightness == 1 else 'high'}"
             if self.kb_live:
                 try:
-                    kb.set_brightness(kb.brightness)
+                    kb.submit(["--brightness", str(kb.brightness)], "brightness")
                 except ControlError as exc:
                     self.notice = str(exc)
         elif ch == ord("w"):
             kb.wave_dir = "rtl" if kb.wave_dir == "ltr" else "ltr"
+            kb.dirty = True
             self.notice = f"Wave → {kb.wave_dir}"
             if self.kb_live and kb.effect == "wave":
                 try:
-                    kb.apply_current()
+                    kb.submit(kb.command(), kb.effect)
                 except ControlError as exc:
                     self.notice = str(exc)
         elif ch == ord("c"):
             color = kb.zones[self.kb_zone]
             kb.zones = [color] * kb.ZONES
+            kb.dirty = True
             self.notice = f"Copied #{color} to all zones."
             if self.kb_live:
                 try:
                     kb.effect = "static" if kb.effect == "off" else kb.effect
-                    kb.apply_current()
+                    kb.submit(kb.command(), kb.effect)
                 except ControlError as exc:
                     self.notice = str(exc)
         elif ch == ord(" "):
@@ -1401,8 +1468,8 @@ class Dashboard:
             self.notice = "Live keyboard apply on." if self.kb_live else "Live apply off — Enter to commit."
         elif ch in (10, 13, curses.KEY_ENTER):
             try:
-                msg = kb.apply_current()
-                self.notice = f"Keyboard applied ({kb.effect}). {msg}"
+                kb.submit(kb.command(), kb.effect)
+                self.notice = "Applying keyboard…"
             except ControlError as exc:
                 self.notice = str(exc)
 
@@ -1541,6 +1608,7 @@ class Dashboard:
                     except (ControlError, OSError, ValueError, http_client.HTTPException) as exc:
                         self.notice = str(exc)
         finally:
+            self.keyboard.close()
             self.backend.close()
 
 

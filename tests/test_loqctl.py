@@ -671,5 +671,115 @@ class FirmwareTests(unittest.TestCase):
         self.assertIn("3.10", err.getvalue())
 
 
+class KeyboardWorkerTests(unittest.TestCase):
+    def kb(self, config=None):
+        return loq.Keyboard(binary="/usr/bin/false", config=config or "/nonexistent/loqctl.json")
+
+    def test_keyboard_command_matches_effects(self):
+        kb = self.kb()
+        kb.zones = ["ff0000", "00ff00", "0000ff", "ffffff"]
+        kb.speed, kb.brightness, kb.wave_dir = 2, 1, "rtl"
+        expected = {
+            "off": ["off"], "apply": ["apply"],
+            "static": ["static", *kb.zones, "--brightness", "1"],
+            "breath": ["breath", *kb.zones, "--speed", "2", "--brightness", "1"],
+            "wave": ["wave", "rtl", "--speed", "2", "--brightness", "1"],
+            "hue": ["hue", "--speed", "2", "--brightness", "1"],
+        }
+        for effect, argv in expected.items():
+            kb.effect = effect
+            self.assertEqual(kb.command(), argv)
+        kb.effect = "bogus"
+        with self.assertRaises(loq.ControlError):
+            kb.command()
+
+    def test_keyboard_run_does_not_reload_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps({"zones": ["aaaaaa"] * 4}))
+            kb = self.kb(config)
+            kb.zones = ["bbbbbb"] * 4
+            with patch.object(loq.shutil, "which", return_value="/bin/x"), \
+                    patch.object(loq.subprocess, "run", return_value=Mock(returncode=0, stdout="ok", stderr="")):
+                kb._run(["off"])
+            self.assertEqual(kb.zones, ["bbbbbb"] * 4)
+
+    def test_load_skipped_while_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps({"zones": ["aaaaaa"] * 4}))
+            kb = self.kb(config)
+            kb.zones = ["bbbbbb"] * 4
+            kb.dirty = True
+            kb.load()
+            self.assertEqual(kb.zones, ["bbbbbb"] * 4)
+            kb.load(force=True)
+            self.assertEqual(kb.zones, ["aaaaaa"] * 4)
+
+    def test_keyboard_worker_latest_wins_single_process(self):
+        kb = self.kb()
+        release, started = threading.Event(), threading.Event()
+        calls, state = [], {"now": 0, "max": 0}
+
+        def fake_run(args):
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+            calls.append(args[0])
+            if len(calls) == 1:
+                started.set()
+                release.wait(2)
+            state["now"] -= 1
+            return "OK"
+
+        kb._run = fake_run
+        kb.dirty = True
+        kb.submit([1], "one")
+        self.assertTrue(started.wait(2))
+        for n in (2, 3, 4):
+            kb.submit([n], str(n))
+        self.assertTrue(kb.busy)
+        release.set()
+        deadline = time.monotonic() + 2
+        while kb.busy and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(calls, [1, 4])
+        self.assertEqual(state["max"], 1)
+        self.assertIn("(4)", kb.last_message)
+        self.assertEqual(kb.last_seq, 2)
+        self.assertFalse(kb.dirty)
+        kb.close()
+
+    def test_worker_survives_oserror(self):
+        kb = self.kb()
+        results = [OSError("boom"), "OK"]
+
+        def fake_run(args):
+            r = results.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        kb._run = fake_run
+        kb.submit(["a"], "a")
+        deadline = time.monotonic() + 2
+        while kb.last_seq < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIn("boom", kb.last_message)
+        kb.submit(["b"], "b")
+        while kb.last_seq < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(kb.last_message, "Keyboard applied (b). OK")
+        kb.close()
+
+    def test_close_stops_worker(self):
+        kb = self.kb()
+        kb._run = lambda args: "OK"
+        kb.submit(["a"], "a")
+        thread = kb._thread
+        kb.close()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+
+
 if __name__ == "__main__":
     unittest.main()
