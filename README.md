@@ -61,6 +61,7 @@ loqctl
 | `l` | Keyboard lighting panel |
 | `Space` | Pause telemetry |
 | `v` | Reopen the last apply results |
+| `s` | Authenticate sudo (shown when needed) |
 | `?` | Help |
 | `q` | Quit |
 
@@ -72,7 +73,7 @@ Nothing is written on start or exit.
 
 Firmware writes need root. You have two options:
 
-1. **Per-write sudo (default).** The dashboard suspends itself and runs `sudo` for each write. Your sudo credential cache applies, so you are prompted at most once per cache period.
+1. **Batched sudo (default).** At start loqctl runs `sudo -v` once (skipped when you are root, using the server, nothing is writable, or sudo is already cached). All staged edits are then applied in a single `sudo -n` call with per-item results. When the sudo cache expires, a banner appears and `s` re-authenticates; edits stay staged. The dashboard itself never runs as root and never asks for a password inside curses.
 2. **Privileged server (recommended for frequent tuning).** Run `sudo loqctl serve` in another terminal. The dashboard then connects to it automatically and never needs to leave the screen. See [Local HTTP API](#local-http-api).
 
 ### Keyboard panel (`l`)
@@ -177,7 +178,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | --- | --- |
 | "No firmware attributes exposed" | Kernel lacks the Lenovo WMI drivers, or your model isn't supported by them |
 | "Select custom mode before changing firmware limits" or "Limits are only editable in custom mode. Select custom first." | Limits are only writable in `custom` mode; select `custom` on the mode row and press Enter |
-| "RAPL needs root access" | CPU power reads are root-only; run `sudo loqctl serve` or `sudo loqctl` |
+| "RAPL needs root: run sudo loqctl serve" | CPU power reads are root-only on some kernels. Use the privileged server; do not run the TUI with `sudo -E` |
 | "Socket already exists" | Stale socket from a crashed server; delete it and retry |
 | "legionaura not found" | Install LegionAura (AUR package `legionaura` on Arch) |
 | GPU shows offline | `nvidia-smi` missing, not at `/usr/bin/nvidia-smi`, or driver not loaded |

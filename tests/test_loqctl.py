@@ -230,6 +230,7 @@ class FirmwareTests(unittest.TestCase):
         dashboard.pending = {}
         dashboard.fields = {}
         dashboard.invalid = set()
+        dashboard.sudo_expired = False
         dashboard.apply_results = []
         dashboard.show_results = False
         dashboard.backend = type("Backend", (), {"remote": True})()
@@ -368,18 +369,167 @@ class FirmwareTests(unittest.TestCase):
         self.assertIsNone(dashboard.apply_results[0]["current"])
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
 
-    def test_sudo_error_is_preserved_for_report(self):
+    def local_dashboard(self):
         dashboard = self.dashboard()
         dashboard.backend.remote = False
         dashboard.s = Mock()
+        return dashboard
+
+    def test_sudo_error_is_preserved_for_report(self):
+        dashboard = self.local_dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60}
         result = loq.subprocess.CompletedProcess([], 1, "", "sudo: authentication failed")
         with patch.object(loq.os, "geteuid", return_value=1000), \
-             patch.object(loq.curses, "def_prog_mode"), \
-             patch.object(loq.curses, "endwin"), \
-             patch.object(loq.curses, "reset_prog_mode"), \
              patch.object(loq.subprocess, "run", return_value=result):
             with self.assertRaisesRegex(loq.ControlError, "authentication failed"):
-                dashboard.write_one("ppt_pl1_spl", 60)
+                dashboard.apply(self.hw.capabilities())
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+        self.assertFalse(dashboard.sudo_expired)
+
+    def sudo_results(self, *statuses):
+        keys = ["ppt_pl1_spl", "cpu_temp"]
+        return [{"key": k, "requested": 1, "before": 0, "current": 1, "status": st,
+                 "error": "boom" if st == "FAILED" else None} for k, st in zip(keys, statuses)]
+
+    def test_apply_uses_one_sudo_n_call(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        dashboard = self.local_dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        dashboard.fields = {"ppt_pl1_spl": "60", "cpu_temp": "90"}
+        out = loq.subprocess.CompletedProcess([], 0, json.dumps(self.sudo_results("APPLIED", "APPLIED")), "")
+        with patch.object(loq.os, "geteuid", return_value=1000), \
+             patch.object(loq.subprocess, "run", return_value=out) as run:
+            dashboard.apply(self.hw.capabilities())
+        self.assertEqual(run.call_count, 1)
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[:7], ["sudo", "-n", "--", sys.executable, "-I", loq.ENTRY, "_apply"])
+        self.assertEqual(json.loads(argv[7]), [["ppt_pl1_spl", 60], ["cpu_temp", 90]])
+        self.assertEqual((dashboard.pending, dashboard.fields), ({}, {}))
+        self.assertTrue(dashboard.show_results)
+
+    def test_apply_partial_failure_keeps_failed_staged(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        dashboard = self.local_dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        out = loq.subprocess.CompletedProcess([], 0, json.dumps(self.sudo_results("APPLIED", "FAILED")), "")
+        with patch.object(loq.os, "geteuid", return_value=1000), \
+             patch.object(loq.subprocess, "run", return_value=out):
+            with self.assertRaisesRegex(loq.ControlError, "after 1 writes"):
+                dashboard.apply(self.hw.capabilities())
+        self.assertEqual(dashboard.pending, {"cpu_temp": 90})
+
+    def test_sudo_expiry_sets_banner_and_keeps_edits(self):
+        dashboard = self.local_dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        out = loq.subprocess.CompletedProcess([], 1, "", "sudo: a password is required")
+        with patch.object(loq.os, "geteuid", return_value=1000), \
+             patch.object(loq.subprocess, "run", return_value=out):
+            with self.assertRaisesRegex(loq.ControlError, "Press s"):
+                dashboard.apply(self.hw.capabilities())
+        self.assertTrue(dashboard.sudo_expired)
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+
+    def test_s_key_reauthenticates(self):
+        state = self.hw.capabilities()
+        for code, expired in ((0, False), (1, True)):
+            dashboard = self.local_dashboard()
+            dashboard.sudo_expired = True
+            dashboard.notice = ""
+            out = loq.subprocess.CompletedProcess([], code)
+            with patch.object(loq.os, "geteuid", return_value=1000), \
+                 patch.object(loq.curses, "def_prog_mode"), patch.object(loq.curses, "endwin"), \
+                 patch.object(loq.curses, "reset_prog_mode"), \
+                 patch.object(loq.subprocess, "run", return_value=out) as run:
+                dashboard.handle(ord("s"), state)
+            run.assert_called_once_with(["sudo", "-v"])
+            self.assertEqual(dashboard.sudo_expired, expired)
+
+    def test_preauth_skips(self):
+        caps = {"attributes": {"x": {}}, "modes": ["custom"]}
+        def backend(remote=False, caps=caps):
+            return Mock(remote=remote, hardware=Mock(capabilities=Mock(return_value=caps)))
+        def run_with(rcs, **kw):
+            def fake(argv, **_):
+                return loq.subprocess.CompletedProcess(argv, rcs[tuple(argv)])
+            return patch.object(loq.subprocess, "run", side_effect=fake)
+        nv = ("sudo", "-n", "true")
+        with patch.object(loq.os, "geteuid", return_value=0), patch.object(loq.subprocess, "run") as run:
+            self.assertTrue(loq.preauth(backend()))
+            run.assert_not_called()
+        with patch.object(loq.os, "geteuid", return_value=1000), patch.object(loq.subprocess, "run") as run:
+            self.assertTrue(loq.preauth(backend(remote=True)))
+            self.assertTrue(loq.preauth(backend(caps={"attributes": {}, "modes": []})))
+            run.assert_not_called()
+        with patch.object(loq.os, "geteuid", return_value=1000), \
+             patch.object(loq.shutil, "which", return_value="/usr/bin/sudo"):
+            with run_with({nv: 0}) as run:
+                self.assertTrue(loq.preauth(backend()))
+                self.assertEqual(run.call_count, 1)
+            with run_with({nv: 1, ("sudo", "-v"): 0}), patch("builtins.print"):
+                self.assertTrue(loq.preauth(backend()))
+            with run_with({nv: 1, ("sudo", "-v"): 1}), patch("builtins.print"):
+                self.assertFalse(loq.preauth(backend()))
+        with patch.object(loq.os, "geteuid", return_value=1000), \
+             patch.object(loq.shutil, "which", return_value=None):
+            self.assertFalse(loq.preauth(backend()))
+
+    def test_apply_batch_stops_at_first_failure(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        results = loq.apply_batch(self.hw, [["ppt_pl1_spl", 500], ["cpu_temp", 90]])
+        self.assertEqual([r["status"] for r in results], ["FAILED", "NOT SENT"])
+        self.assertIn("between", results[0]["error"])
+        self.assertEqual(results[1]["current"], 80)
+        self.assertEqual((self.attr.parent / "cpu_temp/current_value").read_text().strip(), "80")
+        self.assertEqual((self.attr / "current_value").read_text().strip(), "50")
+        results = loq.apply_batch(self.hw, [["ppt_pl1_spl", 60]])
+        self.assertEqual((results[0]["status"], results[0]["before"], results[0]["current"]), ("APPLIED", 50, 60))
+
+    def test_apply_batch_validates_before_writing(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        bad = ["x", [], [["ppt_pl1_spl"]], [["gpu_mode", 1]], [["ppt_pl1_spl", True]],
+               [["ppt_pl1_spl", 60], ["ppt_pl1_spl", 65]], [["mode", "balanced"], ["ppt_pl1_spl", 60]],
+               [["mode", 3]], [["ppt_pl1_spl", 60]] * (len(loq.FIELDS) + 2)]
+        for changes in bad:
+            with self.assertRaises(loq.ControlError, msg=repr(changes)):
+                loq.apply_batch(self.hw, changes)
+        self.assertEqual((self.attr / "current_value").read_text().strip(), "50")
+        self.assertEqual((self.root / "class/platform-profile/platform-profile-0/profile").read_text(), "custom")
+
+    def test_apply_subcommand_prints_json(self):
+        out = io.StringIO()
+        with patch.object(loq, "Hardware", return_value=self.hw), contextlib.redirect_stdout(out):
+            self.assertEqual(loq.main(["_apply", json.dumps([["ppt_pl1_spl", 60]])]), 0)
+        self.assertEqual(json.loads(out.getvalue())[0]["status"], "APPLIED")
+
+    def test_draw_unlocked_selected_row(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        self.add_attr("gpu_temp", 70, 60, 90, 5, 85)
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3, BAD=5)
+        dashboard.pending = {"cpu_temp": 90}
+        dashboard.fields = {"ppt_pl1_spl": "60", "cpu_temp": "90", "gpu_temp": "7"}
+        dashboard.invalid = {"gpu_temp"}
+        calls = []
+        dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+        dashboard.box = Mock()
+        rows = dashboard.rows(state)
+        def draw(key):
+            calls.clear()
+            dashboard.selected = rows.index(key)
+            dashboard.draw_controls(state, 0, 0, 20, 60)
+        draw("ppt_pl1_spl")
+        self.assertIn("1 staged, 1 invalid", dashboard.box.call_args[0])
+        row = next(c for c in calls if c[0].startswith("▶"))
+        self.assertIn("\u0336", row[0])
+        self.assertIn("-> 60_", row[0])
+        self.assertEqual(row[1], 1)
+        staged = next(c for c in calls if "CPU" in c[0].upper() and "→ 90" in c[0])
+        self.assertEqual(staged[1], 3)
+        draw("gpu_temp")
+        row = next(c for c in calls if c[0].startswith("▶"))
+        self.assertIn("-> 7_", row[0])
+        self.assertEqual(row[1], 5)
 
     def test_api_write_result_includes_before_and_readback(self):
         result = self.hw.set_value("ppt_pl1_spl", 60)

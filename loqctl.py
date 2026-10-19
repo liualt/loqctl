@@ -353,7 +353,7 @@ class Sensors:
                     sources.append(read(path / "name"))
         return (sum(watts) if watts else None,
                 "RAPL package energy" if sources else
-                "RAPL needs root access" if denied else "Waiting for RAPL samples or no package counter")
+                "RAPL needs root: run sudo loqctl serve" if denied else "Waiting for RAPL samples or no package counter")
 
     def gpu(self):
         fields = "name,temperature.gpu,power.draw,power.limit,clocks.gr,clocks.mem,utilization.gpu,memory.used,memory.total"
@@ -709,8 +709,9 @@ class Keyboard:
 class Dashboard:
     MIN_W, MIN_H = 72, 20
 
-    def __init__(self, screen, backend):
+    def __init__(self, screen, backend, sudo_ok=True):
         self.s, self.backend = screen, backend
+        self.sudo_expired = not sudo_ok
         self.selected = 0
         self.pending = {}
         self.apply_results = []
@@ -854,7 +855,10 @@ class Dashboard:
         stamp = metrics.get("timestamp")
         stale = stamp is not None and time.time() - stamp > 5
         status = state.get("error") or (("Sensor data is stale. " if stale else "") + self.notice)
-        self.put(h - 2, 1, status[: w - 3], self.theme.WARN if state.get("error") or stale else self.theme.TEXT)
+        warn = bool(state.get("error") or stale)
+        if self.sudo_expired and not self.backend.remote and os.geteuid() != 0:
+            status, warn = "sudo not authenticated · press s to authenticate · edits stay staged", True
+        self.put(h - 2, 1, status[: w - 3], self.theme.WARN if warn else self.theme.TEXT)
         if self.panel == "keyboard":
             keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
         else:
@@ -1105,7 +1109,7 @@ class Dashboard:
     def draw_help(self):
         h, w = self.s.getmaxyx()
         bw = min(86, w - 4)
-        bh = min(18, h - 2)
+        bh = min(19, h - 2)
         bx, by = (w - bw) // 2, max(1, (h - bh) // 2)
         self.fill(by, bx, bh, bw)
         self.box(by, bx, bh, bw, "help", self.theme.ACCENT)
@@ -1114,6 +1118,7 @@ class Dashboard:
             "          0-9 type a value   Backspace delete   Esc clear row",
             "          Enter apply all    d custom default   r discard all",
             "          v last apply results   Limits need custom mode (Enter on mode row)",
+            "          s sudo authenticate (shown when needed)",
             "",
             "Keyboard  l open lighting panel   Esc back to firmware",
             "          1–4 select zone   ←/→ adjust HSV   ↑↓ channel",
@@ -1201,22 +1206,41 @@ class Dashboard:
         else:
             self.invalid.discard(key)
 
-    def write_one(self, key, value):
-        if self.backend.remote or os.geteuid() == 0:
-            self.backend.write(key, value)
-            return
+    def run_sudo_apply(self, changes):
+        """Apply all changes in one `sudo -n` call; returns the per-item results."""
+        command = ["sudo", "-n", "--", sys.executable, "-I", ENTRY, "_apply", json.dumps(changes)]
+        try:
+            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired as exc:
+            raise ControlError("sudo apply timed out; edits stay staged.") from exc
+        stderr = (result.stderr or "").strip()
+        if result.returncode:
+            if "password is required" in stderr or "a terminal is required" in stderr:
+                self.sudo_expired = True
+                raise ControlError("sudo credentials expired. Press s to re-authenticate; edits stay staged.")
+            raise ControlError(stderr or (result.stdout or "").strip() or f"sudo exited with code {result.returncode}")
+        try:
+            results = json.loads(result.stdout)
+            if not isinstance(results, list) or not all(isinstance(r, dict) and "key" in r and "status" in r
+                                                        for r in results):
+                raise ValueError
+        except ValueError as exc:
+            raise ControlError(stderr or "sudo apply returned unreadable output.") from exc
+        return results
+
+    def reauth(self):
         curses.def_prog_mode()
         curses.endwin()
         try:
-            command = ["sudo", "--", sys.executable, "-I", ENTRY, "_write", key, str(value)]
-            # sudo reads its password from /dev/tty. Preserve stderr for the result panel.
-            result = subprocess.run(command, check=False, capture_output=True, text=True)
+            ok = subprocess.run(["sudo", "-v"]).returncode == 0
+        except KeyboardInterrupt:
+            ok = False
         finally:
             curses.reset_prog_mode()
             self.s.refresh()
-        if result.returncode:
-            detail = (result.stderr or result.stdout or f"sudo exited with code {result.returncode}").strip()
-            raise ControlError(detail)
+        if ok:
+            self.sudo_expired = False
+        self.notice = "sudo authenticated." if ok else "sudo authentication failed."
 
     def read_current(self, key):
         controls = self.backend.controls()
@@ -1235,6 +1259,19 @@ class Dashboard:
         stopped = None
         if any(k != "mode" for k in self.pending) and self.locked(state):
             raise ControlError(f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter.")
+        if not (self.backend.remote or os.geteuid() == 0):
+            self.apply_results = self.run_sudo_apply([[k, v] for k, v in changes])
+            self.show_results = True
+            for result in self.apply_results:
+                if result["status"] == "APPLIED":
+                    self.pending.pop(result["key"], None)
+                    self.fields.pop(result["key"], None)
+                    completed += 1
+            failed = next((r for r in self.apply_results if r["status"] != "APPLIED"), None)
+            if failed:
+                raise ControlError(f"Apply stopped after {completed} writes: {failed.get('error') or failed['status']}")
+            self.notice = f"Applied and verified {completed} change(s)."
+            return
         for key, value in changes:
             result = {"key": key, "requested": value, "before": None,
                       "current": None, "status": "NOT SENT", "error": None}
@@ -1248,7 +1285,7 @@ class Dashboard:
                 continue
             error = None
             try:
-                self.write_one(key, value)
+                self.backend.write(key, value)
             except (ControlError, OSError, ValueError, http_client.HTTPException) as exc:
                 error = str(exc)
             write_failed = error is not None
@@ -1416,6 +1453,11 @@ class Dashboard:
         elif ch == ord(" "):
             self.paused = not self.paused
             self.notice = "Telemetry paused." if self.paused else "Telemetry resumed."
+        elif ch == ord("s"):
+            if self.backend.remote or os.geteuid() == 0:
+                self.notice = "No sudo needed."
+            else:
+                self.reauth()
         elif ch == ord("v"):
             self.show_results = bool(self.apply_results)
             if not self.apply_results:
@@ -1572,6 +1614,86 @@ def kb_cli(argv):
     raise ControlError("kb usage: status|apply|off|brightness|static|breath|wave|hue …")
 
 
+def apply_batch(hardware, changes):
+    """Apply [key, value] pairs in order as root; stop at the first failure."""
+    if not isinstance(changes, list) or not 1 <= len(changes) <= len(FIELDS) + 1:
+        raise ControlError("Changes must be a list of 1 to %d [key, value] pairs." % (len(FIELDS) + 1))
+    keys = []
+    for item in changes:
+        if not isinstance(item, list) or len(item) != 2:
+            raise ControlError("Each change must be a [key, value] pair.")
+        key, value = item
+        if key == "mode":
+            if not isinstance(value, str):
+                raise ControlError("Mode must be a string.")
+        elif isinstance(key, str) and key in FIELDS:
+            if type(value) is not int:
+                raise ControlError("Limit values must be integers.")
+        else:
+            raise ControlError("Unknown control.")
+        if key in keys:
+            raise ControlError("Duplicate control in changes.")
+        keys.append(key)
+    if "mode" in keys and len(keys) > 1:
+        raise ControlError("Mode and limits are never applied together.")
+
+    def current(key):
+        caps = hardware.capabilities()
+        if key == "mode":
+            return caps.get("mode")
+        return caps.get("attributes", {}).get(key, {}).get("current_value")
+
+    results, stopped = [], False
+    for key, value in changes:
+        result = {"key": key, "requested": value, "before": None,
+                  "current": None, "status": "NOT SENT", "error": None}
+        try:
+            result["before"] = current(key)
+        except (ControlError, OSError, ValueError):
+            pass
+        if stopped:
+            result["current"] = result["before"]
+            results.append(result)
+            continue
+        error = None
+        try:
+            hardware.set_mode(value) if key == "mode" else hardware.set_value(key, value)
+        except (ControlError, OSError, ValueError) as exc:
+            error = str(exc)
+        write_failed = error is not None
+        try:
+            result["current"] = current(key)
+        except (ControlError, OSError, ValueError) as exc:
+            error = error or "Could not read firmware after the write: " + str(exc)
+        if error or result["current"] != value:
+            result["status"] = "UNVERIFIED" if result["current"] is None and not write_failed else "FAILED"
+            result["error"] = error or f"Requested {value}, but firmware reports {result['current']!r}."
+            stopped = True
+        else:
+            result["status"] = "APPLIED"
+        results.append(result)
+    return results
+
+
+def preauth(backend):
+    """Authenticate sudo once before curses starts; True when writes can proceed."""
+    if os.geteuid() == 0 or backend.remote:
+        return True
+    caps = backend.hardware.capabilities()
+    if not caps.get("attributes") and not caps.get("modes"):
+        return True
+    if shutil.which("sudo") is None:
+        return False
+    if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0:
+        return True
+    print("loqctl: sudo is needed to change firmware settings. Ctrl+C skips (read-only until you press s).",
+          file=sys.stderr)
+    try:
+        return subprocess.run(["sudo", "-v"]).returncode == 0
+    except KeyboardInterrupt:
+        return False
+
+
 def main(argv=None):
     if sys.version_info < (3, 10):
         print(f"loqctl: Python 3.10 or newer is required (found {sys.version_info[0]}.{sys.version_info[1]}).", file=sys.stderr)
@@ -1595,17 +1717,15 @@ def main(argv=None):
     kb_parser.add_argument("args", nargs=argparse.REMAINDER, help="status|apply|off|static|breath|wave|hue|brightness …")
     server = commands.add_parser("serve", help="Serve the local HTTP API; run with sudo")
     server.add_argument("--uid", type=int, default=owner_uid(), help="UID permitted to connect; defaults to SUDO_UID")
-    internal = commands.add_parser("_write")
-    internal.add_argument("key", choices=["mode", *FIELDS])
-    internal.add_argument("value")
+    internal = commands.add_parser("_apply")
+    internal.add_argument("changes", help="JSON list of [key, value] pairs")
     args = parser.parse_args(argv)
     try:
         if args.command == "serve":
             serve(args.uid)
             return 0
-        if args.command == "_write":
-            hardware = Hardware()
-            result = hardware.set_mode(args.value) if args.key == "mode" else hardware.set_value(args.key, int(args.value))
+        if args.command == "_apply":
+            result = apply_batch(Hardware(), json.loads(args.changes))
         elif args.command == "kb":
             # REMAINDER may include a leading "--" from argparse.
             kb_args = list(args.args or [])
@@ -1619,7 +1739,8 @@ def main(argv=None):
             if args.command in (None, "tui"):
                 if not sys.stdin.isatty() or not sys.stdout.isatty():
                     raise ControlError("The dashboard needs a terminal. Use status for JSON output.")
-                curses.wrapper(lambda screen: Dashboard(screen, backend).run())
+                sudo_ok = preauth(backend)
+                curses.wrapper(lambda screen: Dashboard(screen, backend, sudo_ok=sudo_ok).run())
                 return 0
             elif args.command in ("status", "metrics"):
                 result = backend.snapshot()
