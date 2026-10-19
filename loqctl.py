@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 loqctl contributors
 """LOQ control and telemetry. Python standard library only."""
 from __future__ import annotations
 
-import argparse
+import importlib.util
 import collections
-import colorsys
-import csv
-import curses
-import http.client
-import http.server
 import json
 import math
 import os
@@ -17,13 +14,37 @@ import pwd
 import signal
 import shutil
 import socket
-import socketserver
 import struct
 import subprocess
 import sys
 import threading
 import time
-import textwrap
+
+
+
+def _lazy(name):
+    """Import a module on first attribute access to keep CLI startup cheap."""
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.find_spec(name)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    loader = importlib.util.LazyLoader(spec.loader)
+    loader.exec_module(module)
+    parent, _, child = name.rpartition(".")
+    if parent:
+        setattr(sys.modules[parent], child, module)
+    return module
+
+
+argparse = _lazy("argparse")
+colorsys = _lazy("colorsys")
+csv = _lazy("csv")
+curses = _lazy("curses")
+http_client = _lazy("http.client")
+http_server = _lazy("http.server")
+socketserver = _lazy("socketserver")
+textwrap = _lazy("textwrap")
 
 VERSION = "0.2.0"
 ENTRY = str(Path(__file__).resolve())
@@ -45,15 +66,16 @@ SPARK = "▁▂▃▄▅▆▇█"
 BAR_FILL = "█"
 BAR_EMPTY = "░"
 # Terminal ANSI palette only (never init_color / truecolor UI chrome).
+# Keys 0..7 equal curses.COLOR_BLACK..COLOR_WHITE.
 ANSI_RGB = {
-    curses.COLOR_BLACK: (0, 0, 0),
-    curses.COLOR_RED: (205, 49, 49),
-    curses.COLOR_GREEN: (13, 188, 121),
-    curses.COLOR_YELLOW: (229, 229, 16),
-    curses.COLOR_BLUE: (36, 114, 200),
-    curses.COLOR_MAGENTA: (188, 63, 188),
-    curses.COLOR_CYAN: (17, 168, 205),
-    curses.COLOR_WHITE: (229, 229, 229),
+    0: (0, 0, 0),
+    1: (205, 49, 49),
+    2: (13, 188, 121),
+    3: (229, 229, 16),
+    4: (36, 114, 200),
+    5: (188, 63, 188),
+    6: (17, 168, 205),
+    7: (229, 229, 229),
 }
 
 
@@ -405,19 +427,94 @@ class Sampler:
         return self
 
 
-class UnixHTTP(http.client.HTTPConnection):
-    def __init__(self, path):
-        super().__init__("localhost", timeout=4)
-        self.path = path
+_API = None
 
-    def connect(self):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect(self.path)
+
+def _api_classes():
+    global _API
+    if _API is None:
+        class UnixHTTP(http_client.HTTPConnection):
+            def __init__(self, path):
+                super().__init__("localhost", timeout=4)
+                self.path = path
+
+            def connect(self):
+                self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.sock.settimeout(self.timeout)
+                self.sock.connect(self.path)
+
+
+        class APIServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+            daemon_threads = True
+
+            def __init__(self, path, hardware, sampler, uid):
+                self.hardware, self.sampler, self.uid = hardware, sampler, uid
+                super().__init__(path, Handler)
+
+            def verify_request(self, connection, address):
+                _, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                return uid in (0, self.uid)
+
+
+        class Handler(http_server.BaseHTTPRequestHandler):
+            server_version = "loqctl/" + VERSION
+
+            def setup(self):
+                super().setup()
+                self.connection.settimeout(3)
+
+            def log_message(self, *args):
+                pass
+
+            def reply(self, status, value):
+                data = json.dumps(value, allow_nan=False).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                if self.path == "/v1/status":
+                    self.reply(200, {**self.server.sampler.latest, **self.server.hardware.capabilities()})
+                elif self.path == "/v1/metrics":
+                    self.reply(200, self.server.sampler.latest.get("metrics", {}))
+                elif self.path == "/v1/capabilities":
+                    self.reply(200, self.server.hardware.capabilities())
+                else:
+                    self.reply(404, {"error": "Unknown endpoint"})
+
+            def do_POST(self):
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 4096 or self.headers.get("Transfer-Encoding"):
+                        raise ControlError("Provide a JSON body of at most 4096 bytes.")
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict):
+                        raise ControlError("Expected a JSON object.")
+                    if self.path == "/v1/mode" and set(body) == {"mode"}:
+                        value = self.server.hardware.set_mode(body["mode"])
+                    elif self.path.startswith("/v1/attributes/") and set(body) == {"value"}:
+                        value = self.server.hardware.set_value(self.path[len("/v1/attributes/"):], body["value"])
+                    else:
+                        self.reply(404, {"error": "Unknown endpoint or unexpected fields"})
+                        return
+                    self.reply(200, value)
+                except (ControlError, ValueError, TypeError) as exc:
+                    self.reply(400, {"error": str(exc)})
+        _API = {"UnixHTTP": UnixHTTP, "APIServer": APIServer, "Handler": Handler}
+    return _API
+
+
+def __getattr__(name):
+    if name in ("UnixHTTP", "APIServer", "Handler"):
+        return _api_classes()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def request(path, method, endpoint, payload=None):
-    conn = UnixHTTP(path)
+    conn = _api_classes()["UnixHTTP"](path)
     try:
         body = json.dumps(payload) if payload is not None else None
         conn.request(method, endpoint, body, {"Content-Type": "application/json"} if body else {})
@@ -428,67 +525,6 @@ def request(path, method, endpoint, payload=None):
         return result
     finally:
         conn.close()
-
-
-class APIServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
-
-    def __init__(self, path, hardware, sampler, uid):
-        self.hardware, self.sampler, self.uid = hardware, sampler, uid
-        super().__init__(path, Handler)
-
-    def verify_request(self, connection, address):
-        _, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-        return uid in (0, self.uid)
-
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "loqctl/" + VERSION
-
-    def setup(self):
-        super().setup()
-        self.connection.settimeout(3)
-
-    def log_message(self, *args):
-        pass
-
-    def reply(self, status, value):
-        data = json.dumps(value, allow_nan=False).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_GET(self):
-        if self.path == "/v1/status":
-            self.reply(200, {**self.server.sampler.latest, **self.server.hardware.capabilities()})
-        elif self.path == "/v1/metrics":
-            self.reply(200, self.server.sampler.latest.get("metrics", {}))
-        elif self.path == "/v1/capabilities":
-            self.reply(200, self.server.hardware.capabilities())
-        else:
-            self.reply(404, {"error": "Unknown endpoint"})
-
-    def do_POST(self):
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 4096 or self.headers.get("Transfer-Encoding"):
-                raise ControlError("Provide a JSON body of at most 4096 bytes.")
-            body = json.loads(self.rfile.read(length))
-            if not isinstance(body, dict):
-                raise ControlError("Expected a JSON object.")
-            if self.path == "/v1/mode" and set(body) == {"mode"}:
-                value = self.server.hardware.set_mode(body["mode"])
-            elif self.path.startswith("/v1/attributes/") and set(body) == {"value"}:
-                value = self.server.hardware.set_value(self.path[len("/v1/attributes/"):], body["value"])
-            else:
-                self.reply(404, {"error": "Unknown endpoint or unexpected fields"})
-                return
-            self.reply(200, value)
-        except (ControlError, ValueError, TypeError) as exc:
-            self.reply(400, {"error": str(exc)})
 
 
 def serve(uid):
@@ -508,7 +544,7 @@ def serve(uid):
     sampler = Sampler().start()
     old_mask = os.umask(0o177)
     try:
-        server = APIServer(str(path), sampler.hardware, sampler, uid)
+        server = _api_classes()["APIServer"](str(path), sampler.hardware, sampler, uid)
     finally:
         os.umask(old_mask)
     os.chown(path, uid, -1)
@@ -552,7 +588,7 @@ class Backend:
                 while not self.stop.is_set():
                     try:
                         self.latest = request(self.path, "GET", "/v1/status")
-                    except (OSError, ControlError, ValueError, http.client.HTTPException) as exc:
+                    except (OSError, ControlError, ValueError, http_client.HTTPException) as exc:
                         self.latest = {"error": "API connection failed: " + str(exc)}
                     self.stop.wait(1)
             threading.Thread(target=poll, daemon=True).start()
@@ -1134,7 +1170,7 @@ class Dashboard:
                       "current": None, "status": "NOT SENT", "error": None}
             try:
                 result["before"] = self.read_current(key)
-            except (ControlError, OSError, ValueError, http.client.HTTPException):
+            except (ControlError, OSError, ValueError, http_client.HTTPException):
                 pass
             if stopped:
                 result["current"] = result["before"]
@@ -1145,12 +1181,12 @@ class Dashboard:
                 if blocked:
                     raise ControlError("Stage custom mode before applying power or temperature limits.")
                 self.write_one(key, value)
-            except (ControlError, OSError, ValueError, http.client.HTTPException) as exc:
+            except (ControlError, OSError, ValueError, http_client.HTTPException) as exc:
                 error = str(exc)
             write_failed = error is not None
             try:
                 result["current"] = self.read_current(key)
-            except (ControlError, OSError, ValueError, http.client.HTTPException) as exc:
+            except (ControlError, OSError, ValueError, http_client.HTTPException) as exc:
                 error = error or "Could not read firmware after the write: " + str(exc)
             if error or result["current"] != value:
                 result["status"] = "UNVERIFIED" if result["current"] is None and not write_failed else "FAILED"
@@ -1372,7 +1408,7 @@ class Dashboard:
                 if ch != -1:
                     try:
                         self.handle(ch, state)
-                    except (ControlError, OSError, ValueError, http.client.HTTPException) as exc:
+                    except (ControlError, OSError, ValueError, http_client.HTTPException) as exc:
                         self.notice = str(exc)
         finally:
             self.backend.close()
@@ -1449,6 +1485,12 @@ def kb_cli(argv):
 
 
 def main(argv=None):
+    if sys.version_info < (3, 10):
+        print(f"loqctl: Python 3.10 or newer is required (found {sys.version_info[0]}.{sys.version_info[1]}).", file=sys.stderr)
+        return 1
+    if (sys.argv[1:] if argv is None else list(argv)) == ["--version"]:
+        print(VERSION)  # fast path: skip the argparse import
+        return 0
     parser = argparse.ArgumentParser(description="Lenovo LOQ firmware controls and live terminal telemetry")
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--socket", help="Connect to an existing loqctl Unix socket")
@@ -1505,7 +1547,7 @@ def main(argv=None):
                 result = backend.write(args.attribute, args.value)
         print(json.dumps(result, indent=2, allow_nan=False))
         return 0
-    except (ControlError, OSError, ValueError, http.client.HTTPException, curses.error) as exc:
+    except (ControlError, OSError, ValueError, http_client.HTTPException, curses.error) as exc:
         print("loqctl: " + str(exc), file=sys.stderr)
         return 1
     except KeyboardInterrupt:

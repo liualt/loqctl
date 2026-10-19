@@ -1,10 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+import contextlib
 import fcntl
+import io
 import importlib.util
 import json
 import os
 import pty
 import select
 import struct
+import subprocess
 import sys
 import termios
 import time
@@ -352,6 +356,25 @@ class FirmwareTests(unittest.TestCase):
         self.assertTrue(os.WIFEXITED(status), out.decode("utf-8", "replace")[-500:])
         self.assertEqual(os.WEXITSTATUS(status), 0, out.decode("utf-8", "replace")[-500:])
         self.assertIn(b"TUI_OK", out)
+
+    def test_import_does_not_load_heavy_modules(self):
+        repo = str(Path(loq.__file__).resolve().parent)
+        code = (
+            "import sys; sys.path.insert(0, %r); import loqctl; "
+            "print('_curses' in sys.modules, any(type(sys.modules.get(m)).__name__ == 'module' "
+            "for m in ('socketserver', 'http.server', 'http.client', 'curses', 'csv')))" % repo
+        )
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.split(), ["False", "False"])
+        ver = subprocess.run([sys.executable, loq.__file__, "--version"], capture_output=True, text=True)
+        self.assertEqual(ver.returncode, 0)
+        self.assertEqual(ver.stdout.strip(), loq.VERSION)
+
+    def test_main_rejects_old_python(self):
+        err = io.StringIO()
+        with patch.object(loq.sys, "version_info", (3, 9, 0)), contextlib.redirect_stderr(err):
+            self.assertEqual(loq.main(["--version"]), 1)
+        self.assertIn("3.10", err.getvalue())
 
 
 if __name__ == "__main__":

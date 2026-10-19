@@ -1,7 +1,7 @@
 # loqctl has no third-party Python dependencies.
 # It uses only the standard library (curses, http, socketserver, ...).
 #
-# Python: 3.8 or newer (uses the walrus operator and Path.unlink(missing_ok=True)).
+# Python: 3.10 or newer.
 #         Developed and tested on CPython 3.14.
 # OS:     Linux only (needs /sys, /proc, SO_PEERCRED and the curses module).
 #

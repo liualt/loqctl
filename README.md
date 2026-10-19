@@ -9,8 +9,8 @@ A btop-style terminal dashboard and CLI for Lenovo LOQ laptops on Linux. It show
 | Need | Details |
 | --- | --- |
 | OS | Linux only (uses `/sys`, `/proc`, `SO_PEERCRED`, `curses`) |
-| Python | 3.8+ (standard library only, no `pip install` needed; see `requirements.txt`) |
-| Kernel | Lenovo WMI drivers `lenovo-wmi-gamezone` and `lenovo-wmi-other`. You need `/sys/class/firmware-attributes/lenovo-wmi-other*/` to exist. The kernel docs for these drivers appear from 6.19; check your own kernel with the command below. |
+| Python | 3.10+ (standard library only, no `pip install` needed; see `requirements.txt`) |
+| Kernel | Lenovo WMI drivers `lenovo-wmi-gamezone` and `lenovo-wmi-other`. You need `/sys/class/firmware-attributes/lenovo-wmi-other*/` to exist. Linux 6.17 or newer is required for these drivers; check your own kernel with the command below. |
 | Privileges | `sudo` for writing firmware settings. Reading works without it, except CPU power (RAPL), which needs root. |
 | Terminal | At least 72×20 (96×24 recommended), UTF-8 locale |
 | Optional | `nvidia-smi` at `/usr/bin/nvidia-smi` for GPU data; `legionaura` for keyboard RGB |
@@ -32,6 +32,14 @@ git clone <this repository> && cd loqctl
 install -Dm755 loqctl.py ~/.local/bin/loqctl   # make sure ~/.local/bin is on PATH
 loqctl --version
 ```
+
+If you run loqctl with sudo (including for the dashboard's writes), install it to a root-owned path instead:
+
+```sh
+sudo install -Dm755 loqctl.py /usr/local/bin/loqctl
+```
+
+When sudo runs a user-writable file, any process running as you can gain root by editing it.
 
 Or run it in place with `python3 loqctl.py`.
 
@@ -96,7 +104,7 @@ sudo loqctl mode custom
 sudo loqctl set ppt_pl1_spl 50
 ```
 
-`sudo` may not find a `~/.local/bin` install; use the full path (`sudo ~/.local/bin/loqctl ...`) or `sudo env "PATH=$PATH" loqctl ...`.
+`sudo` may not find a `~/.local/bin` install; install to `/usr/local/bin` as described above so `sudo loqctl ...` works and the file is root-owned.
 
 Writes check the firmware's min, max and step, write once, then read the value back. `set` is refused unless the mode is `custom`.
 
@@ -188,3 +196,7 @@ python3 loqctl.py status
 ```
 
 Tests use a temporary simulated sysfs and never touch real laptop settings.
+
+## License
+
+GPL-3.0-or-later, see `LICENSE`. Third-party credits are in `NOTICE`.
