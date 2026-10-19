@@ -1,0 +1,15 @@
+# loqctl has no third-party Python dependencies.
+# It uses only the standard library (curses, http, socketserver, ...).
+#
+# Python: 3.8 or newer (uses the walrus operator and Path.unlink(missing_ok=True)).
+#         Developed and tested on CPython 3.14.
+# OS:     Linux only (needs /sys, /proc, SO_PEERCRED and the curses module).
+#
+# System requirements (installed through your distro, not pip):
+#   - Linux kernel with the lenovo-wmi-gamezone and lenovo-wmi-other drivers
+#     (exposes /sys/class/firmware-attributes/lenovo-wmi-other*/ and a
+#     "lenovo-wmi-gamezone" platform profile)
+#   - sudo, to write firmware settings
+# Optional:
+#   - nvidia-smi (/usr/bin/nvidia-smi) for GPU telemetry
+#   - legionaura (/usr/bin/legionaura) for 4-zone keyboard RGB
