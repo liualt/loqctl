@@ -29,14 +29,18 @@ If the first command fails, loqctl can still show telemetry but cannot change fi
 
 ```sh
 git clone <this repository> && cd loqctl
-install -Dm755 loqctl.py ~/.local/bin/loqctl   # make sure ~/.local/bin is on PATH
+install -d ~/.local/lib/loqctl && cp -r loqctl loqctl.py ~/.local/lib/loqctl/ \
+  && python3 -m compileall -q ~/.local/lib/loqctl \
+  && ln -sf ~/.local/lib/loqctl/loqctl.py ~/.local/bin/loqctl   # make sure ~/.local/bin is on PATH
 loqctl --version
 ```
 
-If you run loqctl with sudo (including for the dashboard's writes), install it to a root-owned path instead:
+This user install is for the dashboard only. If you run loqctl with sudo (including for the dashboard's writes), install it to a root-owned path instead:
 
 ```sh
-sudo install -Dm755 loqctl.py /usr/local/bin/loqctl
+sudo install -d /usr/local/lib/loqctl && sudo cp -r loqctl loqctl.py /usr/local/lib/loqctl/ \
+  && sudo python3 -m compileall -q /usr/local/lib/loqctl \
+  && sudo ln -sf /usr/local/lib/loqctl/loqctl.py /usr/local/bin/loqctl
 ```
 
 When sudo runs a user-writable file, any process running as you can gain root by editing it.
@@ -107,7 +111,7 @@ sudo loqctl mode custom
 sudo loqctl set ppt_pl1_spl 50
 ```
 
-`sudo` may not find a `~/.local/bin` install; install to `/usr/local/bin` as described above so `sudo loqctl ...` works and the file is root-owned.
+`sudo` may not find a `~/.local/bin` install; install system-wide as described above so `sudo loqctl ...` works and the file is root-owned.
 
 Writes check the firmware's min, max and step, write once, then read the value back. `set` is refused unless the mode is `custom`.
 
@@ -212,7 +216,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 
 ```sh
 python3 -m unittest discover -s tests -v
-python3 loqctl.py status
+python3 loqctl.py status        # or: python3 -m loqctl status
 ```
 
 Tests use a temporary simulated sysfs and never touch real laptop settings.

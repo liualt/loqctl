@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import contextlib
+import curses
 import errno
 import fcntl
 import io
-import importlib.util
 import json
 import os
 import pty
 import select
+import shutil
 import socket
 import struct
 import subprocess
@@ -20,9 +21,13 @@ import threading
 import unittest
 from unittest.mock import patch, Mock
 
-spec = importlib.util.spec_from_file_location("loqctl", Path(__file__).resolve().parents[1] / "loqctl.py")
-loq = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(loq)
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+
+import loqctl
+from loqctl import api as m_api, backend as m_backend, cli as m_cli, colors as m_colors
+from loqctl import common as m_common, hardware as m_hardware, keyboard as m_keyboard
+from loqctl import sensors as m_sensors, ui as m_ui
 
 
 class FirmwareTests(unittest.TestCase):
@@ -39,7 +44,7 @@ class FirmwareTests(unittest.TestCase):
         for key, value in {"current_value": 50, "min_value": 50, "max_value": 100,
                            "default_value": 60, "scalar_increment": 5}.items():
             (self.attr / key).write_text(str(value))
-        self.hw = loq.Hardware(self.root)
+        self.hw = m_hardware.Hardware(self.root)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -48,7 +53,7 @@ class FirmwareTests(unittest.TestCase):
         for value in (50, 100, 65):
             self.assertTrue(self.hw.set_value("ppt_pl1_spl", value)["verified"])
         for value in (49, 101, 51, True, 55.0, "55", None):
-            with self.assertRaises(loq.ControlError):
+            with self.assertRaises(m_common.ControlError):
                 self.hw.set_value("ppt_pl1_spl", value)
         self.assertEqual((self.attr / "current_value").read_text().strip(), "65")
 
@@ -59,43 +64,43 @@ class FirmwareTests(unittest.TestCase):
 
     def test_mode_gates_custom_writes(self):
         self.hw.set_mode("balanced")
-        with self.assertRaisesRegex(loq.ControlError, "custom"):
+        with self.assertRaisesRegex(m_common.ControlError, "custom"):
             self.hw.set_value("ppt_pl1_spl", 60)
         self.assertEqual((self.attr / "current_value").read_text(), "50")
-        with self.assertRaises(loq.ControlError):
+        with self.assertRaises(m_common.ControlError):
             self.hw.set_mode("turbo")
 
     def test_allowlist_blocks_traversal_and_unknowns(self):
         for key in ("../ppt_pl1_spl", "ppt_pl1_spl/current_value", "gpu_mode", "/etc/passwd"):
-            with self.assertRaises(loq.ControlError):
+            with self.assertRaises(m_common.ControlError):
                 self.hw.set_value(key, 60)
 
     def test_missing_limits_never_write(self):
         (self.attr / "max_value").unlink()
-        with self.assertRaises(loq.ControlError):
+        with self.assertRaises(m_common.ControlError):
             self.hw.set_value("ppt_pl1_spl", 60)
 
     def test_readback_mismatch_reported(self):
         with patch.object(Path, "write_text", return_value=3):
-            with self.assertRaisesRegex(loq.ControlError, "readback"):
+            with self.assertRaisesRegex(m_common.ControlError, "readback"):
                 self.hw.set_value("ppt_pl1_spl", 60)
 
     def test_unix_api(self):
         sampler = type("Sampler", (), {"latest": {"metrics": {"cpu": {"power_w": 12}}}})()
         path = str(self.root / "test.sock")
-        server = loq.APIServer(path, self.hw, sampler, loq.os.getuid())
+        server = m_api.APIServer(path, self.hw, sampler, os.getuid())
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            self.assertEqual(loq.request(path, "GET", "/v1/status")["mode"], "custom")
-            self.assertEqual(loq.request(path, "GET", "/v1/metrics")["cpu"]["power_w"], 12)
-            self.assertTrue(loq.request(path, "POST", "/v1/attributes/ppt_pl1_spl", {"value": 70})["verified"])
+            self.assertEqual(m_api.request(path, "GET", "/v1/status")["mode"], "custom")
+            self.assertEqual(m_api.request(path, "GET", "/v1/metrics")["cpu"]["power_w"], 12)
+            self.assertTrue(m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", {"value": 70})["verified"])
             for payload in ({"value": True}, {"value": 500}, {"value": 50, "path": "/tmp/x"}, []):
-                with self.assertRaises(loq.ControlError):
-                    loq.request(path, "POST", "/v1/attributes/ppt_pl1_spl", payload)
-            loq.request(path, "POST", "/v1/mode", {"mode": "balanced"})
-            with self.assertRaises(loq.ControlError):
-                loq.request(path, "POST", "/v1/attributes/ppt_pl1_spl", {"value": 60})
+                with self.assertRaises(m_common.ControlError):
+                    m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", payload)
+            m_api.request(path, "POST", "/v1/mode", {"mode": "balanced"})
+            with self.assertRaises(m_common.ControlError):
+                m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", {"value": 60})
         finally:
             server.shutdown()
             server.server_close()
@@ -111,16 +116,16 @@ class FirmwareTests(unittest.TestCase):
         duplicate.mkdir()
         (duplicate / "name").write_text("package-0")
         (duplicate / "energy_uj").write_text("99999999999")
-        sensors = loq.Sensors(self.root)
-        with patch.object(loq.time, "monotonic", return_value=1):
+        sensors = m_sensors.Sensors(self.root)
+        with patch.object(time, "monotonic", return_value=1):
             self.assertIsNone(sensors.cpu_power()[0])
         (rapl / "energy_uj").write_text("3000000")
-        with patch.object(loq.time, "monotonic", return_value=3):
+        with patch.object(time, "monotonic", return_value=3):
             self.assertEqual(sensors.cpu_power()[0], 2)
 
     def test_unsupported_sensor_values_are_null(self):
         for value in ("[N/A]", "nan", "inf", None, "Not Supported"):
-            self.assertIsNone(loq.number(value))
+            self.assertIsNone(m_common.number(value))
 
     def add_attr(self, key, current, lo, hi, step, default):
         path = self.attr.parent / key
@@ -138,9 +143,9 @@ class FirmwareTests(unittest.TestCase):
         calls = []
         def reject(key, value):
             calls.append(key)
-            raise loq.ControlError("rejected")
+            raise m_common.ControlError("rejected")
         dashboard.backend.write = reject
-        with self.assertRaisesRegex(loq.ControlError, "after 0 writes"):
+        with self.assertRaisesRegex(m_common.ControlError, "after 0 writes"):
             dashboard.apply(state)
         self.assertEqual(calls, ["ppt_pl1_spl"])
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60, "cpu_temp": 90})
@@ -150,10 +155,10 @@ class FirmwareTests(unittest.TestCase):
         dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
         def partial(key, value):
             if key == "cpu_temp":
-                raise loq.ControlError("rejected")
+                raise m_common.ControlError("rejected")
             self.hw.set_value(key, value)
         dashboard.backend.write = partial
-        with self.assertRaisesRegex(loq.ControlError, "after 1 writes"):
+        with self.assertRaisesRegex(m_common.ControlError, "after 1 writes"):
             dashboard.apply(state)
         self.assertEqual(dashboard.pending, {"cpu_temp": 90})
         self.assertEqual([r["status"] for r in dashboard.apply_results], ["APPLIED", "FAILED"])
@@ -161,7 +166,7 @@ class FirmwareTests(unittest.TestCase):
     def test_locked_rows_reject_edits_in_non_custom_mode(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()
-        for key in (ord("6"), loq.curses.KEY_LEFT, ord("d"), 10):
+        for key in (ord("6"), curses.KEY_LEFT, ord("d"), 10):
             dashboard = self.dashboard()
             dashboard.handle(key, state)
             self.assertEqual(dashboard.pending, {})
@@ -173,12 +178,12 @@ class FirmwareTests(unittest.TestCase):
         dashboard = self.dashboard()
         dashboard.selected = 0
         for _ in range(4):
-            dashboard.handle(loq.curses.KEY_RIGHT, state)
+            dashboard.handle(curses.KEY_RIGHT, state)
             if dashboard.pending.get("mode") == "custom":
                 break
         self.assertEqual(dashboard.pending, {"mode": "custom"})
         dashboard.selected = 1
-        for key in (ord("6"), loq.curses.KEY_RIGHT):
+        for key in (ord("6"), curses.KEY_RIGHT):
             dashboard.handle(key, state)
             self.assertEqual(dashboard.pending, {"mode": "custom"})
             self.assertIn("locked in balanced mode", dashboard.notice)
@@ -201,14 +206,14 @@ class FirmwareTests(unittest.TestCase):
         dashboard = self.dashboard()
         dashboard.backend.write = Mock()
         dashboard.pending = {"ppt_pl1_spl": 60}
-        with self.assertRaisesRegex(loq.ControlError, "locked in balanced mode"):
+        with self.assertRaisesRegex(m_common.ControlError, "locked in balanced mode"):
             dashboard.apply(self.hw.capabilities())
         dashboard.backend.write.assert_not_called()
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
 
     def test_ebusy_maps_to_custom_mode_message(self):
         with patch.object(Path, "write_text", side_effect=OSError(errno.EBUSY, "busy")):
-            with self.assertRaisesRegex(loq.ControlError, "custom mode"):
+            with self.assertRaisesRegex(m_common.ControlError, "custom mode"):
                 self.hw.set_value("ppt_pl1_spl", 60)
 
     def test_draw_dims_locked_rows(self):
@@ -225,7 +230,7 @@ class FirmwareTests(unittest.TestCase):
         self.assertTrue(any("locked in balanced mode" in c[0] for c in calls))
 
     def dashboard(self):
-        dashboard = object.__new__(loq.Dashboard)
+        dashboard = object.__new__(m_ui.Dashboard)
         dashboard.help = False
         dashboard.selected = 1
         dashboard.pending = {}
@@ -263,7 +268,7 @@ class FirmwareTests(unittest.TestCase):
 
     def test_moving_keeps_valid_drops_empty_keeps_invalid(self):
         dashboard, state = self.multi()
-        self.type_keys(dashboard, state, "6", "0", "j", "8", "5", loq.curses.KEY_BACKSPACE, 127, "j", "5", "1")
+        self.type_keys(dashboard, state, "6", "0", "j", "8", "5", curses.KEY_BACKSPACE, 127, "j", "5", "1")
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
         self.assertEqual(dashboard.invalid, {"gpu_temp"})
         self.assertEqual(dashboard.fields, {"ppt_pl1_spl": "60", "gpu_temp": "51"})
@@ -294,7 +299,7 @@ class FirmwareTests(unittest.TestCase):
     def test_arrows_step_from_staged_value(self):
         dashboard = self.dashboard()
         state = self.hw.capabilities()
-        right, left = loq.curses.KEY_RIGHT, loq.curses.KEY_LEFT
+        right, left = curses.KEY_RIGHT, curses.KEY_LEFT
         self.type_keys(dashboard, state, right, right)
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
         self.type_keys(dashboard, state, left, left)
@@ -325,23 +330,23 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual((self.attr / "current_value").read_text(), "50")
 
     def test_escdelay_respected(self):
-        with patch.dict(loq.os.environ, {}, clear=False), patch.object(loq.curses, "set_escdelay") as delay:
-            loq.os.environ.pop("ESCDELAY", None)
-            loq.Dashboard._set_escdelay()
+        with patch.dict(os.environ, {}, clear=False), patch.object(curses, "set_escdelay") as delay:
+            os.environ.pop("ESCDELAY", None)
+            m_ui.Dashboard._set_escdelay()
             delay.assert_called_once_with(25)
-        with patch.dict(loq.os.environ, {"ESCDELAY": "300"}), patch.object(loq.curses, "set_escdelay") as delay:
-            loq.Dashboard._set_escdelay()
+        with patch.dict(os.environ, {"ESCDELAY": "300"}), patch.object(curses, "set_escdelay") as delay:
+            m_ui.Dashboard._set_escdelay()
             delay.assert_not_called()
 
     def test_strike_helper(self):
-        self.assertEqual(loq.strike("53W"), "5\u03363\u0336W\u0336")
-        self.assertEqual(loq.strike(""), "")
+        self.assertEqual(m_ui.strike("53W"), "5\u03363\u0336W\u0336")
+        self.assertEqual(m_ui.strike(""), "")
 
     def test_report_detects_unchanged_firmware_despite_write_success(self):
         dashboard = self.dashboard()
         dashboard.backend.write = Mock(return_value={"verified": True})
         dashboard.pending = {"ppt_pl1_spl": 60}
-        with self.assertRaisesRegex(loq.ControlError, "firmware reports 50"):
+        with self.assertRaisesRegex(m_common.ControlError, "firmware reports 50"):
             dashboard.apply(self.hw.capabilities())
         result = dashboard.apply_results[0]
         self.assertEqual((result["before"], result["requested"], result["current"], result["status"]),
@@ -350,9 +355,9 @@ class FirmwareTests(unittest.TestCase):
 
     def test_report_preserves_write_failure_and_existing_limit(self):
         dashboard = self.dashboard()
-        dashboard.backend.write = Mock(side_effect=loq.ControlError("Firmware rejected the write"))
+        dashboard.backend.write = Mock(side_effect=m_common.ControlError("Firmware rejected the write"))
         dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
-        with self.assertRaises(loq.ControlError):
+        with self.assertRaises(m_common.ControlError):
             dashboard.apply(self.hw.capabilities())
         result = dashboard.apply_results[0]
         self.assertEqual(result["current"], 50)
@@ -365,7 +370,7 @@ class FirmwareTests(unittest.TestCase):
         dashboard = self.dashboard()
         dashboard.backend.controls = Mock(side_effect=[self.hw.capabilities(), OSError("read failed")])
         dashboard.pending = {"ppt_pl1_spl": 60}
-        with self.assertRaises(loq.ControlError):
+        with self.assertRaises(m_common.ControlError):
             dashboard.apply(self.hw.capabilities())
         self.assertEqual(dashboard.apply_results[0]["status"], "UNVERIFIED")
         self.assertIsNone(dashboard.apply_results[0]["current"])
@@ -380,10 +385,10 @@ class FirmwareTests(unittest.TestCase):
     def test_sudo_error_is_preserved_for_report(self):
         dashboard = self.local_dashboard()
         dashboard.pending = {"ppt_pl1_spl": 60}
-        result = loq.subprocess.CompletedProcess([], 1, "", "sudo: authentication failed")
-        with patch.object(loq.os, "geteuid", return_value=1000), \
-             patch.object(loq.subprocess, "run", return_value=result):
-            with self.assertRaisesRegex(loq.ControlError, "authentication failed"):
+        result = subprocess.CompletedProcess([], 1, "", "sudo: authentication failed")
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(m_common.ControlError, "authentication failed"):
                 dashboard.apply(self.hw.capabilities())
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
         self.assertFalse(dashboard.sudo_expired)
@@ -398,13 +403,13 @@ class FirmwareTests(unittest.TestCase):
         dashboard = self.local_dashboard()
         dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
         dashboard.fields = {"ppt_pl1_spl": "60", "cpu_temp": "90"}
-        out = loq.subprocess.CompletedProcess([], 0, json.dumps(self.sudo_results("APPLIED", "APPLIED")), "")
-        with patch.object(loq.os, "geteuid", return_value=1000), \
-             patch.object(loq.subprocess, "run", return_value=out) as run:
+        out = subprocess.CompletedProcess([], 0, json.dumps(self.sudo_results("APPLIED", "APPLIED")), "")
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(subprocess, "run", return_value=out) as run:
             dashboard.apply(self.hw.capabilities())
         self.assertEqual(run.call_count, 1)
         argv = run.call_args[0][0]
-        self.assertEqual(argv[:7], ["sudo", "-n", "--", sys.executable, "-I", loq.ENTRY, "_apply"])
+        self.assertEqual(argv[:7], ["sudo", "-n", "--", sys.executable, "-I", m_common.ENTRY, "_apply"])
         self.assertEqual(json.loads(argv[7]), [["ppt_pl1_spl", 60], ["cpu_temp", 90]])
         self.assertEqual((dashboard.pending, dashboard.fields), ({}, {}))
         self.assertTrue(dashboard.show_results)
@@ -413,20 +418,20 @@ class FirmwareTests(unittest.TestCase):
         self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
         dashboard = self.local_dashboard()
         dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
-        out = loq.subprocess.CompletedProcess([], 0, json.dumps(self.sudo_results("APPLIED", "FAILED")), "")
-        with patch.object(loq.os, "geteuid", return_value=1000), \
-             patch.object(loq.subprocess, "run", return_value=out):
-            with self.assertRaisesRegex(loq.ControlError, "after 1 writes"):
+        out = subprocess.CompletedProcess([], 0, json.dumps(self.sudo_results("APPLIED", "FAILED")), "")
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(subprocess, "run", return_value=out):
+            with self.assertRaisesRegex(m_common.ControlError, "after 1 writes"):
                 dashboard.apply(self.hw.capabilities())
         self.assertEqual(dashboard.pending, {"cpu_temp": 90})
 
     def test_sudo_expiry_sets_banner_and_keeps_edits(self):
         dashboard = self.local_dashboard()
         dashboard.pending = {"ppt_pl1_spl": 60}
-        out = loq.subprocess.CompletedProcess([], 1, "", "sudo: a password is required")
-        with patch.object(loq.os, "geteuid", return_value=1000), \
-             patch.object(loq.subprocess, "run", return_value=out):
-            with self.assertRaisesRegex(loq.ControlError, "Press s"):
+        out = subprocess.CompletedProcess([], 1, "", "sudo: a password is required")
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(subprocess, "run", return_value=out):
+            with self.assertRaisesRegex(m_common.ControlError, "Press s"):
                 dashboard.apply(self.hw.capabilities())
         self.assertTrue(dashboard.sudo_expired)
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
@@ -437,11 +442,11 @@ class FirmwareTests(unittest.TestCase):
             dashboard = self.local_dashboard()
             dashboard.sudo_expired = True
             dashboard.notice = ""
-            out = loq.subprocess.CompletedProcess([], code)
-            with patch.object(loq.os, "geteuid", return_value=1000), \
-                 patch.object(loq.curses, "def_prog_mode"), patch.object(loq.curses, "endwin"), \
-                 patch.object(loq.curses, "reset_prog_mode"), \
-                 patch.object(loq.subprocess, "run", return_value=out) as run:
+            out = subprocess.CompletedProcess([], code)
+            with patch.object(os, "geteuid", return_value=1000), \
+                 patch.object(curses, "def_prog_mode"), patch.object(curses, "endwin"), \
+                 patch.object(curses, "reset_prog_mode"), \
+                 patch.object(subprocess, "run", return_value=out) as run:
                 dashboard.handle(ord("s"), state)
             run.assert_called_once_with(["sudo", "-v"])
             self.assertEqual(dashboard.sudo_expired, expired)
@@ -452,55 +457,55 @@ class FirmwareTests(unittest.TestCase):
             return Mock(remote=remote, hardware=Mock(capabilities=Mock(return_value=caps)))
         def run_with(rcs, **kw):
             def fake(argv, **_):
-                return loq.subprocess.CompletedProcess(argv, rcs[tuple(argv)])
-            return patch.object(loq.subprocess, "run", side_effect=fake)
+                return subprocess.CompletedProcess(argv, rcs[tuple(argv)])
+            return patch.object(subprocess, "run", side_effect=fake)
         nv = ("sudo", "-n", "true")
-        with patch.object(loq.os, "geteuid", return_value=0), patch.object(loq.subprocess, "run") as run:
-            self.assertTrue(loq.preauth(backend()))
+        with patch.object(os, "geteuid", return_value=0), patch.object(subprocess, "run") as run:
+            self.assertTrue(m_cli.preauth(backend()))
             run.assert_not_called()
-        with patch.object(loq.os, "geteuid", return_value=1000), patch.object(loq.subprocess, "run") as run:
-            self.assertTrue(loq.preauth(backend(remote=True)))
-            self.assertTrue(loq.preauth(backend(caps={"attributes": {}, "modes": []})))
+        with patch.object(os, "geteuid", return_value=1000), patch.object(subprocess, "run") as run:
+            self.assertTrue(m_cli.preauth(backend(remote=True)))
+            self.assertTrue(m_cli.preauth(backend(caps={"attributes": {}, "modes": []})))
             run.assert_not_called()
-        with patch.object(loq.os, "geteuid", return_value=1000), \
-             patch.object(loq.shutil, "which", return_value="/usr/bin/sudo"):
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(shutil, "which", return_value="/usr/bin/sudo"):
             with run_with({nv: 0}) as run:
-                self.assertTrue(loq.preauth(backend()))
+                self.assertTrue(m_cli.preauth(backend()))
                 self.assertEqual(run.call_count, 1)
             with run_with({nv: 1, ("sudo", "-v"): 0}), patch("builtins.print"):
-                self.assertTrue(loq.preauth(backend()))
+                self.assertTrue(m_cli.preauth(backend()))
             with run_with({nv: 1, ("sudo", "-v"): 1}), patch("builtins.print"):
-                self.assertFalse(loq.preauth(backend()))
-        with patch.object(loq.os, "geteuid", return_value=1000), \
-             patch.object(loq.shutil, "which", return_value=None):
-            self.assertFalse(loq.preauth(backend()))
+                self.assertFalse(m_cli.preauth(backend()))
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(shutil, "which", return_value=None):
+            self.assertFalse(m_cli.preauth(backend()))
 
     def test_apply_batch_stops_at_first_failure(self):
         self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
-        results = loq.apply_batch(self.hw, [["ppt_pl1_spl", 500], ["cpu_temp", 90]])
+        results = m_hardware.apply_batch(self.hw, [["ppt_pl1_spl", 500], ["cpu_temp", 90]])
         self.assertEqual([r["status"] for r in results], ["FAILED", "NOT SENT"])
         self.assertIn("between", results[0]["error"])
         self.assertEqual(results[1]["current"], 80)
         self.assertEqual((self.attr.parent / "cpu_temp/current_value").read_text().strip(), "80")
         self.assertEqual((self.attr / "current_value").read_text().strip(), "50")
-        results = loq.apply_batch(self.hw, [["ppt_pl1_spl", 60]])
+        results = m_hardware.apply_batch(self.hw, [["ppt_pl1_spl", 60]])
         self.assertEqual((results[0]["status"], results[0]["before"], results[0]["current"]), ("APPLIED", 50, 60))
 
     def test_apply_batch_validates_before_writing(self):
         self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
         bad = ["x", [], [["ppt_pl1_spl"]], [["gpu_mode", 1]], [["ppt_pl1_spl", True]],
                [["ppt_pl1_spl", 60], ["ppt_pl1_spl", 65]], [["mode", "balanced"], ["ppt_pl1_spl", 60]],
-               [["mode", 3]], [["ppt_pl1_spl", 60]] * (len(loq.FIELDS) + 2)]
+               [["mode", 3]], [["ppt_pl1_spl", 60]] * (len(m_common.FIELDS) + 2)]
         for changes in bad:
-            with self.assertRaises(loq.ControlError, msg=repr(changes)):
-                loq.apply_batch(self.hw, changes)
+            with self.assertRaises(m_common.ControlError, msg=repr(changes)):
+                m_hardware.apply_batch(self.hw, changes)
         self.assertEqual((self.attr / "current_value").read_text().strip(), "50")
         self.assertEqual((self.root / "class/platform-profile/platform-profile-0/profile").read_text(), "custom")
 
     def test_apply_subcommand_prints_json(self):
         out = io.StringIO()
-        with patch.object(loq, "Hardware", return_value=self.hw), contextlib.redirect_stdout(out):
-            self.assertEqual(loq.main(["_apply", json.dumps([["ppt_pl1_spl", 60]])]), 0)
+        with patch.object(m_cli, "Hardware", return_value=self.hw), contextlib.redirect_stdout(out):
+            self.assertEqual(m_cli.main(["_apply", json.dumps([["ppt_pl1_spl", 60]])]), 0)
         self.assertEqual(json.loads(out.getvalue())[0]["status"], "APPLIED")
 
     def test_draw_unlocked_selected_row(self):
@@ -550,7 +555,7 @@ class FirmwareTests(unittest.TestCase):
     def test_empty_state_does_not_crash_handle(self):
         dashboard = self.dashboard()
         dashboard.panel = "main"
-        dashboard.keyboard = loq.Keyboard(binary="/usr/bin/false",
+        dashboard.keyboard = m_keyboard.Keyboard(binary="/usr/bin/false",
                                           config=Path(self.temp.name) / "missing.json")
         dashboard.handle(ord("j"), {})
         dashboard.handle(ord("l"), {})
@@ -559,15 +564,15 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(dashboard.panel, "main")
 
     def test_keyboard_color_helpers(self):
-        self.assertEqual(loq.rgb_to_hex(242, 118, 10), "f2760a")
-        self.assertEqual(loq.hex_to_rgb("f2760a"), (242, 118, 10))
-        with self.assertRaises(loq.ControlError):
-            loq.hex_to_rgb("gg0000")
-        h, s, v = loq.rgb_to_hsv(255, 0, 0)
+        self.assertEqual(m_colors.rgb_to_hex(242, 118, 10), "f2760a")
+        self.assertEqual(m_colors.hex_to_rgb("f2760a"), (242, 118, 10))
+        with self.assertRaises(m_common.ControlError):
+            m_colors.hex_to_rgb("gg0000")
+        h, s, v = m_colors.rgb_to_hsv(255, 0, 0)
         self.assertAlmostEqual(h, 0, delta=0.1)
         self.assertGreater(s, 99)
         self.assertGreater(v, 99)
-        self.assertEqual(loq.rgb_to_hex(*loq.hsv_to_rgb(120, 100, 100)), "00ff00")
+        self.assertEqual(m_colors.rgb_to_hex(*m_colors.hsv_to_rgb(120, 100, 100)), "00ff00")
 
     def test_keyboard_status_loads_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -576,7 +581,7 @@ class FirmwareTests(unittest.TestCase):
                 "effect": "breath", "speed": 3, "brightness": 1,
                 "waveDir": "rtl", "zones": ["ff0000", "00ff00"],
             }))
-            kb = loq.Keyboard(binary="/usr/bin/false", config=config)
+            kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
             status = kb.status()
             self.assertEqual(status["effect"], "breath")
             self.assertEqual(status["speed"], 3)
@@ -592,8 +597,8 @@ class FirmwareTests(unittest.TestCase):
             os.environ.setdefault("TERM", "xterm-256color")
             try:
                 def run(screen):
-                    backend = loq.Backend()
-                    dash = loq.Dashboard(screen, backend)
+                    backend = m_backend.Backend()
+                    dash = m_ui.Dashboard(screen, backend)
                     state = {
                         "model": "test", "mode": "balanced",
                         "modes": ["balanced", "custom"],
@@ -609,7 +614,7 @@ class FirmwareTests(unittest.TestCase):
                     dash.draw(state)
                     sys.stdout.write("TUI_OK\n")
                     sys.stdout.flush()
-                loq.curses.wrapper(run)
+                curses.wrapper(run)
             except Exception as exc:
                 sys.stdout.write("TUI_FAIL " + repr(exc) + "\n")
                 sys.stdout.flush()
@@ -654,28 +659,39 @@ class FirmwareTests(unittest.TestCase):
         self.assertIn(b"TUI_OK", out)
 
     def test_import_does_not_load_heavy_modules(self):
-        repo = str(Path(loq.__file__).resolve().parent)
         code = (
-            "import sys; sys.path.insert(0, %r); import loqctl; "
-            "print('_curses' in sys.modules, any(type(sys.modules.get(m)).__name__ == 'module' "
-            "for m in ('socketserver', 'http.server', 'http.client', 'curses', 'csv')))" % repo
+            "import sys; sys.path.insert(0, %r); import loqctl.cli as c; "
+            "r = c.main(['--version']); "
+            "print(r, '_curses' in sys.modules, 'loqctl.ui' in sys.modules, "
+            "any(type(sys.modules.get(m)).__name__ == 'module' "
+            "for m in ('socketserver', 'http.server', 'http.client', 'curses', 'csv')))" % str(REPO)
         )
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
-        self.assertEqual(out.stdout.split(), ["False", "False"])
-        ver = subprocess.run([sys.executable, loq.__file__, "--version"], capture_output=True, text=True)
-        self.assertEqual(ver.returncode, 0)
-        self.assertEqual(ver.stdout.strip(), loq.VERSION)
+        self.assertEqual(out.stdout.split(), [loqctl.VERSION, "0", "False", "False", "False"])
+
+    def test_entry_script_runs_isolated(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            ver = subprocess.run([sys.executable, "-I", str(REPO / "loqctl.py"), "--version"],
+                                 capture_output=True, text=True, cwd=cwd)
+        self.assertEqual(ver.returncode, 0, ver.stderr)
+        self.assertEqual(ver.stdout.strip(), loqctl.VERSION)
+
+    def test_package_main(self):
+        ver = subprocess.run([sys.executable, "-m", "loqctl", "--version"],
+                             capture_output=True, text=True, cwd=REPO)
+        self.assertEqual(ver.returncode, 0, ver.stderr)
+        self.assertEqual(ver.stdout.strip(), loqctl.VERSION)
 
     def test_main_rejects_old_python(self):
         err = io.StringIO()
-        with patch.object(loq.sys, "version_info", (3, 9, 0)), contextlib.redirect_stderr(err):
-            self.assertEqual(loq.main(["--version"]), 1)
+        with patch.object(sys, "version_info", (3, 9, 0)), contextlib.redirect_stderr(err):
+            self.assertEqual(m_cli.main(["--version"]), 1)
         self.assertIn("3.10", err.getvalue())
 
 
 class KeyboardWorkerTests(unittest.TestCase):
     def kb(self, config=None):
-        return loq.Keyboard(binary="/usr/bin/false", config=config or "/nonexistent/loqctl.json")
+        return m_keyboard.Keyboard(binary="/usr/bin/false", config=config or "/nonexistent/loqctl.json")
 
     def test_keyboard_command_matches_effects(self):
         kb = self.kb()
@@ -692,7 +708,7 @@ class KeyboardWorkerTests(unittest.TestCase):
             kb.effect = effect
             self.assertEqual(kb.command(), argv)
         kb.effect = "bogus"
-        with self.assertRaises(loq.ControlError):
+        with self.assertRaises(m_common.ControlError):
             kb.command()
 
     def test_keyboard_run_does_not_reload_config(self):
@@ -701,8 +717,8 @@ class KeyboardWorkerTests(unittest.TestCase):
             config.write_text(json.dumps({"zones": ["aaaaaa"] * 4}))
             kb = self.kb(config)
             kb.zones = ["bbbbbb"] * 4
-            with patch.object(loq.shutil, "which", return_value="/bin/x"), \
-                    patch.object(loq.subprocess, "run", return_value=Mock(returncode=0, stdout="ok", stderr="")):
+            with patch.object(shutil, "which", return_value="/bin/x"), \
+                    patch.object(subprocess, "run", return_value=Mock(returncode=0, stdout="ok", stderr="")):
                 kb._run(["off"])
             self.assertEqual(kb.zones, ["bbbbbb"] * 4)
 
@@ -824,41 +840,41 @@ class Stage5Tests(unittest.TestCase):
         return path
 
     def test_socket_alive(self):
-        self.assertFalse(loq.socket_alive(self.root / "missing"))
+        self.assertFalse(m_api.socket_alive(self.root / "missing"))
         regular = self.root / "file"
         regular.write_text("x")
-        self.assertFalse(loq.socket_alive(regular))
-        self.assertFalse(loq.socket_alive(self.stale_socket()))
+        self.assertFalse(m_api.socket_alive(regular))
+        self.assertFalse(m_api.socket_alive(self.stale_socket()))
         live = self.root / "live.sock"
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.addCleanup(server.close)
         server.bind(str(live))
         server.listen(1)
-        self.assertTrue(loq.socket_alive(live))
+        self.assertTrue(m_api.socket_alive(live))
 
     def test_backend_ignores_stale_socket(self):
         path = self.stale_socket()
-        backend = loq.Backend(path)
+        backend = m_backend.Backend(path)
         self.assertFalse(backend.remote)
         self.assertIn("Ignored stale API socket", backend.notice)
-        self.assertEqual(loq.Backend(str(self.root / "none")).notice, "")
+        self.assertEqual(m_backend.Backend(str(self.root / "none")).notice, "")
 
     def test_serve_unlink_rules(self):
         regular = self.root / "file"
         regular.write_text("x")
-        with self.assertRaises(loq.ControlError):
-            loq.prepare_socket_path(regular)
+        with self.assertRaises(m_common.ControlError):
+            m_api.prepare_socket_path(regular)
         self.assertTrue(regular.exists())
         stale = self.stale_socket()
         link = self.root / "link"
         link.symlink_to(stale)
-        with self.assertRaises(loq.ControlError):
-            loq.prepare_socket_path(link)
+        with self.assertRaises(m_common.ControlError):
+            m_api.prepare_socket_path(link)
         self.assertTrue(link.is_symlink())
         self.assertTrue(Path(stale).exists())
-        loq.prepare_socket_path(self.root / "absent")
+        m_api.prepare_socket_path(self.root / "absent")
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            loq.prepare_socket_path(stale)
+            m_api.prepare_socket_path(stale)
         self.assertFalse(Path(stale).exists())
         self.assertIn("Removed stale socket", out.getvalue())
         live = self.root / "live.sock"
@@ -866,17 +882,17 @@ class Stage5Tests(unittest.TestCase):
         self.addCleanup(server.close)
         server.bind(str(live))
         server.listen(1)
-        with self.assertRaisesRegex(loq.ControlError, "already running"):
-            loq.prepare_socket_path(live)
+        with self.assertRaisesRegex(m_common.ControlError, "already running"):
+            m_api.prepare_socket_path(live)
         self.assertTrue(live.exists())
 
     def test_serve_warns_without_sudo_uid(self):
-        self.assertIn("SUDO_UID", loq.serve_uid_warning(0, {}))
-        self.assertIsNone(loq.serve_uid_warning(0, {"SUDO_UID": "0"}))
-        self.assertIsNone(loq.serve_uid_warning(1000, {}))
+        self.assertIn("SUDO_UID", m_api.serve_uid_warning(0, {}))
+        self.assertIsNone(m_api.serve_uid_warning(0, {"SUDO_UID": "0"}))
+        self.assertIsNone(m_api.serve_uid_warning(1000, {}))
 
     def sampler(self, hardware):
-        sampler = loq.Sampler.__new__(loq.Sampler)
+        sampler = m_sensors.Sampler.__new__(m_sensors.Sampler)
         sampler.hardware = hardware
         sampler.sensors = Mock()
         sampler.sensors.sample.return_value = {"cpu": {}}
@@ -904,7 +920,7 @@ class Stage5Tests(unittest.TestCase):
         hardware = Mock()
         hardware.capabilities.return_value = {"mode": "custom"}
         sampler = self.sampler(hardware)
-        with patch.object(loq.time, "monotonic") as clock:
+        with patch.object(time, "monotonic") as clock:
             clock.return_value = 100.0
             sampler.tick()
             self.assertEqual(hardware.capabilities.call_count, 1)
@@ -922,14 +938,14 @@ class Stage5Tests(unittest.TestCase):
     def test_apply_refreshes_backend(self):
         hw = Mock()
         refreshed = []
-        dashboard = object.__new__(loq.Dashboard)
+        dashboard = object.__new__(m_ui.Dashboard)
         dashboard.backend = type("Backend", (), {"refresh": lambda self: refreshed.append(1)})()
         dashboard.notice = ""
         dashboard.pending = {}
         dashboard.apply({})
         self.assertEqual(refreshed, [1])
-        with patch.object(loq.Dashboard, "_apply", side_effect=loq.ControlError("x")):
-            with self.assertRaises(loq.ControlError):
+        with patch.object(m_ui.Dashboard, "_apply", side_effect=m_common.ControlError("x")):
+            with self.assertRaises(m_common.ControlError):
                 dashboard.apply({})
         self.assertEqual(refreshed, [1, 1])
 
@@ -982,7 +998,7 @@ class Stage6Tests(unittest.TestCase):
         self.put("bus/pci/devices/0000:01:00.0/power/runtime_status", status + "\n")
 
     def test_nvml_reads_devices(self):
-        devices = loq.NVML(FakeNVML()).read()
+        devices = m_sensors.NVML(FakeNVML()).read()
         self.assertEqual(len(devices), 1)
         d = devices[0]
         self.assertEqual((d["name"], d["temperature_c"], d["power_w"], d["power_limit_w"]),
@@ -991,32 +1007,32 @@ class Stage6Tests(unittest.TestCase):
         self.assertEqual((d["memory_used_mib"], d["memory_total_mib"]), (2048, 8192))
 
     def test_nvml_unsupported_field_is_none(self):
-        d = loq.NVML(FakeNVML(bad={"power"})).read()[0]
+        d = m_sensors.NVML(FakeNVML(bad={"power"})).read()[0]
         self.assertIsNone(d["power_w"])
         self.assertEqual(d["temperature_c"], 51)
         self.assertEqual(d["power_limit_w"], 80.0)
 
     def test_nvml_failure_falls_back_to_nvidia_smi(self):
-        sensors = loq.Sensors(self.root, self.root / "proc")
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
         csv_out = "RTX Test, 50, 20.5, 80, 300, 405, 7, 100, 8192\n"
         run = Mock(return_value=Mock(returncode=0, stdout=csv_out))
         with patch("ctypes.CDLL", side_effect=OSError("no lib")), \
-                patch.object(loq.shutil, "which", return_value="/x/nvidia-smi"), \
-                patch.object(loq.subprocess, "run", run):
+                patch.object(shutil, "which", return_value="/x/nvidia-smi"), \
+                patch.object(subprocess, "run", run):
             gpu = sensors.gpu()
             self.assertTrue(sensors.nvml.failed)
         self.assertEqual(gpu["source"], "nvidia-smi")
         self.assertEqual(gpu["devices"][0]["power_w"], 20.5)
         self.assertEqual(run.call_args[0][0][0], "/x/nvidia-smi")
-        with patch.object(loq.shutil, "which", return_value=None):
+        with patch.object(shutil, "which", return_value=None):
             self.assertEqual(sensors.gpu(), {"available": False, "error": "NVIDIA driver unavailable"})
 
     def test_gpu_skipped_while_suspended(self):
-        sensors = loq.Sensors(self.root, self.root / "proc")
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
         sensors.nvml = Mock()
         sensors.nvml.read.return_value = []
         self.pci("suspended")
-        with patch.object(loq.subprocess, "run") as run:
+        with patch.object(subprocess, "run") as run:
             gpu = sensors.gpu()
         self.assertTrue(gpu["suspended"])
         self.assertFalse(gpu["available"])
@@ -1031,17 +1047,17 @@ class Stage6Tests(unittest.TestCase):
         new = {"ppt_pl1_spl_cl", "ppt_pl2_sppt_cl", "ppt_pl3_fppt", "ppt_pl3_fppt_cl", "ppt_pl4_ipl",
                "ppt_pl4_ipl_cl", "ppt_pl1_apu_spl", "gpu_nv_bpl", "gpu_nv_cpu_boost"}
         for key in new:
-            self.assertIn(key, loq.FIELDS)
-            self.assertLessEqual(len(loq.FIELDS[key][0]), 20)
-            self.assertEqual(loq.FIELDS[key][1], "W")
+            self.assertIn(key, m_common.FIELDS)
+            self.assertLessEqual(len(m_common.FIELDS[key][0]), 20)
+            self.assertEqual(m_common.FIELDS[key][1], "W")
         forbidden = ("dgpu_enable", "gpu_mode", "dgpu_didvid", "dgpu_boost_clk")
         for key in forbidden:
-            self.assertNotIn(key, loq.FIELDS)
+            self.assertNotIn(key, m_common.FIELDS)
         attr = self.root / "class/firmware-attributes/lenovo-wmi-other-0/attributes/dgpu_enable"
         attr.mkdir(parents=True)
         (attr / "current_value").write_text("0")
-        with self.assertRaises(loq.ControlError):
-            loq.Hardware(self.root).set_value("dgpu_enable", 1)
+        with self.assertRaises(m_common.ControlError):
+            m_hardware.Hardware(self.root).set_value("dgpu_enable", 1)
 
     def hwmon(self, n, name, temps):
         self.put(f"class/hwmon/hwmon{n}/name", name)
@@ -1051,7 +1067,7 @@ class Stage6Tests(unittest.TestCase):
                 self.put(f"class/hwmon/hwmon{n}/temp{i}_label", label)
 
     def temp_of(self):
-        return loq.Sensors.cpu_temperature(sorted((self.root / "class/hwmon").glob("hwmon*")))
+        return m_sensors.Sensors.cpu_temperature(sorted((self.root / "class/hwmon").glob("hwmon*")))
 
     def test_cpu_temperature_labels(self):
         self.assertEqual(self.temp_of(), (None, None))
@@ -1074,9 +1090,9 @@ class Stage6Tests(unittest.TestCase):
         self.put("class/powercap/intel-rapl:0/max_energy_range_uj", "262143328850")
         self.put("proc/uptime", "10 5")
         self.put("proc/meminfo", "MemTotal: 1024 kB\nMemAvailable: 512 kB")
-        sensors = loq.Sensors(self.root, self.root / "proc")
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
         sensors.gpu = lambda: {"available": False}
-        with patch.object(loq.time, "monotonic", side_effect=[100.0, 100.0, 102.0, 102.0]):
+        with patch.object(time, "monotonic", side_effect=[100.0, 100.0, 102.0, 102.0]):
             first = sensors.sample()
             self.put("class/powercap/intel-rapl:0/energy_uj", "21000000")
             second = sensors.sample()
@@ -1085,15 +1101,15 @@ class Stage6Tests(unittest.TestCase):
         self.assertEqual(second["cpu"]["temperature_source"], "Tctl")
 
     def test_legionaura_resolved_via_path(self):
-        kb = loq.Keyboard(binary="legionaura", config="/nonexistent/loqctl.json")
+        kb = m_keyboard.Keyboard(binary="legionaura", config="/nonexistent/loqctl.json")
         run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
-        with patch.object(loq.shutil, "which", return_value="/opt/bin/legionaura"), \
-                patch.object(loq.subprocess, "run", run):
+        with patch.object(shutil, "which", return_value="/opt/bin/legionaura"), \
+                patch.object(subprocess, "run", run):
             self.assertEqual(kb._run(["off"]), "ok")
             self.assertEqual(kb.status()["binary"], "/opt/bin/legionaura")
         self.assertEqual(run.call_args[0][0], ["/opt/bin/legionaura", "off"])
-        with patch.object(loq.shutil, "which", return_value=None):
-            with self.assertRaisesRegex(loq.ControlError, "not found"):
+        with patch.object(shutil, "which", return_value=None):
+            with self.assertRaisesRegex(m_common.ControlError, "not found"):
                 kb._run(["off"])
 
 
@@ -1113,7 +1129,7 @@ class Stage8Tests(unittest.TestCase):
         path.write_text(text)
 
     def sensors(self):
-        s = loq.Sensors(self.root, self.root / "proc", self.root / "dev")
+        s = m_sensors.Sensors(self.root, self.root / "proc", self.root / "dev")
         s.gpu = lambda: {"available": False}
         return s
 
@@ -1127,7 +1143,7 @@ class Stage8Tests(unittest.TestCase):
                      ("intel-rapl-mmio:0", "package-0")):
             self.rapl(d, n, 1000000)
         s = self.sensors()
-        with patch.object(loq.time, "monotonic", side_effect=[0, 0, 0, 2, 2, 2]):
+        with patch.object(time, "monotonic", side_effect=[0, 0, 0, 2, 2, 2]):
             s.rapl_power()
             for d, uj in (("intel-rapl:0", 11000000), ("intel-rapl:0:0", 5000000), ("intel-rapl:1", 21000000),
                           ("intel-rapl-mmio:0", 99000000)):
@@ -1182,7 +1198,7 @@ class Stage8Tests(unittest.TestCase):
         self.put("class/hwmon/hwmon0/in0_input", "16415")
         s = self.sensors()
         s.gpu = lambda: {"available": True, "devices": [{"name": "G", "temperature_c": 50}]}
-        with patch.object(loq.os, "geteuid", return_value=1000):
+        with patch.object(os, "geteuid", return_value=1000):
             m = s.sample()
         volts = {v["label"]: v["v"] for v in m["voltages"]}
         self.assertEqual(volts["Battery"], 16.415)
@@ -1195,7 +1211,7 @@ class Stage8Tests(unittest.TestCase):
         s = self.sensors()
         self.put("proc/cpuinfo", "processor : 0\nvendor_id : GenuineIntel\n")
         msr = self.root / "dev/cpu/0/msr"
-        with patch.object(loq.os, "geteuid", return_value=0):
+        with patch.object(os, "geteuid", return_value=0):
             self.assertIsNone(s.cpu_vcore())  # no msr node
             msr.parent.mkdir(parents=True)
             msr.write_bytes(bytes(0x198) + (0x2000 << 32).to_bytes(8, "little"))
@@ -1203,7 +1219,7 @@ class Stage8Tests(unittest.TestCase):
             self.put("proc/cpuinfo", "vendor_id : AuthenticAMD\n")
             self.assertIsNone(s.cpu_vcore())
         self.put("proc/cpuinfo", "vendor_id : GenuineIntel\n")
-        with patch.object(loq.os, "geteuid", return_value=1000):
+        with patch.object(os, "geteuid", return_value=1000):
             self.assertIsNone(s.cpu_vcore())
 
     def test_cpu_throttle_deltas(self):
@@ -1224,8 +1240,8 @@ class Stage8Tests(unittest.TestCase):
     def test_nvml_throttle_reasons(self):
         lib = FakeNVML()
         lib.nvmlDeviceGetCurrentClocksEventReasons = lambda h, box: (setattr(box._obj, "value", 0x1 | 0x4 | 0x40), 0)[1]
-        self.assertEqual(loq.NVML(lib).read()[0]["throttle"], ["sw_power_cap", "hw_thermal"])
-        self.assertIsNone(loq.NVML(FakeNVML()).read()[0]["throttle"])
+        self.assertEqual(m_sensors.NVML(lib).read()[0]["throttle"], ["sw_power_cap", "hw_thermal"])
+        self.assertIsNone(m_sensors.NVML(FakeNVML()).read()[0]["throttle"])
 
     def test_slow_sources_cached_for_5s(self):
         s = self.sensors()
@@ -1237,9 +1253,9 @@ class Stage8Tests(unittest.TestCase):
         self.assertEqual(s.read_slow.call_count, 2)
 
     def stub_dash(self, h=30, w=100):
-        dash = loq.Dashboard.__new__(loq.Dashboard)
-        dash.theme = loq.Theme(False)
-        dash.history = {k: loq.collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
+        dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
+        dash.theme = m_ui.Theme(False)
+        dash.history = {k: m_ui.collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
         dash.view = "summary"
         dash.s = Mock()
         dash.s.getmaxyx.return_value = (h, w)
