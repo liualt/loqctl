@@ -84,7 +84,7 @@ def _api_classes():
 
             def do_GET(self):
                 if self.path == "/v1/status":
-                    self.reply(200, {**self.server.sampler.latest, **self.server.hardware.capabilities()})
+                    self.reply(200, self.server.sampler.latest)
                 elif self.path == "/v1/metrics":
                     self.reply(200, self.server.sampler.latest.get("metrics", {}))
                 elif self.path == "/v1/capabilities":

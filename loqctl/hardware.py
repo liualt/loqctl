@@ -38,26 +38,43 @@ class Hardware:
         with self.lock:
             self._limits, self._limits_tried = (table, None if table else reason), True
 
+    def read_mode(self):
+        return read(self.profile)
+
+    def read_attribute(self, key):
+        """One attribute's current_value as int, or None when missing or unreadable."""
+        path = self.base / key / "current_value" if self.base and key in FIELDS else None
+        try:
+            return int(read(path)) if path else None
+        except (ValueError, TypeError):
+            return None
+
+    def _read_item(self, key, mode, table):
+        label, unit = FIELDS[key]
+        path = self.base / key if self.base else None
+        if path is None or not path.is_dir():
+            return None
+        item = {"label": label, "unit": unit, "description": read(path / "display_name", label)}
+        for name in ("current_value", "min_value", "max_value", "default_value", "scalar_increment"):
+            value = read(path / name)
+            try:
+                item[name] = int(value)
+            except (ValueError, TypeError):
+                item[name] = None
+        item["available"] = all(item[n] is not None for n in
+                                ("current_value", "min_value", "max_value", "scalar_increment"))
+        item["effective_value"] = effective_value(mode, key, item["current_value"], table)
+        return item
+
     def capabilities(self):
         with self.lock:
             attrs = {}
-            mode = read(self.profile)
+            mode = self.read_mode()
             table, reason = self.mode_limits()
-            for key, (label, unit) in FIELDS.items():
-                path = self.base / key if self.base else None
-                if path is None or not path.is_dir():
-                    continue
-                item = {"label": label, "unit": unit, "description": read(path / "display_name", label)}
-                for name in ("current_value", "min_value", "max_value", "default_value", "scalar_increment"):
-                    value = read(path / name)
-                    try:
-                        item[name] = int(value)
-                    except (ValueError, TypeError):
-                        item[name] = None
-                item["available"] = all(item[n] is not None for n in
-                                        ("current_value", "min_value", "max_value", "scalar_increment"))
-                item["effective_value"] = effective_value(mode, key, item["current_value"], table)
-                attrs[key] = item
+            for key in FIELDS:
+                item = self._read_item(key, mode, table)
+                if item:
+                    attrs[key] = item
             return {"model": read(self.root / "class/dmi/id/product_name", "Lenovo LOQ"),
                     "mode": mode, "modes": (read(self.choices, "") or "").split(),
                     "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
@@ -78,20 +95,19 @@ class Hardware:
 
     def set_mode(self, mode):
         with self.lock:
-            caps = self.capabilities()
-            if not isinstance(mode, str) or mode not in caps["modes"]:
+            previous = self.read_mode()
+            if not isinstance(mode, str) or mode not in (read(self.choices, "") or "").split():
                 raise ControlError("Unsupported platform mode.")
             actual = self._write(self.profile, mode)
-            return {"mode": mode, "previous": caps["mode"], "current": actual, "verified": True}
+            return {"mode": mode, "previous": previous, "current": actual, "verified": True}
 
     def set_value(self, key, value):
         with self.lock:
-            caps = self.capabilities()
-            if key not in FIELDS or key not in caps["attributes"]:
+            item = self._read_item(key, None, None) if key in FIELDS else None
+            if item is None:
                 raise ControlError("Unknown or unavailable control.")
-            if caps["mode"] != "custom":
+            if self.read_mode() != "custom":
                 raise ControlError("Select custom mode before changing firmware limits.")
-            item = caps["attributes"][key]
             if not item["available"]:
                 raise ControlError("Firmware did not report usable limits for this control.")
             if type(value) is not int:
@@ -132,10 +148,7 @@ def apply_batch(hardware, changes):
         raise ControlError("Mode and limits are never applied together.")
 
     def current(key):
-        caps = hardware.capabilities()
-        if key == "mode":
-            return caps.get("mode")
-        return caps.get("attributes", {}).get(key, {}).get("current_value")
+        return hardware.read_mode() if key == "mode" else hardware.read_attribute(key)
 
     results, stopped = [], False
     for key, value in changes:

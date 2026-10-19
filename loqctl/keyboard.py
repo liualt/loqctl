@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import threading
+import time
 
 from .colors import hex_to_rgb, rgb_to_hex
 from .common import LEGIONAURA, LEGIONAURA_CONFIG, ControlError, clamp
@@ -35,11 +36,19 @@ class Keyboard:
         self._running = False
         self._stop = False
         self._thread = None
+        self._found = (False, None)  # (available, monotonic time of the last PATH lookup)
         self.load()
 
     @property
     def available(self):
-        return bool(shutil.which(self.binary))
+        found, when = self._found
+        if when is None or time.monotonic() - when >= 5:
+            found = bool(shutil.which(self.binary))
+            self._found = (found, time.monotonic())
+        return found
+
+    def recheck(self):
+        self._found = (False, None)
 
     def load(self, force=False):
         if self.dirty and not force:
@@ -48,16 +57,24 @@ class Keyboard:
             data = json.loads(self.config.read_text())
         except (OSError, json.JSONDecodeError, TypeError):
             return
-        self.effect = data.get("effect", self.effect)
-        self.speed = int(data.get("speed", self.speed) or 1)
-        self.brightness = int(data.get("brightness", self.brightness) or 2)
-        wave = data.get("waveDir", "ltr")
-        self.wave_dir = "rtl" if wave == "rtl" else "ltr"
-        zones = data.get("zones") or []
+        if not isinstance(data, dict):
+            return
+        if data.get("effect") in self.EFFECTS:
+            self.effect = data["effect"]
+        try:
+            self.speed = int(data.get("speed", self.speed) or 1)
+        except (ValueError, TypeError):
+            pass
+        try:
+            self.brightness = int(data.get("brightness", self.brightness) or 2)
+        except (ValueError, TypeError):
+            pass
+        self.wave_dir = "rtl" if data.get("waveDir") == "rtl" else "ltr"
+        zones = data.get("zones")
         cleaned = []
-        for zone in zones[:self.ZONES]:
+        for zone in (zones if isinstance(zones, list) else [])[:self.ZONES]:
             try:
-                cleaned.append(rgb_to_hex(*hex_to_rgb(zone)))
+                cleaned.append(rgb_to_hex(*hex_to_rgb(zone)) if isinstance(zone, str) else "ffffff")
             except ControlError:
                 cleaned.append("ffffff")
         while len(cleaned) < self.ZONES:

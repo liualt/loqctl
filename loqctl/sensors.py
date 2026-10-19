@@ -13,8 +13,27 @@ import time
 from .common import (GROUP_ORDER, SLOW_INTERVAL, TEMP_GROUPS, THROTTLE_BITS, _lazy, number, read, scaled)
 from .hardware import Hardware
 
+DISCOVERY_INTERVAL = 60  # seconds between sysfs directory re-scans
+
 csv = _lazy("csv")
 re = _lazy("re")
+
+_NVML_STRUCTS = None
+
+
+def _nvml_structs(ct):
+    """Util and Mem ctypes Structures, built once on first use (ctypes is imported lazily)."""
+    global _NVML_STRUCTS
+    if _NVML_STRUCTS is None:
+        class Util(ct.Structure):
+            _fields_ = [("gpu", ct.c_uint), ("memory", ct.c_uint)]
+
+        class Mem(ct.Structure):
+            _fields_ = [("total", ct.c_ulonglong), ("free", ct.c_ulonglong), ("used", ct.c_ulonglong)]
+
+        _NVML_STRUCTS = (Util, Mem)
+    return _NVML_STRUCTS
+
 
 class NVML:
     """NVIDIA management library through ctypes; read() is None when unusable."""
@@ -52,11 +71,7 @@ class NVML:
                 return None
         ct, lib = self.ctypes, self.lib
 
-        class Util(ct.Structure):
-            _fields_ = [("gpu", ct.c_uint), ("memory", ct.c_uint)]
-
-        class Mem(ct.Structure):
-            _fields_ = [("total", ct.c_ulonglong), ("free", ct.c_ulonglong), ("used", ct.c_ulonglong)]
+        Util, Mem = _nvml_structs(ct)
 
         def value(call, kind, *args):
             box = kind()
@@ -118,6 +133,15 @@ class Sensors:
         self.previous_throttle = None
         self.slow = None
         self.slow_at = None
+        self.found = {}  # discovery cache: name -> (paths, monotonic time of the scan)
+
+    def discover(self, name, scan):
+        """Paths from scan(), re-scanned at most every DISCOVERY_INTERVAL (hot-plug, module load)."""
+        cached = self.found.get(name)
+        now = time.monotonic()
+        if cached is None or now - cached[1] >= DISCOVERY_INTERVAL:
+            cached = self.found[name] = (scan(), now)
+        return cached[0]
 
     def cpu_usage(self):
         result = {}
@@ -181,12 +205,12 @@ class Sensors:
         return self.rapl_power()[1:]
 
     def gpu_suspended(self):
-        for path in self.root.glob("bus/pci/devices/*"):
-            if (read(path / "vendor", "") or "") == "0x10de" and \
-                    (read(path / "class", "") or "").startswith("0x03") and \
-                    read(path / "power/runtime_status") == "suspended":
-                return True
-        return False
+        def scan():
+            return [path for path in self.root.glob("bus/pci/devices/*")
+                    if (read(path / "vendor", "") or "") == "0x10de"
+                    and (read(path / "class", "") or "").startswith("0x03")]
+        return any(read(path / "power/runtime_status") == "suspended"
+                   for path in self.discover("nvidia_display", scan))
 
     def gpu(self):
         if self.gpu_suspended():  # querying would wake the dGPU
@@ -269,11 +293,15 @@ class Sensors:
 
     def cpu_throttle(self):
         cpus = sorted(self.root.glob("devices/system/cpu/cpu[0-9]*/thermal_throttle"))
-        core, package, seen = None, None, set()
+        core, package, seen, cores = None, None, set(), set()
         for path in cpus:
-            if (v := scaled(path / "core_throttle_count")) is not None:
-                core = (core or 0) + v
             cpu = path.parent
+            core_id = read(cpu / "topology/core_id")
+            core_key = (read(cpu / "topology/physical_package_id"), core_id) if core_id is not None else cpu
+            if core_key not in cores:  # SMT siblings share one core counter
+                cores.add(core_key)
+                if (v := scaled(path / "core_throttle_count")) is not None:
+                    core = (core or 0) + v
             pkg = read(cpu / "topology/physical_package_id")
             if pkg is None and cpu.name != "cpu0":
                 continue
@@ -337,13 +365,15 @@ class Sensors:
         now = time.monotonic() if now is None else now
         usage = self.cpu_usage()
         fans = []
-        hwmons = sorted(self.root.glob("class/hwmon/hwmon*"))
+        hwmons = self.discover("hwmon", lambda: sorted(self.root.glob("class/hwmon/hwmon*")))
         for hw in hwmons:
             name = read(hw / "name", "")
             for p in hw.glob("fan*_input"):
                 fans.append({"name": read(p.with_name(p.name.replace("_input", "_label")), name + "/" + p.stem),
                              "rpm": scaled(p)})
-        mhz = [v for p in self.root.glob("devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")
+        freq_paths = self.discover("cpufreq", lambda: sorted(
+            self.root.glob("devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")))
+        mhz = [v for p in freq_paths
                if (v := scaled(p, 1000)) is not None]
         rapl, power, power_source = self.rapl_power()
         temperature, temperature_source = self.cpu_temperature(hwmons)

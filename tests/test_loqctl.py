@@ -86,7 +86,7 @@ class FirmwareTests(unittest.TestCase):
                 self.hw.set_value("ppt_pl1_spl", 60)
 
     def test_unix_api(self):
-        sampler = type("Sampler", (), {"latest": {"metrics": {"cpu": {"power_w": 12}}}})()
+        sampler = type("Sampler", (), {"latest": {"mode": "custom", "metrics": {"cpu": {"power_w": 12}}}})()
         path = str(self.root / "test.sock")
         server = m_api.APIServer(path, self.hw, sampler, os.getuid())
         worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1093,9 +1093,11 @@ class Stage6Tests(unittest.TestCase):
         self.put("proc/meminfo", "MemTotal: 1024 kB\nMemAvailable: 512 kB")
         sensors = m_sensors.Sensors(self.root, self.root / "proc")
         sensors.gpu = lambda: {"available": False}
-        with patch.object(time, "monotonic", side_effect=[100.0, 100.0, 102.0, 102.0]):
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
             first = sensors.sample()
             self.put("class/powercap/intel-rapl:0/energy_uj", "21000000")
+            clock[0] = 102.0
             second = sensors.sample()
         self.assertIsNone(first["cpu"]["power_w"])
         self.assertAlmostEqual(second["cpu"]["power_w"], 10.0)
@@ -1258,6 +1260,7 @@ class Stage8Tests(unittest.TestCase):
         dash.theme = m_ui.Theme(False)
         dash.history = {k: m_ui.collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
         dash.view = "summary"
+        dash.pending, dash.fields, dash.invalid = {}, {}, {}
         dash.s = Mock()
         dash.s.getmaxyx.return_value = (h, w)
         calls = []
@@ -1330,6 +1333,126 @@ class Stage8Tests(unittest.TestCase):
         self.assertEqual(dash.view, "sensors")
         dash.handle(ord("t"), {})
         self.assertEqual(dash.view, "summary")
+
+
+class Stage11Tests(unittest.TestCase):
+    setUp, tearDown, dashboard = FirmwareTests.setUp, FirmwareTests.tearDown, FirmwareTests.dashboard
+
+    def dash(self):
+        dash = self.dashboard()
+        dash.notice = ""
+        dash.backend.remote = False
+        dash.backend.hardware = self.hw
+        dash.panel = "main"
+        dash.show_limits = False
+        dash.view = "summary"
+        dash.running = True
+        dash.keyboard = Mock()
+        return dash
+
+    def test_sudo_failure_keeps_overlay_closed_and_previous_results(self):
+        dash = self.dash()
+        dash.pending = {"ppt_pl1_spl": 60}
+        dash.apply_results = [{"key": "mode", "status": "APPLIED"}]
+        with patch.object(os, "geteuid", return_value=1000), \
+                patch.object(m_ui.Dashboard, "run_sudo_apply", side_effect=m_common.ControlError("sudo expired")):
+            with self.assertRaises(m_common.ControlError):
+                dash._apply(self.hw.capabilities())
+        self.assertFalse(dash.show_results)
+        self.assertEqual(dash.apply_results, [{"key": "mode", "status": "APPLIED"}])
+
+    def test_locked_apply_raises_without_overlay(self):
+        dash = self.dash()
+        dash.pending = {"ppt_pl1_spl": 60}
+        with self.assertRaisesRegex(m_common.ControlError, "locked"):
+            dash._apply({"mode": "balanced"})
+        self.assertFalse(dash.show_results)
+
+    def test_empty_results_never_claim_match(self):
+        dash = self.dash()
+        dash.theme = m_ui.Theme(False)
+        dash.s = Mock()
+        dash.s.getmaxyx.return_value = (30, 100)
+        calls = []
+        dash.put = lambda y, x, text, *a, **k: calls.append(str(text))
+        dash.fill = dash.box = Mock()
+        dash.draw_results()
+        self.assertFalse(any("matched firmware" in c for c in calls))
+
+    def test_external_mode_change_drops_staged_limits(self):
+        dash = self.dash()
+        dash.pending = {"ppt_pl1_spl": 60, "mode": "balanced"}
+        state = self.hw.capabilities()
+        state["mode"] = "performance"
+        dash.handle(ord("?"), state)
+        self.assertEqual(dash.pending, {"mode": "balanced"})
+        self.assertIn("Staged limit edits dropped: mode changed to performance", dash.notice)
+
+    def test_keyboard_load_tolerates_bad_config(self):
+        config = self.root / "kb.json"
+        for text in ('[1, 2]', '{"speed": "fast", "brightness": [], "zones": [5, "zzz", "ff0000"], "effect": "nope"}',
+                     '{"zones": 7}'):
+            config.write_text(text)
+            kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
+            kb.load(force=True)
+            self.assertEqual((kb.effect, kb.speed, kb.brightness), ("static", 1, 2))
+            self.assertEqual(len(kb.zones), 4)
+        config.write_text('{"zones": [5, "ff0000"]}')
+        kb.load(force=True)
+        self.assertEqual(kb.zones, ["ffffff", "ff0000", "ff0000", "ff0000"])
+
+    def test_status_does_not_read_capabilities(self):
+        sampler = type("Sampler", (), {"latest": {"mode": "custom"}})()
+        path = str(self.root / "s.sock")
+        server = m_api.APIServer(path, self.hw, sampler, os.getuid())
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with patch.object(self.hw, "capabilities", side_effect=AssertionError("no")):
+                self.assertEqual(m_api.request(path, "GET", "/v1/status")["mode"], "custom")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_apply_batch_reads_one_attribute(self):
+        for name in ("min_value", "max_value", "scalar_increment", "default_value"):
+            (self.attr / name).write_text((self.attr / name).read_text())
+        with patch.object(self.hw, "capabilities", side_effect=AssertionError("full read")):
+            results = m_hardware.apply_batch(self.hw, [["ppt_pl1_spl", 60]])
+        self.assertEqual((results[0]["before"], results[0]["current"], results[0]["status"]), (50, 60, "APPLIED"))
+
+    def test_discovery_rescans_after_60s(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "proc").mkdir()
+        s = m_sensors.Sensors(root, root / "proc", root / "dev")
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
+            scans = []
+            scan = lambda: scans.append(1) or [1]
+            s.discover("x", scan)
+            clock[0] = 150.0
+            s.discover("x", scan)
+            self.assertEqual(len(scans), 1)
+            clock[0] = 161.0
+            s.discover("x", scan)
+            self.assertEqual(len(scans), 2)
+
+    def test_smt_siblings_counted_once(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        s = m_sensors.Sensors(root, root / "proc", root / "dev")
+        def counts(core):
+            for i, core_id in ((0, "0"), (1, "0"), (2, "1")):
+                base = root / f"devices/system/cpu/cpu{i}"
+                (base / "thermal_throttle").mkdir(parents=True, exist_ok=True)
+                (base / "topology").mkdir(parents=True, exist_ok=True)
+                (base / "thermal_throttle/core_throttle_count").write_text(str(core))
+                (base / "topology/core_id").write_text(core_id)
+                (base / "topology/physical_package_id").write_text("0")
+        counts(1)
+        s.cpu_throttle()
+        counts(3)
+        self.assertEqual(s.cpu_throttle()["core_events"], 4)
 
 
 if __name__ == "__main__":

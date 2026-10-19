@@ -651,7 +651,7 @@ class Dashboard:
                 self.theme.WARN if result["status"] == "NOT SENT" else self.theme.BAD)
             self.put(by + 4 + i, bx + 2, line[: bw - 4], color)
         error = next((r["error"] for r in self.apply_results if r.get("error")),
-                     "All requested values matched firmware readback.")
+                     "All requested values matched firmware readback." if self.apply_results else "No results yet.")
         for i, line in enumerate(textwrap.wrap(error, bw - 4)[:3]):
             self.put(by + bh - 5 + i, bx + 2, line, self.theme.WARN)
         self.put(by + bh - 2, bx + 2, "Enter / Esc closes · v reopens · failed edits remain staged", self.theme.ACCENT)
@@ -761,6 +761,9 @@ class Dashboard:
             self.backend.load_mode_limits()
 
     def read_current(self, key):
+        if not self.backend.remote:
+            hardware = self.backend.hardware
+            return hardware.read_mode() if key == "mode" else hardware.read_attribute(key)
         controls = self.backend.controls()
         if key == "mode":
             return controls.get("mode")
@@ -777,25 +780,26 @@ class Dashboard:
             self.notice = "No pending changes."
             return
         changes = sorted(self.pending.items(), key=lambda pair: pair[0] != "mode")
-        self.apply_results = []
-        self.show_results = True
         completed = 0
         stopped = None
         if any(k != "mode" for k in self.pending) and self.locked(state):
             raise ControlError(f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter.")
         if not (self.backend.remote or os.geteuid() == 0):
-            self.apply_results = self.run_sudo_apply([[k, v] for k, v in changes])
-            self.show_results = True
-            for result in self.apply_results:
+            results = self.run_sudo_apply([[k, v] for k, v in changes])
+            if results:
+                self.apply_results, self.show_results = results, True
+            for result in results:
                 if result["status"] == "APPLIED":
                     self.pending.pop(result["key"], None)
                     self.fields.pop(result["key"], None)
                     completed += 1
-            failed = next((r for r in self.apply_results if r["status"] != "APPLIED"), None)
+            failed = next((r for r in results if r["status"] != "APPLIED"), None)
             if failed:
                 raise ControlError(f"Apply stopped after {completed} writes: {failed.get('error') or failed['status']}")
             self.notice = f"Applied and verified {completed} change(s)."
             return
+        results = self.apply_results = []  # changes is non-empty: every pass appends a result
+        self.show_results = True
         for key, value in changes:
             result = {"key": key, "requested": value, "before": None,
                       "current": None, "status": "NOT SENT", "error": None}
@@ -805,7 +809,7 @@ class Dashboard:
                 pass
             if stopped:
                 result["current"] = result["before"]
-                self.apply_results.append(result)
+                results.append(result)
                 continue
             error = None
             try:
@@ -825,7 +829,7 @@ class Dashboard:
                 result["status"] = "APPLIED"
                 self.pending.pop(key)
                 completed += 1
-            self.apply_results.append(result)
+            results.append(result)
         if stopped:
             raise ControlError(f"Apply stopped after {completed} writes: {stopped}")
         self.notice = f"Applied and verified {completed} change(s)."
@@ -966,16 +970,21 @@ class Dashboard:
                 self.view = "sensors" if self.view == "summary" else "summary"
             elif ch == ord("l"):
                 self.panel = "keyboard"
+                self.keyboard.recheck()
                 self.keyboard.load()
                 self.notice = "Keyboard lighting."
             return
         self.selected = clamp(self.selected, 0, len(rows) - 1)
         key = rows[self.selected]
 
-        if self.locked(state) and (self.fields or self.invalid):
+        stale_staged = any(k != "mode" for k in self.pending)
+        if self.locked(state) and (self.fields or self.invalid or stale_staged):
             # Limit fields only exist for custom mode; drop stale ones if the mode changed.
             self.fields.clear()
             self.invalid.clear()
+            if stale_staged:
+                self.pending = {k: v for k, v in self.pending.items() if k == "mode"}
+                self.notice = f"Staged limit edits dropped: mode changed to {state.get('mode')}."
         unlocked_limit = key != "mode" and not self.locked(state)
         digits = range(48, 58)
 
@@ -989,6 +998,7 @@ class Dashboard:
             self.view = "sensors" if self.view == "summary" else "summary"
         elif ch == ord("l"):
             self.panel = "keyboard"
+            self.keyboard.recheck()
             self.keyboard.load()
             self.notice = "Keyboard lighting. Esc returns."
         elif ch == ord(" "):
