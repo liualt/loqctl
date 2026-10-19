@@ -46,6 +46,8 @@ sudo install -d /usr/local/lib/loqctl && sudo cp -r loqctl loqctl.py /usr/local/
 
 When sudo runs a user-writable file, any process running as you can gain root by editing it.
 
+loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_capdata`, `_fancurve`) run `sudo -n -- python3 -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
+
 Or run it in place with `python3 loqctl.py`.
 
 ## Dashboard
@@ -64,6 +66,8 @@ loqctl
 | `d` | Stage the firmware default for the selected control |
 | `r` | Discard staged edits |
 | `l` | Keyboard lighting panel |
+| `f` | Fan curve panel |
+| `m` | Mode limits overlay: every mode's firmware limits side by side (`Enter` / `Esc` / `m` closes) |
 | `t` | Toggle the full sensors view (temperatures, power, voltages, throttling) |
 | `Space` | Pause telemetry |
 | `v` | Reopen the last apply results |
@@ -109,6 +113,7 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 - The firmware resets the curve when the mode changes and on reboot.
 - The panel shows a chart (fan 1 and fan 2 speed per point) above a table with CPU/GPU/IC up and down temperatures, fan speeds in percent, and read-only accel/decel. "down" is the absolute lower temperature of a step (the `_temp_hyst` file). With the `level` speed unit the editor steps in 10 % levels.
 - `loqctl fan` prints the curve, speed unit and RPM as JSON.
+- Hardware verification pending: the fan curve code is tested with simulated sysfs only, not yet on a real machine.
 
 | Key | Action |
 | --- | --- |
@@ -118,9 +123,11 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 | `Esc` | Clear the cell, or go back when nothing is typed |
 | `r` | Discard all edits |
 | `Enter` | Apply all edits; jumps to the first invalid cell instead |
+| `h j k l` | Same as the arrow keys |
 | `p` | Stage the next preset (`firmware`, `quiet`, `cool`, then saved curves); nothing is written until `Enter` |
 | `W` | Save the staged (or live) curve as `curves/saved-YYYYmmdd-HHMMSS.json` |
 | `f` | Back |
+| `q` | Quit |
 
 Presets: `firmware` is the curve read when the panel first opened this session, `quiet` scales its fan speeds by 0.8 and `cool` by 1.2 (capped at 100 %). Presets are raised to the validation minimums so they always validate. Saved curves live in `~/.config/loqctl/curves/<name>.json` (`XDG_CONFIG_HOME` is respected), listed after the presets by name; one that fails validation or has the wrong point count shows a red "(invalid)" and cannot be staged. After every verified apply the dashboard writes the applied points to `~/.config/loqctl/active.json`. All files are written atomically with mode 0600, by your user only (never by root; nothing is saved while the dashboard runs as root).
 
@@ -136,11 +143,14 @@ Read commands print JSON.
 loqctl status
 loqctl metrics
 loqctl capabilities
+loqctl limits                        # per-mode firmware limits as JSON
 loqctl fan                           # fan curve, speed unit and RPM as JSON
 loqctl mode                          # current mode and available modes
 sudo loqctl mode custom
 sudo loqctl set ppt_pl1_spl 50
 ```
+
+Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_capdata` and `_fancurve` are internal, used via sudo by the dashboard.
 
 `sudo` may not find a `~/.local/bin` install; install system-wide as described above so `sudo loqctl ...` works and the file is root-owned.
 
@@ -167,7 +177,9 @@ Writes check the firmware's min, max and step, write once, then read the value b
 | `gpu_nv_cpu_boost` | GPU power taken from the CPU boost budget | W |
 | `gpu_temp` | GPU temperature limit | °C |
 
-Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show that mode's firmware limits. sysfs `current_value` only holds the custom settings (the firmware returns them in every mode), so loqctl reads the real per-mode defaults from the firmware capability table that the kernel dumps in debugfs (`/sys/kernel/debug/lenovo_wmi/*/capdata`, root only). It reads the table as root once (via sudo, or directly under `sudo loqctl serve`) and caches it per product and BIOS version in `~/.cache/loqctl/mode-limits.json`, so later starts need no sudo. Press `m` for a mode-by-mode overlay, or run `loqctl limits` for the same data as JSON; without root the stock-mode values show N/A. Read-back confirms the configuration, not real workload wattage.
+Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show that mode's firmware limits. sysfs `current_value` only holds the custom settings (the firmware returns them in every mode), so loqctl reads the real per-mode defaults from the firmware capability table that the kernel dumps in debugfs (`/sys/kernel/debug/lenovo_wmi/*/capdata`, root only). It reads the table as root once (via sudo, or directly under `sudo loqctl serve`) and caches it per product and BIOS version in `~/.cache/loqctl/mode-limits.json`, so later starts need no sudo. Press `m` for a mode-by-mode overlay, or run `loqctl limits` for the same data as JSON (`{mode: {attribute: value}}`; custom is the live value, plus an `error` key when the table is unavailable). Without the table the stock-mode values show N/A and the overlay says "Stock-mode limits need root: press `s` or run `sudo loqctl serve`".
+
+The cache is read first and only reread when the product name or BIOS version differs, so a BIOS update triggers one new sudo fetch. To force a refresh, delete `~/.cache/loqctl/mode-limits.json` (`XDG_CACHE_HOME` is respected). The cache is written by your user, mode 0600. Read-back confirms the configuration, not real workload wattage.
 
 ### Telemetry
 
@@ -209,15 +221,17 @@ curl --unix-socket /run/loqctl-$(id -u)/control.sock \
 
 | Method | Endpoint | Body |
 | --- | --- | --- |
-| GET | `/v1/status` | Firmware and telemetry |
-| GET | `/v1/metrics` | Telemetry (about 1 Hz) |
-| GET | `/v1/capabilities` | Modes, bounds, defaults |
+| GET | `/v1/status` | Sampler snapshot: firmware and telemetry (not a fresh read) |
+| GET | `/v1/metrics` | Telemetry from the sampler (about 1 Hz) |
+| GET | `/v1/capabilities` | Modes, bounds, defaults, per-mode limits; read fresh |
 | GET | `/v1/fancurve` | Fan curve, speed unit, RPM (or `available: false`) |
 | POST | `/v1/mode` | `{"mode":"custom"}` |
 | POST | `/v1/attributes/NAME` | `{"value":50}` |
 | POST | `/v1/fancurve` | `{"points":[...]}`, custom mode only, per-field results |
 
 The server allows the user in `SUDO_UID`. If you start it as root without sudo, pass `--uid UID` so your user can connect.
+
+Note: `/v1/status` returns the server's sampler snapshot (refreshed by its polling), while `/v1/capabilities` reads the firmware fresh on each request. There is no `/v1/limits`; per-mode limits are part of the `/v1/capabilities` and `/v1/status` payloads (`mode_limits`, `mode_limits_error`).
 
 Use `--socket PATH` to point the CLI or dashboard at a specific socket. Without it, a socket that does not accept connections is ignored with a notice and loqctl reads locally.
 
@@ -240,6 +254,10 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | "A loqctl server is already running" | Another `loqctl serve` answers on the socket; stop it first. A stale socket is removed automatically |
 | "sudo not authenticated" or "sudo credentials expired" | The sudo cache expired (or you skipped it at start). Press `s` to authenticate; staged edits are kept |
 | "Ignored stale API socket" | A server left its socket behind. loqctl reads locally; restart `sudo loqctl serve` if you want the server |
+| Stock-mode limits show N/A, "needs root" or "debugfs capability table not found" | The capdata table is root-only. Press `s` (or run `sudo loqctl serve`) so loqctl can read it once. "not found" means debugfs is not mounted (`sudo mount -t debugfs none /sys/kernel/debug`) or the driver exposes no `lenovo_wmi` capdata; custom mode still works |
+| "sudo credentials expired" while reading limits or applying | Press `s`; the table read is retried on the next start, staged edits are kept |
+| "Fan curves need the LenovoLegionLinux legion_laptop module" or "legion_laptop hwmon not found" | The `legion_laptop` module is not loaded or its hwmon (`legion_hwmon`) has no curve files. Load it with `enable_platformprofile=0` |
+| Keyboard panel shows defaults or stale colors | `~/.config/legionaura/config.json` is missing, unreadable or not a JSON object; loqctl ignores it silently. Run `legionaura` once to create it |
 | "legionaura not found" | Install LegionAura (AUR package `legionaura` on Arch) |
 | GPU shows offline | Neither `libnvidia-ml` nor `nvidia-smi` (on `PATH`) is usable, or the driver is not loaded. `asleep` means the GPU is runtime-suspended |
 
@@ -247,9 +265,27 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 
 - Linux and Lenovo-WMI hardware only. Tested on a LOQ 15IRX9 (Intel) on CachyOS; not tested on other distros or other Lenovo models.
 - AMD CPU paths (`k10temp`, `zenpower`, RAPL on Zen) are tested with simulated sysfs only.
-- EC temperatures depend on the `legion_laptop` hwmon name, which has not been verified on hardware.
+- Not verified on hardware: fan curve reads and writes (`legion_laptop`), EC temperatures (they depend on the `legion_laptop` hwmon name `legion_hwmon`), the extra attribute keys added to the write allowlist in Stage 6, and the sudo capdata fetch. All are covered by simulated sysfs and mocked subprocess tests.
+- Fan curve re-apply and suspend/resume detection in `serve` are untested on real hardware.
+- Per-mode limits need the firmware capdata table in debugfs; without it stock modes show N/A.
 - Privilege escalation is `sudo` only (no `doas`/`pkexec`).
 - Keyboard RGB depends on the third-party `legionaura` tool.
+
+## Changelog
+
+### 0.3.0
+
+- Per-mode firmware limits from the capdata table, cached per product and BIOS; `m` overlay and `loqctl limits`.
+- Fan curve editor (`f`) over `legion_laptop` hwmon: validated, verified writes, presets, saved curves, `loqctl fan`, `/v1/fancurve`, re-apply in `serve`.
+- Batched `sudo -n` applies with pre-auth and re-auth on expiry; one apply results view (`v`).
+- Telemetry: RAPL domains, temperatures, voltages, throttling, limit markers on the power charts, sensors view (`t`).
+- Portability: PATH lookups, NVML via `ctypes`, no GPU wake-up while suspended, AMD CPU paths, write allowlist.
+- Stale socket recovery, resilient sampler, 5 s firmware polling.
+- Package layout: `loqctl/` package with the `loqctl.py` entry point; Python 3.10 minimum; GPL-3.0-or-later.
+
+### 0.2.0
+
+Previous release.
 
 ## Development
 
