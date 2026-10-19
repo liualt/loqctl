@@ -420,6 +420,7 @@ class Sensors:
 
 class Sampler:
     FIRMWARE_INTERVAL = 5
+    on_firmware = None  # serve hook: called with each good firmware read
 
     def __init__(self, hardware=None):
         self.hardware = hardware or Hardware()
@@ -444,6 +445,11 @@ class Sampler:
                 self.fw_error = None
             except Exception as exc:
                 self.fw_error = str(exc)
+            if self.on_firmware and self.fw_error is None:
+                try:
+                    self.on_firmware(self.caps)
+                except Exception as exc:
+                    print(f"firmware hook failed: {exc}", flush=True)
         error = self.fw_error
         try:
             self.metrics = self.sensors.sample()

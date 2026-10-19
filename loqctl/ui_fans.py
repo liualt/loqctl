@@ -8,8 +8,9 @@ import json
 import os
 
 from .api import http_client
-from .common import ControlError, SudoExpired, _lazy, clamp, sudo_run
-from .fancurve import LABELS, POINT_FIELDS, SPEEDS, TEMPS, WRITABLE, pct_to_pwm, pwm_to_pct, validate_curve
+from .common import ControlError, _lazy, clamp
+from .curvestore import preset_options, save_active, save_named
+from .fancurve import LABELS, POINT_FIELDS, SPEEDS, WRITABLE, merge_curve, pct_to_pwm, pwm_to_pct, validate_curve
 
 curses = _lazy("curses")
 textwrap = _lazy("textwrap")
@@ -30,6 +31,9 @@ class FanPanel:
         self.fan_pending = {}  # (point, field) -> staged raw value
         self.fan_fields = {}  # (point, field) -> typed text
         self.fan_invalid = set()
+        self.fan_base = None  # firmware curve when the panel first opened this session
+        self.fan_preset = -1  # index into fan_opts, -1 = none staged
+        self.fan_opts = []  # [(name, points or None)], read from disk on open and on `p`
 
     def fan_load(self):
         try:
@@ -66,6 +70,9 @@ class FanPanel:
             self.fan_init()
         self.panel = "fans"
         self.fan_load()
+        if self.fan_base is None and self.fan.get("available"):
+            self.fan_base = copy.deepcopy(self.fan["points"])
+        self.fan_refresh_options()
         self.notice = "Fan curves. Esc returns." if self.fan.get("available") else self.fan.get("reason", "")
 
     # --- editing ---
@@ -149,11 +156,43 @@ class FanPanel:
         done = sum(r["status"] == "APPLIED" for r in results)
         if failed:
             raise ControlError(f"Fan curve apply stopped after {done} writes: {failed.get('error') or failed['status']}")
-        self.fan_applied(points)
         self.notice = f"Applied and verified {done} fan curve change(s)."
+        if os.geteuid() == 0:
+            self.notice += " Not saved as active.json while running as root."
+            return
+        try:
+            save_active(points)
+        except OSError as exc:
+            self.notice += f" Could not save active.json: {exc.strerror}"
 
-    def fan_applied(self, points):
-        """Hook run after a fully verified apply."""
+    def fan_refresh_options(self):
+        if self.fan.get("available"):
+            self.fan_opts = preset_options(self.fan_base or self.fan_points(), self.fan_points(), self.fan_unit())
+
+    def fan_stage_preset(self):
+        self.fan_refresh_options()
+        options = self.fan_opts
+        self.fan_preset = (self.fan_preset + 1) % len(options)
+        name, points = options[self.fan_preset]
+        if points is None:
+            self.notice = f"Saved curve {name} is invalid and cannot be staged."
+            return
+        current = self.fan_points()
+        self.fan_pending.clear()
+        self.fan_fields.clear()
+        self.fan_invalid.clear()
+        for i, point in enumerate(merge_curve(current, points)):
+            for field in WRITABLE:
+                if point.get(field) is not None and point[field] != current[i][field]:
+                    self.fan_pending[(i, field)] = point[field]
+        self.notice = f"Preset {name} staged ({len(self.fan_pending)} changes). Press Enter to apply."
+
+    def fan_save(self):
+        if os.geteuid() == 0:
+            self.notice = "Not saving while running as root; run loqctl as your user."
+            return
+        self.notice = f"Saved {save_named(self.fan_target())}"
+        self.fan_refresh_options()
 
     def run_sudo_fancurve(self, points):
         stdout, stderr = self.sudo_call(["_fancurve", json.dumps(points)])
@@ -195,14 +234,19 @@ class FanPanel:
             self.fan_cell[1] = (cell[0] - 1) % count
         elif ch in (curses.KEY_RIGHT, ord("l")):
             self.fan_cell[1] = (cell[0] + 1) % count
-        elif ch in (10, 13, curses.KEY_ENTER, ord("r"), ord("+"), ord("="), ord("-"), *range(48, 58),
+        elif ch == ord("W"):
+            self.fan_save()
+        elif ch in (10, 13, curses.KEY_ENTER, ord("r"), ord("p"), ord("+"), ord("="), ord("-"), *range(48, 58),
                     curses.KEY_BACKSPACE, 127, 8, 27) and locked:
             self.notice = f"Fan curves are locked in {state.get('mode')} mode. Select custom first."
         elif ch == ord("r"):
             self.fan_pending.clear()
             self.fan_fields.clear()
             self.fan_invalid.clear()
+            self.fan_preset = -1
             self.notice = "Pending fan edits discarded."
+        elif ch == ord("p"):
+            self.fan_stage_preset()
         elif ch in (10, 13, curses.KEY_ENTER):
             self.fan_apply(state)
         elif ch == 27:
@@ -230,9 +274,20 @@ class FanPanel:
         if cell in self.fan_invalid:
             lines.append(("Not a valid value for this cell.", self.theme.BAD))
         lines += [(m, self.theme.BAD) for m in errors[:1]]
-        lines.append(("arrows move  0-9 type  +/- step  Enter apply  r discard  Esc clear/back", self.theme.ACCENT))
+        lines.append(("arrows move  0-9 type  +/- step  Enter apply  r discard  p preset  W save  Esc clear/back",
+                      self.theme.ACCENT))
+        x = ix
+        self.put(y, x, "presets", self.theme.TEXT, dim=True)
+        x += 9
+        for k, (name, points) in enumerate(self.fan_opts):
+            label = f"{name} (invalid)" if points is None else name
+            if x + len(label) >= ix + iw:
+                break
+            color = self.theme.BAD if points is None else self.theme.WARN if k == self.fan_preset else self.theme.TEXT
+            self.put(y, x, label, color, bold=k == self.fan_preset, dim=color == self.theme.TEXT)
+            x += len(label) + 2
         for k, (text, color) in enumerate(lines[-2:]):
-            self.put(y + k, ix, text[:iw], color, dim=color == self.theme.ACCENT)
+            self.put(y + 1 + k, ix, text[:iw], color, dim=color == self.theme.ACCENT)
 
     def draw_fans(self, state, metrics, y, x, height, width):
         fans = metrics.get("fans") or []
@@ -254,7 +309,7 @@ class FanPanel:
         label_w = 10
         cw = max(6, (iw - label_w) // len(points))
         inner = height - 2
-        chart_h = min(8, inner - len(rows) - 5)
+        chart_h = min(8, inner - len(rows) - 6)
         top = y + 1
         if chart_h >= 2:
             for r, mark in enumerate(("100", "50", "0")):
@@ -291,4 +346,4 @@ class FanPanel:
                     color, bold = (self.theme.BAD if cell in self.fan_invalid else self.theme.WARN), True
                 text = ("▶" if cell == selected else " ") + body
                 self.put(row, ix + label_w + i * cw, text, color, bold, dim=readonly)
-        self.fan_footer(state, y + height - 3, ix, iw)
+        self.fan_footer(state, y + height - 4, ix, iw)

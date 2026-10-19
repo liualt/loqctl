@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from loqctl import api as m_api, backend as m_backend, cli as m_cli, common as m_common
-from loqctl import fancurve as m_fan, hardware as m_hardware, ui as m_ui
+from loqctl import curvestore as m_store, fancurve as m_fan, hardware as m_hardware, sensors as m_sensors, ui as m_ui
 from tests import test_loqctl as base
 
 CURVE = [
@@ -344,3 +344,205 @@ class FanCurveSurfaceTests(unittest.TestCase):
         self.assertIn("F1 1800 RPM", dash.box.call_args_list[0].args[4])
         dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 17, 72)
         self.assertIn("locked in balanced mode", "\n".join(dash.puts))
+
+
+class CurveStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.config = self.root / "config"
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_config_dir_respects_xdg_and_serve_uid_home(self):
+        self.assertEqual(m_store.config_dir(), self.config / "loqctl")
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": ""}):
+            self.assertEqual(m_store.config_dir(), Path.home() / ".config/loqctl")
+        home = Mock(pw_dir="/home/other")
+        with patch.object(m_store.pwd, "getpwuid", return_value=home):
+            self.assertEqual(m_store.config_dir(os.getuid() + 1), Path("/home/other/.config/loqctl"))
+        self.assertEqual(m_store.config_dir(os.getuid()), self.config / "loqctl")
+
+    def test_presets_scale_and_clamp_to_minimums(self):
+        quiet = m_store.preset_curve(CURVE, 0.8)
+        self.assertEqual([p["fan1"] for p in quiet], [0, 64, 153])  # last point raised to 60 %
+        cool = m_store.preset_curve(CURVE, 1.2)
+        self.assertEqual([p["fan2"] for p in cool], [0, 96, 216])
+        loud = m_store.preset_curve(edit(CURVE, {(2, "fan1"): 250}), 1.2)
+        self.assertEqual(loud[2]["fan1"], 255)
+        hot = edit(CURVE, {(0, "cpu_up"): 85, (1, "cpu_up"): 86, (2, "cpu_up"): 90})
+        self.assertEqual(m_store.preset_curve(hot, 0.5)[1]["fan1"], 102)
+        for curve in (quiet, cool, m_store.preset_curve(CURVE, 1.0)):
+            self.assertEqual(m_fan.validate_curve(curve), [])
+        self.assertEqual(m_fan.validate_curve(m_store.preset_curve(CURVE, 0.2)), [])
+        level = m_store.preset_curve(CURVE, 0.8, "level")
+        self.assertEqual([p["fan1"] for p in level], [0, 76, 153])
+
+    def test_atomic_write_mode_and_round_trip(self):
+        path = m_store.save_active(CURVE)
+        self.assertEqual(path, self.config / "loqctl/active.json")
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(path.parent.glob(".*tmp")), [])
+        points = m_store.read_curve_file(path, os.getuid())
+        self.assertNotIn("accel", points[0])
+        self.assertEqual(points[1]["fan1"], 80)
+        with patch.object(m_store.os, "replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                m_store.save_active(edit(CURVE, {(1, "fan1"): 90}))
+        self.assertEqual(m_store.read_curve_file(path)[1]["fan1"], 80)
+        self.assertEqual(list(path.parent.glob(".*tmp")), [])
+
+    def test_named_save_filename(self):
+        with patch.object(m_store.time, "strftime", return_value="saved-20260102-030405") as t:
+            path = m_store.save_named(CURVE)
+        self.assertEqual(path, self.config / "loqctl/curves/saved-20260102-030405.json")
+        t.assert_called_once_with("saved-%Y%m%d-%H%M%S")
+
+    def test_saved_curves_listed_with_invalid(self):
+        current = m_fan.read_curve(make_hwmon(self.root))
+        m_store.write_atomic(self.config / "loqctl/curves/b-good.json", edit(CURVE, {(1, "fan1"): 90}))
+        m_store.write_atomic(self.config / "loqctl/curves/a-bad.json", edit(CURVE, {(1, "cpu_up"): 30}))
+        (self.config / "loqctl/curves/c-junk.json").write_text("{")
+        saved = m_store.saved_curves(current)
+        self.assertEqual([n for n, _ in saved], ["a-bad", "b-good", "c-junk"])
+        self.assertEqual([p is None for _, p in saved], [True, False, True])
+        names = [n for n, _ in m_store.preset_options(current, current)]
+        self.assertEqual(names[:3], ["firmware", "quiet", "cool"])
+
+    def test_untrusted_files_rejected(self):
+        path = m_store.save_active(CURVE)
+        with self.assertRaises(m_common.ControlError):
+            m_store.read_curve_file(path, os.getuid() + 1)
+        path.chmod(0o666)
+        with self.assertRaises(m_common.ControlError):
+            m_store.read_curve_file(path, os.getuid())
+        link = path.with_name("link.json")
+        link.symlink_to(path)
+        with self.assertRaises(m_common.ControlError):
+            m_store.read_curve_file(link)
+
+
+class ReapplyTests(unittest.TestCase):
+    def setUp(self):
+        base.FirmwareTests.setUp(self)
+        self.addCleanup(self.temp.cleanup)
+        self.hwmon = make_hwmon(self.root)
+        self.config = self.root / "config"
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
+        env.start()
+        self.addCleanup(env.stop)
+        m_store.save_active(edit(CURVE, {(1, "fan1"): 90}))
+        self.log = []
+        self.reapply = m_store.Reapplier(self.hw, os.getuid(), self.log.append)
+        self.clock = {"boot": 1000.0, "mono": 500.0}
+        patcher = patch.object(m_store.time, "clock_gettime",
+                               side_effect=lambda c: self.clock["boot" if c == m_store.time.CLOCK_BOOTTIME else "mono"])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fan1(self):
+        return m_fan.read_curve(self.hwmon)[1]["fan1"]
+
+    def tick(self, mode):
+        self.reapply({"mode": mode})
+
+    def test_mode_change_into_custom_writes_once(self):
+        self.tick("balanced")
+        self.assertEqual(self.fan1(), 80)
+        self.tick("custom")
+        self.assertEqual(self.fan1(), 90)
+        self.assertIn("re-applied", self.log[-1])
+        (self.hwmon / "pwm1_auto_point2_pwm").write_text("80")
+        self.tick("custom")  # no change of mode: no write
+        self.assertEqual(self.fan1(), 80)
+        self.assertEqual(len(self.log), 1)
+
+    def test_other_modes_never_write(self):
+        self.tick("custom")
+        self.hw.set_mode("balanced")
+        (self.hwmon / "pwm1_auto_point2_pwm").write_text("80")
+        self.tick("balanced")
+        self.tick("performance")
+        self.assertEqual(self.fan1(), 80)
+
+    def test_resume_detection(self):
+        self.tick("custom")
+        (self.hwmon / "pwm1_auto_point2_pwm").write_text("80")
+        self.clock["boot"] += 5.0
+        self.clock["mono"] += 5.0
+        self.tick("custom")
+        self.assertEqual(self.fan1(), 80)
+        self.clock["boot"] += 3600.0 + 5
+        self.clock["mono"] += 5.0
+        self.tick("custom")
+        self.assertEqual(self.fan1(), 90)
+        self.assertIn("after resume", self.log[-1])
+
+    def test_untrusted_or_invalid_file_skipped_with_log(self):
+        path = self.config / "loqctl/active.json"
+        path.chmod(0o666)
+        self.tick("custom")
+        self.assertEqual(self.fan1(), 80)
+        self.assertIn("skipped", self.log[-1])
+        path.chmod(0o600)
+        other = m_store.Reapplier(self.hw, os.getuid() + 1, self.log.append)
+        with patch.object(m_store, "config_dir", return_value=path.parent):
+            other({"mode": "custom"})
+        self.assertEqual(self.fan1(), 80)
+        self.assertIn("skipped", self.log[-1])
+        m_store.save_active(edit(CURVE, {(1, "cpu_up"): 30, (1, "fan1"): 90}))
+        self.tick("balanced")
+        self.tick("custom")
+        self.assertEqual(self.fan1(), 80)
+        self.assertEqual(len(self.log), 3)
+        m_store.save_active(CURVE[:2])  # wrong size
+        self.tick("balanced")
+        self.tick("custom")
+        self.assertIn("skipped", self.log[-1])
+
+    def test_missing_file_is_silent_and_sampler_hook_survives_errors(self):
+        (self.config / "loqctl/active.json").unlink()
+        self.tick("custom")
+        self.assertEqual(self.log, [])
+        sampler = m_sensors.Sampler(self.hw)
+        sampler.on_firmware = Mock(side_effect=RuntimeError("boom"))
+        with patch.object(sampler.sensors, "sample", return_value={}), patch("builtins.print"):
+            sampler.tick()
+        sampler.on_firmware.assert_called_once()
+        self.assertEqual(sampler.latest["mode"], "custom")
+
+
+class FanPanelPresetTests(FanCurveSurfaceTests):
+    def test_preset_cycle_stage_and_save_keys(self):
+        config = self.root / "config"
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config)}):
+            dash = self.dash()
+            state = {"mode": "custom"}
+            self.keys(dash, state, "f", "p")
+            self.assertEqual(dash.fan_preset, 0)  # firmware snapshot equals the live curve
+            self.assertEqual(dash.fan_pending, {})
+            self.keys(dash, state, "p")
+            self.assertEqual(dash.fan_pending[(2, "fan1")], 153)
+            self.keys(dash, state, 10)
+            self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 153)
+            self.assertEqual(m_store.read_curve_file(config / "loqctl/active.json")[2]["fan1"], 153)
+            self.assertEqual(dash.fan_base[2]["fan1"], 180)  # snapshot from the first open
+            self.keys(dash, state, "W")
+            self.assertTrue(dash.notice.startswith("Saved "))
+            self.assertEqual(len(list((config / "loqctl/curves").glob("saved-*.json"))), 1)
+            dash.draw_fans(state, {}, 1, 0, 25, 100)
+            self.assertTrue(any(t == "firmware" for t in dash.puts))
+            m_store.write_atomic(config / "loqctl/curves/zz.json", edit(CURVE, {(0, "cpu_up"): 99}))
+            self.keys(dash, state, "r", "p", "p", "p", "p", "p")
+            self.assertEqual(dash.fan_pending, {})
+            self.assertIn("invalid and cannot be staged", dash.notice)
+            dash.draw_fans(state, {}, 1, 0, 25, 100)
+            self.assertTrue(any(t == "zz (invalid)" for t in dash.puts))
+
+    def test_locked_mode_blocks_presets(self):
+        dash = self.dash("balanced")
+        self.keys(dash, {"mode": "balanced"}, "f", "p")
+        self.assertEqual(dash.fan_pending, {})
+        self.assertIn("locked in balanced mode", dash.notice)

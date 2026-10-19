@@ -118,7 +118,13 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 | `Esc` | Clear the cell, or go back when nothing is typed |
 | `r` | Discard all edits |
 | `Enter` | Apply all edits; jumps to the first invalid cell instead |
+| `p` | Stage the next preset (`firmware`, `quiet`, `cool`, then saved curves); nothing is written until `Enter` |
+| `W` | Save the staged (or live) curve as `curves/saved-YYYYmmdd-HHMMSS.json` |
 | `f` | Back |
+
+Presets: `firmware` is the curve read when the panel first opened this session, `quiet` scales its fan speeds by 0.8 and `cool` by 1.2 (capped at 100 %). Presets are raised to the validation minimums so they always validate. Saved curves live in `~/.config/loqctl/curves/<name>.json` (`XDG_CONFIG_HOME` is respected), listed after the presets by name; one that fails validation or has the wrong point count shows a red "(invalid)" and cannot be staged. After every verified apply the dashboard writes the applied points to `~/.config/loqctl/active.json`. All files are written atomically with mode 0600, by your user only (never by root; nothing is saved while the dashboard runs as root).
+
+Re-apply under `sudo loqctl serve`: the firmware resets the curve on mode change and reboot, so `serve` re-writes `active.json` for the served uid when the live mode becomes `custom` (also when `serve` starts in `custom`) and after a suspend/resume while in `custom`. Resume is detected when `CLOCK_BOOTTIME` gains 10 s or more on `CLOCK_MONOTONIC` between two 5 s firmware polls. The file must be owned by the served uid, must not be group or world writable, must have the same point count as the hardware and must pass the same validation; otherwise `serve` logs one line and carries on. The dashboard itself never re-applies.
 
 Safety: writes go only to an allowlist of the per-point temperature and pwm files (existing files only, never created), never `fanN_target`, `auto_points_size`, `minifancurve`, `lockfancontroller` or `fan_fullspeed`. Every write is verified by reading the whole curve back. A curve is refused before any write unless: all values are integers (temperatures 0-127, pwm 0-255); upper temperatures and fan speeds never drop from one point to the next; each down temperature is below its own up temperature and below the previous point's up temperature; fans run at least 40 % after a point whose CPU or GPU up temperature is 80 °C or more, and at least 60 % at the last point.
 
@@ -266,6 +272,7 @@ Tests use a temporary simulated sysfs and never touch real laptop settings.
 | `loqctl/keyboard.py` | LegionAura keyboard control |
 | `loqctl/fancurve.py` | Fan curve reads, validation and verified writes (legion_laptop hwmon) |
 | `loqctl/ui_fans.py` | Fan curve panel of the dashboard |
+| `loqctl/curvestore.py` | Fan curve presets, saved curves, `active.json` and the serve re-apply |
 | `loqctl/ui.py`, `loqctl/colors.py` | Curses dashboard and ANSI color helpers |
 
 Why Python and the standard library: [ADR-001](docs/adr/001-language.md).

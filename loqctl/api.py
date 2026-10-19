@@ -15,6 +15,7 @@ import sys
 
 from . import VERSION
 from .common import ControlError, _lazy
+from .curvestore import Reapplier
 from .sensors import Sampler
 
 http_client = _lazy("http.client")
@@ -185,7 +186,9 @@ def serve(uid):
     warning = serve_uid_warning(uid, os.environ)
     if warning:
         print(warning, file=sys.stderr)
-    sampler = Sampler().start()
+    sampler = Sampler()
+    sampler.on_firmware = Reapplier(sampler.hardware, uid)
+    sampler.start()
     old_mask = os.umask(0o177)
     try:
         server = _api_classes()["APIServer"](str(path), sampler.hardware, sampler, uid)
