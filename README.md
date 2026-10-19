@@ -144,7 +144,7 @@ loqctl kb apply
 sudo loqctl serve
 ```
 
-Serves HTTP over a Unix socket at `/run/loqctl-UID/control.sock`. Only that user and root can connect (checked with peer credentials); the socket is mode `0600` in a root-owned directory. There is no TCP listener. Stop it with Ctrl+C. If a server crashed and left a socket behind, remove the stale `control.sock` manually before restarting.
+Serves HTTP over a Unix socket at `/run/loqctl-UID/control.sock`. Only that user and root can connect (checked with peer credentials); the socket is mode `0600` in a root-owned directory. There is no TCP listener. Stop it with Ctrl+C. If a server crashed and left a stale `control.sock`, the next start removes it; it refuses to start if a live server answers on it or if the path is not a socket. Clients ignore a stale socket and fall back to local access.
 
 ```sh
 curl --unix-socket /run/loqctl-$(id -u)/control.sock http://localhost/v1/status
@@ -179,7 +179,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | "No firmware attributes exposed" | Kernel lacks the Lenovo WMI drivers, or your model isn't supported by them |
 | "Select custom mode before changing firmware limits" or "Limits are only editable in custom mode. Select custom first." | Limits are only writable in `custom` mode; select `custom` on the mode row and press Enter |
 | "RAPL needs root: run sudo loqctl serve" | CPU power reads are root-only on some kernels. Use the privileged server; do not run the TUI with `sudo -E` |
-| "Socket already exists" | Stale socket from a crashed server; delete it and retry |
+| "A loqctl server is already running" | Another `loqctl serve` answers on the socket; stop it first. A stale socket is removed automatically |
 | "legionaura not found" | Install LegionAura (AUR package `legionaura` on Arch) |
 | GPU shows offline | `nvidia-smi` missing, not at `/usr/bin/nvidia-smi`, or driver not loaded |
 

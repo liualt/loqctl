@@ -15,6 +15,7 @@ import pwd
 import signal
 import shutil
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -110,6 +111,19 @@ def owner_uid():
 
 def socket_path():
     return f"/run/loqctl-{owner_uid()}/control.sock"
+
+
+def socket_alive(path):
+    """True only when path is a Unix socket that accepts a connection."""
+    try:
+        if not stat.S_ISSOCK(os.stat(path).st_mode):
+            return False
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            probe.connect(str(path))
+        return True
+    except OSError:
+        return False
 
 
 def fmt(value, unit="", decimals=0):
@@ -414,20 +428,52 @@ class Sensors:
 
 
 class Sampler:
+    FIRMWARE_INTERVAL = 5
+
     def __init__(self, hardware=None):
         self.hardware = hardware or Hardware()
         self.sensors = Sensors(self.hardware.root)
         self.latest = {}
+        self.caps = {}  # last good firmware read
+        self.metrics = {}
+        self.fw_error = None
+        self.next_firmware = None
         self.stop = threading.Event()
+        self.force = threading.Event()  # refresh() sets it: read firmware now and wake the wait
         self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def tick(self):
+        now = time.monotonic()
+        forced = self.force.is_set()
+        self.force.clear()
+        if forced or self.next_firmware is None or now >= self.next_firmware:
+            self.next_firmware = now + self.FIRMWARE_INTERVAL
+            try:
+                self.caps = self.hardware.capabilities()
+                self.fw_error = None
+            except Exception as exc:
+                self.fw_error = str(exc)
+        error = self.fw_error
+        try:
+            self.metrics = self.sensors.sample()
+        except Exception as exc:
+            error = str(exc)
+        latest = {**self.caps, "metrics": self.metrics}
+        if error:
+            latest["error"] = error
+        self.latest = latest
 
     def run(self):
         while not self.stop.is_set():
-            try:
-                self.latest = {**self.hardware.capabilities(), "metrics": self.sensors.sample()}
-            except Exception as exc:
-                self.latest = {"error": str(exc), "metrics": {}}
-            self.stop.wait(1)
+            self.tick()
+            self.force.wait(1)
+
+    def refresh(self):
+        self.force.set()
+
+    def halt(self):
+        self.stop.set()
+        self.force.set()
 
     def start(self):
         self.thread.start()
@@ -508,6 +554,9 @@ def _api_classes():
                         self.reply(404, {"error": "Unknown endpoint or unexpected fields"})
                         return
                     self.reply(200, value)
+                    refresh = getattr(self.server.sampler, "refresh", None)
+                    if refresh:
+                        refresh()
                 except (ControlError, ValueError, TypeError) as exc:
                     self.reply(400, {"error": str(exc)})
         _API = {"UnixHTTP": UnixHTTP, "APIServer": APIServer, "Handler": Handler}
@@ -534,6 +583,34 @@ def request(path, method, endpoint, payload=None):
         conn.close()
 
 
+def serve_uid_warning(uid, environ):
+    if "SUDO_UID" not in environ and uid == 0:
+        return "Warning: serving for uid 0 because SUDO_UID is not set. Use --uid <your uid> so your user can connect."
+    return None
+
+
+def prepare_socket_path(path):
+    """Refuse non-sockets and live servers; remove a stale socket left by a crash."""
+    path = Path(path)
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISSOCK(info.st_mode):
+        raise ControlError(f"{path} exists and is not a socket. Remove it manually.")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            probe.connect(str(path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        path.unlink(missing_ok=True)
+        print(f"Removed stale socket {path}.", flush=True)
+        return
+    except OSError as exc:
+        raise ControlError(f"Cannot check existing socket {path}: {exc}") from exc
+    raise ControlError(f"A loqctl server is already running on {path}.")
+
+
 def serve(uid):
     if os.geteuid() != 0:
         raise ControlError("Start the server with sudo so it can write firmware settings.")
@@ -546,8 +623,10 @@ def serve(uid):
         if directory.is_symlink() or not directory.is_dir() or info.st_uid != 0 or info.st_mode & 0o022:
             raise ControlError("Socket directory must be owned by root and not writable by other users.")
     path = directory / "control.sock"
-    if path.exists() or path.is_symlink():
-        raise ControlError(f"Socket already exists: {path}. Stop the existing server first; remove a stale socket manually.")
+    prepare_socket_path(path)
+    warning = serve_uid_warning(uid, os.environ)
+    if warning:
+        print(warning, file=sys.stderr)
     sampler = Sampler().start()
     old_mask = os.umask(0o177)
     try:
@@ -565,7 +644,7 @@ def serve(uid):
     except KeyboardInterrupt:
         pass
     finally:
-        sampler.stop.set()
+        sampler.halt()
         server.server_close()
         path.unlink(missing_ok=True)
 
@@ -573,11 +652,15 @@ def serve(uid):
 class Backend:
     def __init__(self, path=None):
         self.path = path or socket_path()
-        self.remote = Path(self.path).exists()
+        self.notice = ""
+        self.remote = socket_alive(self.path)
+        if not self.remote and os.path.lexists(self.path):
+            self.notice = f"Ignored stale API socket {self.path}; using local access."
         self.hardware = Hardware()
         self.sampler = None
         self.latest = {}
         self.stop = threading.Event()
+        self.wake = threading.Event()
 
     def snapshot(self):
         if self.remote:
@@ -596,12 +679,20 @@ class Backend:
                     try:
                         self.latest = request(self.path, "GET", "/v1/status")
                     except (OSError, ControlError, ValueError, http_client.HTTPException) as exc:
-                        self.latest = {"error": "API connection failed: " + str(exc)}
-                    self.stop.wait(1)
+                        self.latest = {**self.latest, "error": "API connection failed: " + str(exc)}
+                    self.wake.wait(1)
+                    self.wake.clear()
             threading.Thread(target=poll, daemon=True).start()
 
     def state(self):
         return self.sampler.latest if self.sampler else self.latest
+
+    def refresh(self):
+        """Ask for a fresh firmware read soon, e.g. right after a write."""
+        if self.sampler:
+            self.sampler.refresh()
+        else:
+            self.wake.set()
 
     def controls(self):
         """Read firmware now, without using the telemetry cache."""
@@ -615,8 +706,9 @@ class Backend:
 
     def close(self):
         self.stop.set()
+        self.wake.set()
         if self.sampler:
-            self.sampler.stop.set()
+            self.sampler.halt()
 
 
 class Keyboard:
@@ -774,7 +866,7 @@ class Dashboard:
         self.pending = {}
         self.apply_results = []
         self.show_results = False
-        self.notice = "Ready. Edit a row, then press Enter to apply.  l opens keyboard lighting."
+        self.notice = backend.notice or "Ready. Edit a row, then press Enter to apply.  l opens keyboard lighting."
         self.history = {k: collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
         self.last_timestamp = None
         self.fields = {}  # key -> raw text typed for that row
@@ -1311,6 +1403,12 @@ class Dashboard:
         return controls.get("attributes", {}).get(key, {}).get("current_value")
 
     def apply(self, state):
+        try:
+            self._apply(state)
+        finally:
+            self.backend.refresh()
+
+    def _apply(self, state):
         if not self.pending:
             self.notice = "No pending changes."
             return
@@ -1803,7 +1901,9 @@ def main(argv=None):
         else:
             backend = Backend(args.socket)
             if args.socket and not backend.remote:
-                raise ControlError("The requested API socket does not exist.")
+                raise ControlError("The requested API socket is not accepting connections.")
+            if backend.notice and args.command not in (None, "tui"):
+                print(backend.notice, file=sys.stderr)
             if args.command in (None, "tui"):
                 if not sys.stdin.isatty() or not sys.stdout.isatty():
                     raise ControlError("The dashboard needs a terminal. Use status for JSON output.")

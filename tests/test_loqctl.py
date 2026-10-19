@@ -8,6 +8,7 @@ import json
 import os
 import pty
 import select
+import socket
 import struct
 import subprocess
 import sys
@@ -235,6 +236,7 @@ class FirmwareTests(unittest.TestCase):
         dashboard.show_results = False
         dashboard.backend = type("Backend", (), {"remote": True})()
         dashboard.backend.write = self.hw.set_value
+        dashboard.backend.refresh = lambda: None
         dashboard.backend.controls = self.hw.capabilities
         return dashboard
 
@@ -779,6 +781,130 @@ class KeyboardWorkerTests(unittest.TestCase):
         kb.close()
         thread.join(2)
         self.assertFalse(thread.is_alive())
+
+
+class Stage5Tests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def stale_socket(self, name="s.sock"):
+        path = str(self.root / name)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(path)
+        sock.close()
+        return path
+
+    def test_socket_alive(self):
+        self.assertFalse(loq.socket_alive(self.root / "missing"))
+        regular = self.root / "file"
+        regular.write_text("x")
+        self.assertFalse(loq.socket_alive(regular))
+        self.assertFalse(loq.socket_alive(self.stale_socket()))
+        live = self.root / "live.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(server.close)
+        server.bind(str(live))
+        server.listen(1)
+        self.assertTrue(loq.socket_alive(live))
+
+    def test_backend_ignores_stale_socket(self):
+        path = self.stale_socket()
+        backend = loq.Backend(path)
+        self.assertFalse(backend.remote)
+        self.assertIn("Ignored stale API socket", backend.notice)
+        self.assertEqual(loq.Backend(str(self.root / "none")).notice, "")
+
+    def test_serve_unlink_rules(self):
+        regular = self.root / "file"
+        regular.write_text("x")
+        with self.assertRaises(loq.ControlError):
+            loq.prepare_socket_path(regular)
+        self.assertTrue(regular.exists())
+        stale = self.stale_socket()
+        link = self.root / "link"
+        link.symlink_to(stale)
+        with self.assertRaises(loq.ControlError):
+            loq.prepare_socket_path(link)
+        self.assertTrue(link.is_symlink())
+        self.assertTrue(Path(stale).exists())
+        loq.prepare_socket_path(self.root / "absent")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            loq.prepare_socket_path(stale)
+        self.assertFalse(Path(stale).exists())
+        self.assertIn("Removed stale socket", out.getvalue())
+        live = self.root / "live.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(server.close)
+        server.bind(str(live))
+        server.listen(1)
+        with self.assertRaisesRegex(loq.ControlError, "already running"):
+            loq.prepare_socket_path(live)
+        self.assertTrue(live.exists())
+
+    def test_serve_warns_without_sudo_uid(self):
+        self.assertIn("SUDO_UID", loq.serve_uid_warning(0, {}))
+        self.assertIsNone(loq.serve_uid_warning(0, {"SUDO_UID": "0"}))
+        self.assertIsNone(loq.serve_uid_warning(1000, {}))
+
+    def sampler(self, hardware):
+        sampler = loq.Sampler.__new__(loq.Sampler)
+        sampler.hardware = hardware
+        sampler.sensors = Mock()
+        sampler.sensors.sample.return_value = {"cpu": {}}
+        sampler.latest, sampler.caps, sampler.metrics = {}, {}, {}
+        sampler.fw_error, sampler.next_firmware = None, None
+        sampler.force = threading.Event()
+        return sampler
+
+    def test_sampler_keeps_last_good_caps(self):
+        hardware = Mock()
+        hardware.capabilities.side_effect = [{"mode": "custom"}, RuntimeError("gone")]
+        sampler = self.sampler(hardware)
+        sampler.tick()
+        self.assertEqual(sampler.latest["mode"], "custom")
+        self.assertNotIn("error", sampler.latest)
+        sampler.refresh()
+        first = sampler.latest
+        sampler.tick()
+        self.assertEqual(sampler.latest["mode"], "custom")
+        self.assertEqual(sampler.latest["error"], "gone")
+        self.assertIsNot(sampler.latest, first)
+        self.assertEqual(sampler.latest["metrics"], {"cpu": {}})
+
+    def test_sampler_polls_firmware_every_5s_and_on_refresh(self):
+        hardware = Mock()
+        hardware.capabilities.return_value = {"mode": "custom"}
+        sampler = self.sampler(hardware)
+        with patch.object(loq.time, "monotonic") as clock:
+            clock.return_value = 100.0
+            sampler.tick()
+            self.assertEqual(hardware.capabilities.call_count, 1)
+            clock.return_value = 101.0
+            sampler.tick()
+            self.assertEqual(hardware.capabilities.call_count, 1)
+            clock.return_value = 105.0
+            sampler.tick()
+            self.assertEqual(hardware.capabilities.call_count, 2)
+            clock.return_value = 106.0
+            sampler.refresh()
+            sampler.tick()
+            self.assertEqual(hardware.capabilities.call_count, 3)
+
+    def test_apply_refreshes_backend(self):
+        hw = Mock()
+        refreshed = []
+        dashboard = object.__new__(loq.Dashboard)
+        dashboard.backend = type("Backend", (), {"refresh": lambda self: refreshed.append(1)})()
+        dashboard.notice = ""
+        dashboard.pending = {}
+        dashboard.apply({})
+        self.assertEqual(refreshed, [1])
+        with patch.object(loq.Dashboard, "_apply", side_effect=loq.ControlError("x")):
+            with self.assertRaises(loq.ControlError):
+                dashboard.apply({})
+        self.assertEqual(refreshed, [1, 1])
 
 
 if __name__ == "__main__":
