@@ -227,9 +227,9 @@ class FirmwareTests(unittest.TestCase):
         dashboard = object.__new__(loq.Dashboard)
         dashboard.help = False
         dashboard.selected = 1
-        dashboard.editing = False
-        dashboard.edit_text = ""
         dashboard.pending = {}
+        dashboard.fields = {}
+        dashboard.invalid = set()
         dashboard.apply_results = []
         dashboard.show_results = False
         dashboard.backend = type("Backend", (), {"remote": True})()
@@ -237,44 +237,102 @@ class FirmwareTests(unittest.TestCase):
         dashboard.backend.controls = self.hw.capabilities
         return dashboard
 
-    def test_apply_key_commits_typed_value(self):
-        for apply_key in ("a", "A"):
-            with self.subTest(key=apply_key):
-                (self.attr / "current_value").write_text("50")
-                dashboard = self.dashboard()
-                state = self.hw.capabilities()
-                for key in (10, ord("6"), ord("0"), ord(apply_key)):
-                    dashboard.handle(key, state)
-                self.assertEqual((self.attr / "current_value").read_text().strip(), "60")
-                self.assertFalse(dashboard.editing)
-                self.assertEqual(dashboard.pending, {})
-                self.assertIn("Applied and verified", dashboard.notice)
-                self.assertTrue(dashboard.show_results)
-                self.assertEqual(dashboard.apply_results[0], {
-                    "key": "ppt_pl1_spl", "requested": 60, "before": 50,
-                    "current": 60, "status": "APPLIED", "error": None})
+    def type_keys(self, dashboard, state, *keys):
+        for key in keys:
+            dashboard.handle(ord(key) if isinstance(key, str) else key, state)
 
-    def test_enter_stages_without_applying(self):
+    def multi(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        self.add_attr("gpu_temp", 70, 60, 90, 5, 85)
+        return self.dashboard(), self.hw.capabilities()
+
+    def test_typing_and_enter_applies(self):
         dashboard = self.dashboard()
         state = self.hw.capabilities()
-        for key in (10, ord("6"), ord("0"), 10):
-            dashboard.handle(key, state)
-        self.assertEqual((self.attr / "current_value").read_text(), "50")
-        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
-        self.assertFalse(dashboard.editing)
-        dashboard.handle(ord("a"), state)
+        self.type_keys(dashboard, state, "6", "0", 10)
         self.assertEqual((self.attr / "current_value").read_text().strip(), "60")
+        self.assertEqual(dashboard.pending, {})
+        self.assertEqual(dashboard.fields, {})
+        self.assertIn("Applied and verified", dashboard.notice)
+        self.assertEqual(dashboard.apply_results[0], {
+            "key": "ppt_pl1_spl", "requested": 60, "before": 50,
+            "current": 60, "status": "APPLIED", "error": None})
 
-    def test_apply_in_editor_rejects_invalid_value(self):
-        for value in ("", "101", "51"):
-            with self.subTest(value=value):
-                dashboard = self.dashboard()
-                dashboard.editing = True
-                dashboard.edit_text = value
-                with self.assertRaises(loq.ControlError):
-                    dashboard.handle(ord("a"), self.hw.capabilities())
-                self.assertEqual((self.attr / "current_value").read_text(), "50")
-                self.assertFalse(dashboard.editing)
+    def test_moving_keeps_valid_drops_empty_keeps_invalid(self):
+        dashboard, state = self.multi()
+        self.type_keys(dashboard, state, "6", "0", "j", "8", "5", loq.curses.KEY_BACKSPACE, 127, "j", "5", "1")
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+        self.assertEqual(dashboard.invalid, {"gpu_temp"})
+        self.assertEqual(dashboard.fields, {"ppt_pl1_spl": "60", "gpu_temp": "51"})
+
+    def test_enter_refuses_with_invalid_and_jumps(self):
+        dashboard, state = self.multi()
+        dashboard.selected = 3
+        self.type_keys(dashboard, state, "5", "1", "k", "k")
+        self.assertEqual(dashboard.selected, 1)
+        self.type_keys(dashboard, state, 10)
+        self.assertEqual(dashboard.selected, 3)
+        self.assertIn("red", dashboard.notice)
+        self.assertEqual((self.attr / "current_value").read_text(), "50")
+
+    def test_esc_clears_row(self):
+        dashboard = self.dashboard()
+        state = self.hw.capabilities()
+        self.type_keys(dashboard, state, "6", "0", 27)
+        self.assertEqual((dashboard.pending, dashboard.fields), ({}, {}))
+        self.type_keys(dashboard, state, "5", "1", 27)
+        self.assertEqual(dashboard.invalid, set())
+
+    def test_r_discards_all(self):
+        dashboard, state = self.multi()
+        self.type_keys(dashboard, state, "6", "0", "j", "5", "1", "r")
+        self.assertEqual((dashboard.pending, dashboard.fields, dashboard.invalid), ({}, {}, set()))
+
+    def test_arrows_step_from_staged_value(self):
+        dashboard = self.dashboard()
+        state = self.hw.capabilities()
+        right, left = loq.curses.KEY_RIGHT, loq.curses.KEY_LEFT
+        self.type_keys(dashboard, state, right, right)
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+        self.type_keys(dashboard, state, left, left)
+        self.assertEqual(dashboard.pending, {})
+        self.assertEqual(dashboard.fields, {"ppt_pl1_spl": "50"})
+        self.type_keys(dashboard, state, left)
+        self.assertEqual(dashboard.pending, {})
+
+    def test_d_stages_custom_default(self):
+        dashboard = self.dashboard()
+        state = self.hw.capabilities()
+        self.type_keys(dashboard, state, "d")
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+        dashboard.selected = 0
+        self.type_keys(dashboard, state, "d")
+        self.assertIn("no default", dashboard.notice)
+        self.hw.set_mode("balanced")
+        locked = self.dashboard()
+        self.type_keys(locked, self.hw.capabilities(), "d")
+        self.assertEqual(locked.pending, {})
+        self.assertIn("locked in balanced mode", locked.notice)
+
+    def test_a_key_no_longer_applies(self):
+        dashboard = self.dashboard()
+        state = self.hw.capabilities()
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        self.type_keys(dashboard, state, "a", "A")
+        self.assertEqual((self.attr / "current_value").read_text(), "50")
+
+    def test_escdelay_respected(self):
+        with patch.dict(loq.os.environ, {}, clear=False), patch.object(loq.curses, "set_escdelay") as delay:
+            loq.os.environ.pop("ESCDELAY", None)
+            loq.Dashboard._set_escdelay()
+            delay.assert_called_once_with(25)
+        with patch.dict(loq.os.environ, {"ESCDELAY": "300"}), patch.object(loq.curses, "set_escdelay") as delay:
+            loq.Dashboard._set_escdelay()
+            delay.assert_not_called()
+
+    def test_strike_helper(self):
+        self.assertEqual(loq.strike("53W"), "5\u03363\u0336W\u0336")
+        self.assertEqual(loq.strike(""), "")
 
     def test_report_detects_unchanged_firmware_despite_write_success(self):
         dashboard = self.dashboard()

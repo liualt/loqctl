@@ -120,6 +120,10 @@ def clamp(value, lo, hi):
     return max(lo, min(hi, value))
 
 
+def strike(text):
+    return "".join(c + "\u0336" for c in str(text))
+
+
 def hex_to_rgb(value):
     text = (value or "").strip().lstrip("#").lower()
     if len(text) != 6 or any(c not in "0123456789abcdef" for c in text):
@@ -711,11 +715,11 @@ class Dashboard:
         self.pending = {}
         self.apply_results = []
         self.show_results = False
-        self.notice = "Ready. Stage edits, then press a to apply.  l opens keyboard lighting."
+        self.notice = "Ready. Edit a row, then press Enter to apply.  l opens keyboard lighting."
         self.history = {k: collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
         self.last_timestamp = None
-        self.editing = False
-        self.edit_text = ""
+        self.fields = {}  # key -> raw text typed for that row
+        self.invalid = set()  # keys whose field text is invalid
         self.help = False
         self.running = True
         self.paused = False
@@ -725,6 +729,7 @@ class Dashboard:
         self.kb_zone = 0
         self.kb_channel = 0  # 0=H 1=S 2=V
         self.kb_live = True
+        self._set_escdelay()
         try:
             curses.curs_set(0)
         except curses.error:
@@ -735,6 +740,14 @@ class Dashboard:
             curses.meta(True)
         except curses.error:
             pass
+
+    @staticmethod
+    def _set_escdelay():
+        if "ESCDELAY" not in os.environ:
+            try:
+                curses.set_escdelay(25)
+            except (AttributeError, curses.error):
+                pass
 
     def put(self, y, x, text, color=0, bold=False, dim=False):
         h, w = self.s.getmaxyx()
@@ -841,13 +854,11 @@ class Dashboard:
         stamp = metrics.get("timestamp")
         stale = stamp is not None and time.time() - stamp > 5
         status = state.get("error") or (("Sensor data is stale. " if stale else "") + self.notice)
-        if self.editing:
-            status = f"Enter value: {self.edit_text}_   Enter stages · a applies · Esc cancels"
         self.put(h - 2, 1, status[: w - 3], self.theme.WARN if state.get("error") or stale else self.theme.TEXT)
         if self.panel == "keyboard":
             keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
         else:
-            keys = "↑↓ select  ←→ adjust  Enter edit  a apply  d default  r discard  l keyboard  Space pause  v results  ? help  q"
+            keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  Space pause  v results  ? help  q"
         self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)
 
         if self.help:
@@ -866,6 +877,8 @@ class Dashboard:
     def draw_controls(self, state, y, x, height, width):
         pending_n = len(self.pending)
         right = f"{pending_n} staged" if pending_n else "live"
+        if self.invalid:
+            right = (f"{pending_n} staged" if pending_n else "") + f"{', ' if pending_n else ''}{len(self.invalid)} invalid"
         self.box(y, x, height, width, "firmware", self.theme.ACCENT, right)
         self.put(y + 1, x + 2, f"{'CONTROL':<22} LIVE", self.theme.TEXT, dim=True)
         rows = self.rows(state)
@@ -896,6 +909,18 @@ class Dashboard:
                 line = f"{marker} {label:<20} {value}"
                 self.put(yy, x + 1, line[: width - 3], self.theme.TEXT, bold=chosen, dim=True)
                 continue
+            if key != "mode":
+                text = self.fields.get(key)
+                bad = key in self.invalid
+                if chosen:
+                    line = (f"{marker} {label:<20} {strike(value)} -> "
+                            + (f"{text}_" if text else "__"))
+                    self.put(yy, x + 1, line[: width - 3], self.theme.BAD if bad else self.theme.ACCENT, bold=True)
+                    continue
+                if bad:
+                    value += f" → {text}"
+                    self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], self.theme.BAD)
+                    continue
             if staged is not None:
                 value += f" → {staged}"
             color = self.theme.WARN if staged is not None else (self.theme.ACCENT if chosen else self.theme.TEXT)
@@ -1085,10 +1110,10 @@ class Dashboard:
         self.fill(by, bx, bh, bw)
         self.box(by, bx, bh, bw, "help", self.theme.ACCENT)
         lines = [
-            "Firmware  j/k or ↑↓ select   ←/→ or -/+ stage a step",
-            "          Enter type a value   a apply   d firmware default",
-            "          r discard staged     v last apply results",
-            "          Custom mode required before power/temp limits",
+            "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
+            "          0-9 type a value   Backspace delete   Esc clear row",
+            "          Enter apply all    d custom default   r discard all",
+            "          v last apply results   Limits need custom mode (Enter on mode row)",
             "",
             "Keyboard  l open lighting panel   Esc back to firmware",
             "          1–4 select zone   ←/→ adjust HSV   ↑↓ channel",
@@ -1151,12 +1176,30 @@ class Dashboard:
             self.pending.pop(key, None)
         else:
             self.pending[key] = value
-        self.notice = "Edit staged. Press a to apply."
+        self.notice = "Edit staged. Press Enter to apply."
         if key == "mode":
             if value != current and dropped:
                 self.notice = "Staged limit edits dropped: limits apply only in custom mode."
         elif dropped_mode:
             self.notice = "Staged mode change dropped: apply mode and limits separately."
+
+    def set_field(self, state, key, text):
+        if not text:
+            self.fields.pop(key, None)
+            self.pending.pop(key, None)
+            self.invalid.discard(key)
+            return
+        self.fields[key] = text
+        try:
+            if not text.isdigit():
+                raise ControlError("Enter an integer.")
+            self.stage(state, key, int(text))
+        except ControlError:
+            self.invalid.add(key)
+            self.pending.pop(key, None)
+            self.notice = "Value is not valid for this control."
+        else:
+            self.invalid.discard(key)
 
     def write_one(self, key, value):
         if self.backend.remote or os.geteuid() == 0:
@@ -1355,23 +1398,12 @@ class Dashboard:
         self.selected = clamp(self.selected, 0, len(rows) - 1)
         key = rows[self.selected]
 
-        if self.editing:
-            if ch == 27:
-                self.editing = False
-            elif ch in (10, 13, curses.KEY_ENTER, ord("a"), ord("A")):
-                self.editing = False
-                try:
-                    value = int(self.edit_text)
-                except ValueError as exc:
-                    raise ControlError("Enter an integer.") from exc
-                self.stage(state, key, value)
-                if ch in (ord("a"), ord("A")):
-                    self.apply(state)
-            elif ch in (curses.KEY_BACKSPACE, 127, 8):
-                self.edit_text = self.edit_text[:-1]
-            elif 48 <= ch <= 57 and len(self.edit_text) < 6:
-                self.edit_text += chr(ch)
-            return
+        if self.locked(state) and (self.fields or self.invalid):
+            # Limit fields only exist for custom mode; drop stale ones if the mode changed.
+            self.fields.clear()
+            self.invalid.clear()
+        unlocked_limit = key != "mode" and not self.locked(state)
+        digits = range(48, 58)
 
         if ch == ord("q"):
             self.running = False
@@ -1387,27 +1419,54 @@ class Dashboard:
         elif ch == ord("v"):
             self.show_results = bool(self.apply_results)
             if not self.apply_results:
-                self.notice = "No apply results yet. Stage a change and press a."
+                self.notice = "No apply results yet. Edit a row and press Enter."
         elif ch in (curses.KEY_DOWN, ord("j")):
             self.selected = (self.selected + 1) % len(rows)
         elif ch in (curses.KEY_UP, ord("k")):
             self.selected = (self.selected - 1) % len(rows)
-        elif key != "mode" and self.locked(state) and (
-                ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("+"), ord("-"), ord("="), ord("d"), *range(48, 58))
-                or (ch in (10, 13, curses.KEY_ENTER) and not self.pending)):
-            self.notice = f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter."
         elif ch == ord("r"):
             self.pending.clear()
+            self.fields.clear()
+            self.invalid.clear()
             self.notice = "Pending edits discarded."
-        elif ch in (ord("a"), ord("A")):
-            self.apply(state)
-        elif ch in (10, 13, curses.KEY_ENTER) and key != "mode":
-            self.editing, self.edit_text = True, ""
-        elif ch == ord("d") and key != "mode":
-            default = state["attributes"][key]["default_value"]
-            if default is None:
-                raise ControlError("Firmware default is unavailable.")
-            self.stage(state, key, default)
+        elif ch in (10, 13, curses.KEY_ENTER):
+            if self.invalid:
+                first = next(k for k in rows if k in self.invalid)
+                self.selected = rows.index(first)
+                self.notice = "Fix the value marked red before applying."
+            elif self.pending:
+                before = set(self.pending)
+                try:
+                    self.apply(state)
+                finally:
+                    for done in before - set(self.pending):
+                        self.fields.pop(done, None)
+            elif key == "mode":
+                self.notice = "Use ← → to choose a mode, then press Enter."
+            elif unlocked_limit:
+                self.notice = "Type a value or use ← →, then press Enter."
+            else:
+                self.notice = f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter."
+        elif key != "mode" and self.locked(state) and (
+                ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("+"), ord("-"), ord("="), ord("d"), *digits)):
+            self.notice = f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter."
+        elif ch == ord("d"):
+            if key == "mode":
+                self.notice = "Platform mode has no default."
+            else:
+                default = state["attributes"][key]["default_value"]
+                if default is None:
+                    raise ControlError("Firmware default is unavailable.")
+                self.set_field(state, key, str(default))
+        elif unlocked_limit and ch == 27:
+            self.set_field(state, key, "")
+            self.notice = "Row cleared."
+        elif unlocked_limit and ch in (curses.KEY_BACKSPACE, 127, 8):
+            self.set_field(state, key, self.fields.get(key, "")[:-1])
+        elif unlocked_limit and ch in digits:
+            text = self.fields.get(key, "")
+            if len(text) < 6:
+                self.set_field(state, key, text + chr(ch))
         elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("+"), ord("-"), ord("=")):
             direction = 1 if ch in (curses.KEY_RIGHT, ord("+"), ord("=")) else -1
             if key == "mode":
@@ -1422,7 +1481,7 @@ class Dashboard:
                 step = max(1, item["scalar_increment"])
                 current = self.pending.get(key, item["current_value"])
                 value = clamp(current + direction * step, item["min_value"], item["max_value"])
-                self.stage(state, key, value)
+                self.set_field(state, key, str(value))
 
     def run(self):
         self.backend.start()

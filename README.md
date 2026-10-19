@@ -53,8 +53,9 @@ loqctl
 | --- | --- |
 | `↑↓` / `j k` | Select a control |
 | `←→` / `- +` | Stage one step (on the mode row: cycle modes) |
-| `Enter` | Type a value, `Enter` stages it |
-| `a` | Apply staged edits (mode first, each write verified) |
+| `0-9` / `Backspace` | Type into the selected limit (custom mode); the old value is struck through |
+| `Enter` | Apply all staged edits, each write verified (refuses while a value is marked red). On the mode row: `←→` choose, `Enter` applies |
+| `Esc` | Clear the selected row |
 | `d` | Stage the firmware default for the selected control |
 | `r` | Discard staged edits |
 | `l` | Keyboard lighting panel |
