@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 loqctl contributors
+"""Command line entry point."""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+from . import VERSION
+from .api import http_client
+from .backend import Backend
+from .common import FIELDS, ControlError, _lazy, owner_uid
+from .hardware import Hardware, apply_batch
+
+argparse = _lazy("argparse")
+curses = _lazy("curses")
+
+def preauth(backend):
+    """Authenticate sudo once before curses starts; True when writes can proceed."""
+    if os.geteuid() == 0 or backend.remote:
+        return True
+    caps = backend.hardware.capabilities()
+    if not caps.get("attributes") and not caps.get("modes"):
+        return True
+    if shutil.which("sudo") is None:
+        return False
+    if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0:
+        return True
+    print("loqctl: sudo is needed to change firmware settings. Ctrl+C skips (read-only until you press s).",
+          file=sys.stderr)
+    try:
+        return subprocess.run(["sudo", "-v"]).returncode == 0
+    except KeyboardInterrupt:
+        return False
+
+
+def main(argv=None):
+    if sys.version_info < (3, 10):
+        print(f"loqctl: Python 3.10 or newer is required (found {sys.version_info[0]}.{sys.version_info[1]}).", file=sys.stderr)
+        return 1
+    if (sys.argv[1:] if argv is None else list(argv)) == ["--version"]:
+        print(VERSION)  # fast path: skip the argparse import
+        return 0
+    parser = argparse.ArgumentParser(description="Lenovo LOQ firmware controls and live terminal telemetry")
+    parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("--socket", help="Connect to an existing loqctl Unix socket")
+    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,mode,set,kb,serve}")
+    commands.add_parser("tui", help="Open the dashboard (default)")
+    for cmd in ("status", "metrics", "capabilities"):
+        commands.add_parser(cmd, help="Print " + cmd + " as JSON")
+    mode = commands.add_parser("mode", help="Read or set the platform mode")
+    mode.add_argument("value", nargs="?")
+    setting = commands.add_parser("set", help="Set one firmware attribute, with readback verification")
+    setting.add_argument("attribute", choices=FIELDS)
+    setting.add_argument("value", type=int)
+    kb_parser = commands.add_parser("kb", help="Keyboard RGB via LegionAura")
+    kb_parser.add_argument("args", nargs=argparse.REMAINDER, help="status|apply|off|static|breath|wave|hue|brightness …")
+    server = commands.add_parser("serve", help="Serve the local HTTP API; run with sudo")
+    server.add_argument("--uid", type=int, default=owner_uid(), help="UID permitted to connect; defaults to SUDO_UID")
+    internal = commands.add_parser("_apply")
+    internal.add_argument("changes", help="JSON list of [key, value] pairs")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "serve":
+            from .api import serve
+            serve(args.uid)
+            return 0
+        if args.command == "_apply":
+            result = apply_batch(Hardware(), json.loads(args.changes))
+        elif args.command == "kb":
+            # REMAINDER may include a leading "--" from argparse.
+            kb_args = list(args.args or [])
+            if kb_args and kb_args[0] == "--":
+                kb_args = kb_args[1:]
+            from .keyboard import kb_cli
+            result = kb_cli(kb_args)
+        else:
+            backend = Backend(args.socket)
+            if args.socket and not backend.remote:
+                raise ControlError("The requested API socket is not accepting connections.")
+            if backend.notice and args.command not in (None, "tui"):
+                print(backend.notice, file=sys.stderr)
+            if args.command in (None, "tui"):
+                if not sys.stdin.isatty() or not sys.stdout.isatty():
+                    raise ControlError("The dashboard needs a terminal. Use status for JSON output.")
+                from .ui import Dashboard
+                sudo_ok = preauth(backend)
+                curses.wrapper(lambda screen: Dashboard(screen, backend, sudo_ok=sudo_ok).run())
+                return 0
+            elif args.command in ("status", "metrics"):
+                result = backend.snapshot()
+                if args.command == "metrics":
+                    result = result.get("metrics", {})
+            elif args.command == "capabilities" or (args.command == "mode" and args.value is None):
+                from .api import request
+                result = request(backend.path, "GET", "/v1/capabilities") if backend.remote else backend.hardware.capabilities()
+                if args.command == "mode":
+                    result = {"mode": result["mode"], "modes": result["modes"]}
+            elif args.command == "mode":
+                result = backend.write("mode", args.value)
+            elif args.command == "set":
+                result = backend.write(args.attribute, args.value)
+        print(json.dumps(result, indent=2, allow_nan=False))
+        return 0
+    except (ControlError, OSError, ValueError, http_client.HTTPException, curses.error) as exc:
+        print("loqctl: " + str(exc), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130

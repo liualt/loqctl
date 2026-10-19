@@ -1,0 +1,234 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 loqctl contributors
+"""Keyboard RGB through LegionAura."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import threading
+
+from .colors import hex_to_rgb, rgb_to_hex
+from .common import LEGIONAURA, LEGIONAURA_CONFIG, ControlError, clamp
+
+class Keyboard:
+    """Lenovo 4-zone RGB via LegionAura. Config lives in ~/.config/legionaura/."""
+
+    EFFECTS = ("static", "breath", "wave", "hue", "off")
+    ZONES = 4
+
+    def __init__(self, binary=LEGIONAURA, config=LEGIONAURA_CONFIG):
+        self.binary = binary
+        self.config = Path(config)
+        self.effect = "static"
+        self.speed = 1
+        self.brightness = 2
+        self.wave_dir = "ltr"
+        self.zones = ["ffffff"] * self.ZONES
+        self.dirty = False  # in-memory edits not yet confirmed applied; load() leaves them alone
+        self.edits = 0  # bumped per in-memory edit; a job only clears dirty if no edit came after it
+        self.last_message = ""
+        self.last_seq = 0
+        self._cond = threading.Condition()
+        self._job = None
+        self._running = False
+        self._stop = False
+        self._thread = None
+        self.load()
+
+    @property
+    def available(self):
+        return bool(shutil.which(self.binary))
+
+    def load(self, force=False):
+        if self.dirty and not force:
+            return
+        try:
+            data = json.loads(self.config.read_text())
+        except (OSError, json.JSONDecodeError, TypeError):
+            return
+        self.effect = data.get("effect", self.effect)
+        self.speed = int(data.get("speed", self.speed) or 1)
+        self.brightness = int(data.get("brightness", self.brightness) or 2)
+        wave = data.get("waveDir", "ltr")
+        self.wave_dir = "rtl" if wave == "rtl" else "ltr"
+        zones = data.get("zones") or []
+        cleaned = []
+        for zone in zones[:self.ZONES]:
+            try:
+                cleaned.append(rgb_to_hex(*hex_to_rgb(zone)))
+            except ControlError:
+                cleaned.append("ffffff")
+        while len(cleaned) < self.ZONES:
+            cleaned.append(cleaned[-1] if cleaned else "ffffff")
+        self.zones = cleaned
+
+    def status(self):
+        self.load()
+        return {
+            "available": self.available,
+            "binary": shutil.which(self.binary) or self.binary,
+            "config": str(self.config),
+            "effect": self.effect,
+            "speed": self.speed,
+            "brightness": self.brightness,
+            "wave_dir": self.wave_dir,
+            "zones": list(self.zones),
+        }
+
+    def _run(self, args):
+        resolved = shutil.which(self.binary)
+        if not resolved:
+            raise ControlError("legionaura not found. Install the LegionAura package.")
+        result = subprocess.run([resolved, *args], capture_output=True, text=True, timeout=8, check=False)
+        if result.returncode:
+            detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+            raise ControlError("legionaura: " + detail)
+        return (result.stdout or "").strip() or "OK"
+
+    def command(self):
+        effect = self.effect
+        if effect == "off":
+            return ["off"]
+        if effect == "apply":
+            return ["apply"]
+        brightness = ["--brightness", str(clamp(self.brightness, 1, 2))]
+        speed = ["--speed", str(clamp(self.speed, 1, 4))]
+        if effect == "static":
+            return ["static", *self.zones, *brightness]
+        if effect == "breath":
+            return ["breath", *self.zones, *speed, *brightness]
+        if effect == "wave":
+            return ["wave", self.wave_dir, *speed, *brightness]
+        if effect == "hue":
+            return ["hue", *speed, *brightness]
+        raise ControlError(f"Unknown keyboard effect {effect!r}.")
+
+    def apply_current(self):
+        return self._run(self.command())
+
+    def mark_dirty(self):
+        with self._cond:
+            self.edits += 1
+            self.dirty = True
+
+    @property
+    def busy(self):
+        with self._cond:
+            return self._job is not None or self._running
+
+    def submit(self, args, label):
+        """Queue one legionaura run; a newer submit replaces one that has not started."""
+        with self._cond:
+            self._job = (list(args), label, self.edits)
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._worker, daemon=True)
+                self._thread.start()
+            self._cond.notify_all()
+
+    def _worker(self):
+        while True:
+            with self._cond:
+                while self._job is None and not self._stop:
+                    self._cond.wait()
+                if self._stop:
+                    return
+                args, label, edits = self._job
+                self._job = None
+                self._running = True
+            ok = False
+            try:
+                message = f"Keyboard applied ({label}). {self._run(args)}"
+                ok = True
+            except ControlError as exc:
+                message = str(exc)
+            except Exception as exc:
+                message = f"legionaura: {exc}"
+            with self._cond:
+                self._running = False
+                if ok and self._job is None and edits == self.edits:
+                    self.dirty = False
+                self.last_message = message
+                self.last_seq += 1
+
+    def close(self):
+        with self._cond:
+            self._stop = True
+            self._cond.notify_all()
+        if self._thread is not None:
+            self._thread.join(0.1)
+
+    def set_brightness(self, value):
+        self.brightness = clamp(int(value), 1, 2)
+        return self._run(["--brightness", str(self.brightness)])
+
+
+def kb_cli(argv):
+    """LegionAura keyboard subcommands."""
+    kb = Keyboard()
+    if not argv:
+        return kb.status()
+    action = argv[0]
+    rest = argv[1:]
+    if action == "status":
+        return kb.status()
+    if action == "apply":
+        return {"result": kb.apply_current(), **kb.status()}
+    if action == "off":
+        kb.effect = "off"
+        return {"result": kb.apply_current(), **kb.status()}
+    if action == "brightness" and rest:
+        return {"result": kb.set_brightness(rest[0]), **kb.status()}
+    if action in ("static", "breath"):
+        if not rest:
+            raise ControlError(f"{action} needs at least one RRGGBB color.")
+        colors, brightness, speed = [], kb.brightness, kb.speed
+        i = 0
+        while i < len(rest):
+            token = rest[i]
+            if token == "--brightness" and i + 1 < len(rest):
+                brightness = int(rest[i + 1]); i += 2; continue
+            if token == "--speed" and i + 1 < len(rest):
+                speed = int(rest[i + 1]); i += 2; continue
+            colors.append(rgb_to_hex(*hex_to_rgb(token)))
+            i += 1
+        if not colors:
+            raise ControlError(f"{action} needs at least one RRGGBB color.")
+        while len(colors) < Keyboard.ZONES:
+            colors.append(colors[-1])
+        kb.zones = colors[:Keyboard.ZONES]
+        kb.effect = action
+        kb.brightness = clamp(brightness, 1, 2)
+        kb.speed = clamp(speed, 1, 4)
+        return {"result": kb.apply_current(), **kb.status()}
+    if action == "wave":
+        direction = "ltr"
+        brightness, speed = kb.brightness, kb.speed
+        i = 0
+        while i < len(rest):
+            token = rest[i]
+            if token in ("ltr", "rtl"):
+                direction = token; i += 1; continue
+            if token == "--brightness" and i + 1 < len(rest):
+                brightness = int(rest[i + 1]); i += 2; continue
+            if token == "--speed" and i + 1 < len(rest):
+                speed = int(rest[i + 1]); i += 2; continue
+            raise ControlError(f"Unexpected wave argument: {token}")
+        kb.effect, kb.wave_dir = "wave", direction
+        kb.brightness, kb.speed = clamp(brightness, 1, 2), clamp(speed, 1, 4)
+        return {"result": kb.apply_current(), **kb.status()}
+    if action == "hue":
+        brightness, speed = kb.brightness, kb.speed
+        i = 0
+        while i < len(rest):
+            token = rest[i]
+            if token == "--brightness" and i + 1 < len(rest):
+                brightness = int(rest[i + 1]); i += 2; continue
+            if token == "--speed" and i + 1 < len(rest):
+                speed = int(rest[i + 1]); i += 2; continue
+            raise ControlError(f"Unexpected hue argument: {token}")
+        kb.effect = "hue"
+        kb.brightness, kb.speed = clamp(brightness, 1, 2), clamp(speed, 1, 4)
+        return {"result": kb.apply_current(), **kb.status()}
+    raise ControlError("kb usage: status|apply|off|brightness|static|breath|wave|hue …")

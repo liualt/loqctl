@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 loqctl contributors
+"""Local or remote data source for the CLI and dashboard."""
+from __future__ import annotations
+
+import os
+import threading
+import time
+
+from .api import http_client, request, socket_alive
+from .common import ControlError, socket_path
+from .hardware import Hardware
+from .sensors import Sampler, Sensors
+
+class Backend:
+    def __init__(self, path=None):
+        self.path = path or socket_path()
+        self.notice = ""
+        self.remote = socket_alive(self.path)
+        if not self.remote and os.path.lexists(self.path):
+            self.notice = f"Ignored stale API socket {self.path}; using local access."
+        self.hardware = Hardware()
+        self.sampler = None
+        self.latest = {}
+        self.stop = threading.Event()
+        self.wake = threading.Event()
+
+    def snapshot(self):
+        if self.remote:
+            return request(self.path, "GET", "/v1/status")
+        sensors = Sensors()
+        sensors.sample()
+        time.sleep(0.25)
+        return {**self.hardware.capabilities(), "metrics": sensors.sample()}
+
+    def start(self):
+        if not self.remote:
+            self.sampler = Sampler(self.hardware).start()
+        else:
+            def poll():
+                while not self.stop.is_set():
+                    try:
+                        self.latest = request(self.path, "GET", "/v1/status")
+                    except (OSError, ControlError, ValueError, http_client.HTTPException) as exc:
+                        self.latest = {**self.latest, "error": "API connection failed: " + str(exc)}
+                    self.wake.wait(1)
+                    self.wake.clear()
+            threading.Thread(target=poll, daemon=True).start()
+
+    def state(self):
+        return self.sampler.latest if self.sampler else self.latest
+
+    def refresh(self):
+        """Ask for a fresh firmware read soon, e.g. right after a write."""
+        if self.sampler:
+            self.sampler.refresh()
+        else:
+            self.wake.set()
+
+    def controls(self):
+        """Read firmware now, without using the telemetry cache."""
+        return request(self.path, "GET", "/v1/capabilities") if self.remote else self.hardware.capabilities()
+
+    def write(self, key, value):
+        if self.remote:
+            endpoint = "/v1/mode" if key == "mode" else "/v1/attributes/" + key
+            return request(self.path, "POST", endpoint, {"mode" if key == "mode" else "value": value})
+        return self.hardware.set_mode(value) if key == "mode" else self.hardware.set_value(key, value)
+
+    def close(self):
+        self.stop.set()
+        self.wake.set()
+        if self.sampler:
+            self.sampler.halt()
