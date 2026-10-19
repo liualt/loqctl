@@ -631,6 +631,7 @@ class Dashboard(FanPanel):
             "",
             "Fans      f open fan curves (custom mode only)   arrows move cell",
             "          0-9 type   +/- step   Enter apply all   r discard   Esc clear/back",
+            "          p preset   W save curve   q quit",
             "Global    t sensors view   Space pause telemetry   ? help   q quit",
             "Colors use your terminal ANSI palette only (no custom RGB UI).",
             "Press ? or Esc to close.",

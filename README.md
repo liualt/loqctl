@@ -46,7 +46,7 @@ sudo install -d /usr/local/lib/loqctl && sudo cp -r loqctl loqctl.py /usr/local/
 
 When sudo runs a user-writable file, any process running as you can gain root by editing it.
 
-loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_capdata`, `_fancurve`) run `sudo -n -- python3 -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
+loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_capdata`, `_fancurve`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
 
 Or run it in place with `python3 loqctl.py`.
 
@@ -265,7 +265,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 
 - Linux and Lenovo-WMI hardware only. Tested on a LOQ 15IRX9 (Intel) on CachyOS; not tested on other distros or other Lenovo models.
 - AMD CPU paths (`k10temp`, `zenpower`, RAPL on Zen) are tested with simulated sysfs only.
-- Not verified on hardware: fan curve reads and writes (`legion_laptop`), EC temperatures (they depend on the `legion_laptop` hwmon name `legion_hwmon`), the extra attribute keys added to the write allowlist in Stage 6, and the sudo capdata fetch. All are covered by simulated sysfs and mocked subprocess tests.
+- Not verified on hardware: fan curve reads and writes (`legion_laptop`), EC temperatures (they depend on the `legion_laptop` hwmon name `legion_hwmon`), the extra attribute keys added to the write allowlist in 0.3.0, and the sudo capdata fetch. All are covered by simulated sysfs and mocked subprocess tests.
 - Fan curve re-apply and suspend/resume detection in `serve` are untested on real hardware.
 - Per-mode limits need the firmware capdata table in debugfs; without it stock modes show N/A.
 - Privilege escalation is `sudo` only (no `doas`/`pkexec`).
