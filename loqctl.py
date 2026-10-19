@@ -50,18 +50,29 @@ textwrap = _lazy("textwrap")
 
 VERSION = "0.2.0"
 ENTRY = str(Path(__file__).resolve())
-LEGIONAURA = "/usr/bin/legionaura"
+LEGIONAURA = "legionaura"
 LEGIONAURA_CONFIG = Path.home() / ".config/legionaura/config.json"
 # Explicit write allowlist. Other firmware attributes are never writable here.
+# Never add dgpu_enable, gpu_mode, dgpu_didvid or dgpu_boost_clk. Only attributes the
+# firmware exposes appear (capabilities skips missing ones).
 FIELDS = {
     "ppt_pl1_spl": ("CPU sustained / PL1", "W"),
     "ppt_pl2_sppt": ("CPU boost / PL2", "W"),
     "ppt_cpu_cl": ("CPU cross-load", "W"),
+    "ppt_pl1_spl_cl": ("CPU PL1 cross-load", "W"),
+    "ppt_pl2_sppt_cl": ("CPU PL2 cross-load", "W"),
+    "ppt_pl3_fppt": ("CPU fast / PL3", "W"),
+    "ppt_pl3_fppt_cl": ("CPU PL3 cross-load", "W"),
+    "ppt_pl4_ipl": ("CPU peak / PL4", "W"),
+    "ppt_pl4_ipl_cl": ("CPU PL4 cross-load", "W"),
+    "ppt_pl1_apu_spl": ("APU sustained", "W"),
     "ppt_pl1_tau": ("CPU boost duration", "s"),
     "cpu_temp": ("CPU temperature limit", "°C"),
     "gpu_nv_ctgp": ("GPU configurable TGP", "W"),
     "gpu_nv_ppab": ("GPU dynamic boost", "W"),
     "gpu_nv_ac_offset": ("GPU AC power offset", "W"),
+    "gpu_nv_bpl": ("GPU base power", "W"),
+    "gpu_nv_cpu_boost": ("GPU CPU boost", "W"),
     "gpu_temp": ("GPU temperature limit", "°C"),
 }
 SPARK = "▁▂▃▄▅▆▇█"
@@ -320,9 +331,94 @@ class Hardware:
                     "current": int(actual), "verified": True}
 
 
+class NVML:
+    """NVIDIA management library through ctypes; read() is None when unusable."""
+
+    def __init__(self, lib=None):
+        self.lib = lib
+        self.failed = False
+        self.ready = False
+        self.ctypes = None
+
+    def _init(self):
+        import ctypes
+        self.ctypes = ctypes
+        if self.lib is None:
+            try:
+                self.lib = ctypes.CDLL("libnvidia-ml.so.1")
+            except OSError:
+                self.failed = True
+                return
+        try:
+            if self.lib.nvmlInit_v2() != 0:
+                self.failed = True
+                return
+        except (OSError, AttributeError):
+            self.failed = True
+            return
+        self.ready = True
+
+    def read(self):
+        if self.failed:
+            return None
+        if self.ctypes is None or not self.ready:
+            self._init()
+            if self.failed:
+                return None
+        ct, lib = self.ctypes, self.lib
+
+        class Util(ct.Structure):
+            _fields_ = [("gpu", ct.c_uint), ("memory", ct.c_uint)]
+
+        class Mem(ct.Structure):
+            _fields_ = [("total", ct.c_ulonglong), ("free", ct.c_ulonglong), ("used", ct.c_ulonglong)]
+
+        def value(call, kind, *args):
+            box = kind()
+            try:
+                return box if call(*args, ct.byref(box)) == 0 else None
+            except (OSError, AttributeError):
+                return None
+
+        try:
+            count = value(lib.nvmlDeviceGetCount_v2, ct.c_uint)
+            if count is None:
+                return None
+            devices = []
+            for index in range(count.value):
+                handle = ct.c_void_p()
+                if lib.nvmlDeviceGetHandleByIndex_v2(index, ct.byref(handle)) != 0:
+                    continue
+                name = ct.create_string_buffer(96)
+                named = lib.nvmlDeviceGetName(handle, name, 96) == 0
+                temp = value(lib.nvmlDeviceGetTemperature, ct.c_uint, handle, 0)
+                power = value(lib.nvmlDeviceGetPowerUsage, ct.c_uint, handle)
+                limit = value(lib.nvmlDeviceGetEnforcedPowerLimit, ct.c_uint, handle)
+                core = value(lib.nvmlDeviceGetClockInfo, ct.c_uint, handle, 0)
+                memclk = value(lib.nvmlDeviceGetClockInfo, ct.c_uint, handle, 2)
+                util = value(lib.nvmlDeviceGetUtilizationRates, Util, handle)
+                mem = value(lib.nvmlDeviceGetMemoryInfo, Mem, handle)
+                mib = 1024 * 1024
+                devices.append({
+                    "name": name.value.decode(errors="replace") if named else None,
+                    "temperature_c": temp.value if temp is not None else None,
+                    "power_w": power.value / 1000 if power is not None else None,
+                    "power_limit_w": limit.value / 1000 if limit is not None else None,
+                    "clock_mhz": core.value if core is not None else None,
+                    "memory_clock_mhz": memclk.value if memclk is not None else None,
+                    "utilization_pct": util.gpu if util is not None else None,
+                    "memory_used_mib": mem.used / mib if mem is not None else None,
+                    "memory_total_mib": mem.total / mib if mem is not None else None})
+            return devices
+        except (OSError, AttributeError):
+            self.failed = True
+            return None
+
+
 class Sensors:
     def __init__(self, root=Path("/sys"), proc=Path("/proc")):
         self.root, self.proc = Path(root), Path(proc)
+        self.nvml = NVML()
         self.previous_cpu = {}
         self.previous_energy = {}
 
@@ -344,6 +440,8 @@ class Sensors:
 
     def cpu_power(self):
         watts, sources, denied = [], [], False
+        # AMD Zen exposes package energy through the same powercap intel-rapl driver
+        # (amd_energy was removed in 5.13), so one glob covers both vendors.
         for path in sorted(self.root.glob("class/powercap/intel-rapl:*")):
             if not (read(path / "name", "") or "").startswith("package-"):
                 continue  # exclude nested domains and duplicate MMIO counters
@@ -369,10 +467,26 @@ class Sensors:
                 "RAPL package energy" if sources else
                 "RAPL needs root: run sudo loqctl serve" if denied else "Waiting for RAPL samples or no package counter")
 
+    def gpu_suspended(self):
+        for path in self.root.glob("bus/pci/devices/*"):
+            if (read(path / "vendor", "") or "") == "0x10de" and \
+                    (read(path / "class", "") or "").startswith("0x03") and \
+                    read(path / "power/runtime_status") == "suspended":
+                return True
+        return False
+
     def gpu(self):
+        if self.gpu_suspended():  # querying would wake the dGPU
+            return {"available": False, "suspended": True, "error": "GPU is asleep (runtime suspended)"}
+        devices = self.nvml.read()
+        if devices is not None:
+            return {"available": bool(devices), "devices": devices, "source": "nvml"}
+        smi = shutil.which("nvidia-smi")
+        if not smi:
+            return {"available": False, "error": "NVIDIA driver unavailable"}
         fields = "name,temperature.gpu,power.draw,power.limit,clocks.gr,clocks.mem,utilization.gpu,memory.used,memory.total"
         try:
-            result = subprocess.run(["/usr/bin/nvidia-smi", "--query-gpu=" + fields,
+            result = subprocess.run([smi, "--query-gpu=" + fields,
                                      "--format=csv,noheader,nounits"],
                                     capture_output=True, text=True, timeout=2.5, check=False)
             if result.returncode:
@@ -385,23 +499,52 @@ class Sensors:
                                          "clock_mhz", "memory_clock_mhz", "utilization_pct",
                                          "memory_used_mib", "memory_total_mib"),
                                         [row[0]] + [number(v) for v in row[1:]])))
-            return {"available": bool(devices), "devices": devices}
+            return {"available": bool(devices), "devices": devices, "source": "nvidia-smi"}
         except (OSError, subprocess.TimeoutExpired):
             return {"available": False, "error": "NVIDIA sensor query unavailable or timed out"}
 
+    @staticmethod
+    def cpu_temperature(hwmon_dirs):
+        """Headline CPU temperature and the label it came from."""
+        best = (None, None)
+        for hw in hwmon_dirs:
+            name = read(hw / "name", "")
+            if name not in ("coretemp", "k10temp", "zenpower"):
+                continue
+            readings = []
+            for p in hw.glob("temp*_input"):
+                v = scaled(p, 1000)
+                if v is not None:
+                    readings.append((read(p.with_name(p.name.replace("_input", "_label")), "") or "", v))
+            if not readings:
+                continue
+            if name == "coretemp":
+                pick = [r for r in readings if r[0].startswith("Package id")]
+                label = "Package id" if pick else "max of cores"
+            else:
+                pick, label = [r for r in readings if r[0] == "Tdie"], "Tdie"
+                if not pick:
+                    pick, label = [r for r in readings if r[0] == "Tctl"], "Tctl"
+                if not pick:
+                    label = "max of " + name
+            value = max(v for _, v in (pick or readings))
+            if best[0] is None or value > best[0]:
+                best = (value, label)
+        return best
+
     def sample(self):
         usage = self.cpu_usage()
-        temperatures, fans = [], []
-        for hw in self.root.glob("class/hwmon/hwmon*"):
+        fans = []
+        hwmons = sorted(self.root.glob("class/hwmon/hwmon*"))
+        for hw in hwmons:
             name = read(hw / "name", "")
-            if name in ("coretemp", "k10temp", "zenpower"):
-                temperatures += [v for p in hw.glob("temp*_input") if (v := scaled(p, 1000)) is not None]
             for p in hw.glob("fan*_input"):
                 fans.append({"name": read(p.with_name(p.name.replace("_input", "_label")), name + "/" + p.stem),
                              "rpm": scaled(p)})
         mhz = [v for p in self.root.glob("devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")
                if (v := scaled(p, 1000)) is not None]
         power, power_source = self.cpu_power()
+        temperature, temperature_source = self.cpu_temperature(hwmons)
         mem = {}
         for line in (read(self.proc / "meminfo", "") or "").splitlines():
             key, value = line.split(":", 1)
@@ -417,7 +560,7 @@ class Sensors:
                 ac.append(online == "1")
         return {"timestamp": time.time(),
                 "cpu": {"utilization_pct": usage.pop("cpu", None), "cores": usage,
-                        "temperature_c": max(temperatures) if temperatures else None,
+                        "temperature_c": temperature, "temperature_source": temperature_source,
                         "power_w": power, "power_source": power_source,
                         "clock_mhz": sum(mhz) / len(mhz) if mhz else None,
                         "max_clock_mhz": max(mhz) if mhz else None},
@@ -738,7 +881,7 @@ class Keyboard:
 
     @property
     def available(self):
-        return bool(shutil.which(self.binary) or Path(self.binary).is_file())
+        return bool(shutil.which(self.binary))
 
     def load(self, force=False):
         if self.dirty and not force:
@@ -767,7 +910,7 @@ class Keyboard:
         self.load()
         return {
             "available": self.available,
-            "binary": self.binary,
+            "binary": shutil.which(self.binary) or self.binary,
             "config": str(self.config),
             "effect": self.effect,
             "speed": self.speed,
@@ -777,9 +920,10 @@ class Keyboard:
         }
 
     def _run(self, args):
-        if not self.available:
+        resolved = shutil.which(self.binary)
+        if not resolved:
             raise ControlError("legionaura not found. Install the LegionAura package.")
-        result = subprocess.run([self.binary, *args], capture_output=True, text=True, timeout=8, check=False)
+        result = subprocess.run([resolved, *args], capture_output=True, text=True, timeout=8, check=False)
         if result.returncode:
             detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
             raise ControlError("legionaura: " + detail)
@@ -1161,7 +1305,7 @@ class Dashboard:
             fmt(gpu.get("utilization_pct"), "%"),
             fmt(gpu.get("temperature_c"), "°C"),
             fmt(gpu.get("power_w"), "W", 1),
-        ])) if gpu else "offline"
+        ])) if gpu else "asleep" if gpu_meta.get("suspended") else "offline"
         self.box(gy, x, gpu_h, width, "gpu", self.theme.GPU, gpu_right)
         name = gpu.get("name") or gpu_meta.get("error") or "Sampling…"
         self.put(gy + 1, ix, name[:iw], self.theme.GPU, True)

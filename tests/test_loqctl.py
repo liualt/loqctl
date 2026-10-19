@@ -934,5 +934,168 @@ class Stage5Tests(unittest.TestCase):
         self.assertEqual(refreshed, [1, 1])
 
 
+class FakeNVML:
+    """Plain-Python stand-in for libnvidia-ml; bad names return nonzero."""
+
+    def __init__(self, bad=()):
+        self.bad = set(bad)
+        f = self
+        def out(name, setter):
+            def call(*args):
+                if name in f.bad:
+                    return 3
+                setter(args[-1]._obj)
+                return 0
+            return call
+        self.nvmlInit_v2 = lambda: 0
+        self.nvmlDeviceGetCount_v2 = out("count", lambda o: setattr(o, "value", 1))
+        self.nvmlDeviceGetHandleByIndex_v2 = lambda i, h: 0
+        self.nvmlDeviceGetName = lambda h, buf, n: (setattr(buf, "value", b"RTX Test"), 0)[1]
+        self.nvmlDeviceGetTemperature = out("temp", lambda o: setattr(o, "value", 51))
+        self.nvmlDeviceGetPowerUsage = out("power", lambda o: setattr(o, "value", 45000))
+        self.nvmlDeviceGetEnforcedPowerLimit = out("limit", lambda o: setattr(o, "value", 80000))
+        self.nvmlDeviceGetClockInfo = out("clock", lambda o: setattr(o, "value", 1500))
+        def util(o):
+            o.gpu, o.memory = 33, 10
+        self.nvmlDeviceGetUtilizationRates = out("util", util)
+        def mem(o):
+            o.total, o.free, o.used = 8192 * 2**20, 6144 * 2**20, 2048 * 2**20
+        self.nvmlDeviceGetMemoryInfo = out("mem", mem)
+
+
+class Stage6Tests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def put(self, rel, text):
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def pci(self, status):
+        self.put("bus/pci/devices/0000:01:00.0/vendor", "0x10de\n")
+        self.put("bus/pci/devices/0000:01:00.0/class", "0x030000\n")
+        self.put("bus/pci/devices/0000:01:00.0/power/runtime_status", status + "\n")
+
+    def test_nvml_reads_devices(self):
+        devices = loq.NVML(FakeNVML()).read()
+        self.assertEqual(len(devices), 1)
+        d = devices[0]
+        self.assertEqual((d["name"], d["temperature_c"], d["power_w"], d["power_limit_w"]),
+                         ("RTX Test", 51, 45.0, 80.0))
+        self.assertEqual((d["clock_mhz"], d["memory_clock_mhz"], d["utilization_pct"]), (1500, 1500, 33))
+        self.assertEqual((d["memory_used_mib"], d["memory_total_mib"]), (2048, 8192))
+
+    def test_nvml_unsupported_field_is_none(self):
+        d = loq.NVML(FakeNVML(bad={"power"})).read()[0]
+        self.assertIsNone(d["power_w"])
+        self.assertEqual(d["temperature_c"], 51)
+        self.assertEqual(d["power_limit_w"], 80.0)
+
+    def test_nvml_failure_falls_back_to_nvidia_smi(self):
+        sensors = loq.Sensors(self.root, self.root / "proc")
+        csv_out = "RTX Test, 50, 20.5, 80, 300, 405, 7, 100, 8192\n"
+        run = Mock(return_value=Mock(returncode=0, stdout=csv_out))
+        with patch("ctypes.CDLL", side_effect=OSError("no lib")), \
+                patch.object(loq.shutil, "which", return_value="/x/nvidia-smi"), \
+                patch.object(loq.subprocess, "run", run):
+            gpu = sensors.gpu()
+            self.assertTrue(sensors.nvml.failed)
+        self.assertEqual(gpu["source"], "nvidia-smi")
+        self.assertEqual(gpu["devices"][0]["power_w"], 20.5)
+        self.assertEqual(run.call_args[0][0][0], "/x/nvidia-smi")
+        with patch.object(loq.shutil, "which", return_value=None):
+            self.assertEqual(sensors.gpu(), {"available": False, "error": "NVIDIA driver unavailable"})
+
+    def test_gpu_skipped_while_suspended(self):
+        sensors = loq.Sensors(self.root, self.root / "proc")
+        sensors.nvml = Mock()
+        sensors.nvml.read.return_value = []
+        self.pci("suspended")
+        with patch.object(loq.subprocess, "run") as run:
+            gpu = sensors.gpu()
+        self.assertTrue(gpu["suspended"])
+        self.assertFalse(gpu["available"])
+        sensors.nvml.read.assert_not_called()
+        run.assert_not_called()
+        self.pci("active")
+        sensors.nvml.read.return_value = [{"name": "x"}]
+        self.assertEqual(sensors.gpu()["source"], "nvml")
+        sensors.nvml.read.assert_called_once()
+
+    def test_expanded_allowlist(self):
+        new = {"ppt_pl1_spl_cl", "ppt_pl2_sppt_cl", "ppt_pl3_fppt", "ppt_pl3_fppt_cl", "ppt_pl4_ipl",
+               "ppt_pl4_ipl_cl", "ppt_pl1_apu_spl", "gpu_nv_bpl", "gpu_nv_cpu_boost"}
+        for key in new:
+            self.assertIn(key, loq.FIELDS)
+            self.assertLessEqual(len(loq.FIELDS[key][0]), 20)
+            self.assertEqual(loq.FIELDS[key][1], "W")
+        forbidden = ("dgpu_enable", "gpu_mode", "dgpu_didvid", "dgpu_boost_clk")
+        for key in forbidden:
+            self.assertNotIn(key, loq.FIELDS)
+        attr = self.root / "class/firmware-attributes/lenovo-wmi-other-0/attributes/dgpu_enable"
+        attr.mkdir(parents=True)
+        (attr / "current_value").write_text("0")
+        with self.assertRaises(loq.ControlError):
+            loq.Hardware(self.root).set_value("dgpu_enable", 1)
+
+    def hwmon(self, n, name, temps):
+        self.put(f"class/hwmon/hwmon{n}/name", name)
+        for i, (label, value) in enumerate(temps, 1):
+            self.put(f"class/hwmon/hwmon{n}/temp{i}_input", str(value * 1000))
+            if label:
+                self.put(f"class/hwmon/hwmon{n}/temp{i}_label", label)
+
+    def temp_of(self):
+        return loq.Sensors.cpu_temperature(sorted((self.root / "class/hwmon").glob("hwmon*")))
+
+    def test_cpu_temperature_labels(self):
+        self.assertEqual(self.temp_of(), (None, None))
+        self.hwmon(0, "coretemp", [("Package id 0", 60), ("Core 0", 70)])
+        self.assertEqual(self.temp_of(), (60, "Package id"))
+        self.temp.cleanup(); self.setUp()
+        self.hwmon(0, "k10temp", [("Tctl", 80), ("Tdie", 65), ("Tccd1", 90)])
+        self.assertEqual(self.temp_of(), (65, "Tdie"))
+        self.temp.cleanup(); self.setUp()
+        self.hwmon(0, "k10temp", [("Tctl", 80), ("Tccd1", 90)])
+        self.assertEqual(self.temp_of(), (80, "Tctl"))
+        self.temp.cleanup(); self.setUp()
+        self.hwmon(0, "zenpower", [("Tdie", 55), ("Tctl", 75)])
+        self.assertEqual(self.temp_of(), (55, "Tdie"))
+
+    def test_amd_rapl_package_power(self):
+        self.hwmon(0, "k10temp", [("Tctl", 50)])
+        self.put("class/powercap/intel-rapl:0/name", "package-0")
+        self.put("class/powercap/intel-rapl:0/energy_uj", "1000000")
+        self.put("class/powercap/intel-rapl:0/max_energy_range_uj", "262143328850")
+        self.put("proc/uptime", "10 5")
+        self.put("proc/meminfo", "MemTotal: 1024 kB\nMemAvailable: 512 kB")
+        sensors = loq.Sensors(self.root, self.root / "proc")
+        sensors.gpu = lambda: {"available": False}
+        with patch.object(loq.time, "monotonic", side_effect=[100.0, 102.0]):
+            first = sensors.sample()
+            self.put("class/powercap/intel-rapl:0/energy_uj", "21000000")
+            second = sensors.sample()
+        self.assertIsNone(first["cpu"]["power_w"])
+        self.assertAlmostEqual(second["cpu"]["power_w"], 10.0)
+        self.assertEqual(second["cpu"]["temperature_source"], "Tctl")
+
+    def test_legionaura_resolved_via_path(self):
+        kb = loq.Keyboard(binary="legionaura", config="/nonexistent/loqctl.json")
+        run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
+        with patch.object(loq.shutil, "which", return_value="/opt/bin/legionaura"), \
+                patch.object(loq.subprocess, "run", run):
+            self.assertEqual(kb._run(["off"]), "ok")
+            self.assertEqual(kb.status()["binary"], "/opt/bin/legionaura")
+        self.assertEqual(run.call_args[0][0], ["/opt/bin/legionaura", "off"])
+        with patch.object(loq.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(loq.ControlError, "not found"):
+                kb._run(["off"])
+
+
 if __name__ == "__main__":
     unittest.main()

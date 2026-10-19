@@ -13,7 +13,7 @@ A btop-style terminal dashboard and CLI for Lenovo LOQ laptops on Linux. It show
 | Kernel | Lenovo WMI drivers `lenovo-wmi-gamezone` and `lenovo-wmi-other`. You need `/sys/class/firmware-attributes/lenovo-wmi-other*/` to exist. Linux 6.17 or newer is required for these drivers; check your own kernel with the command below. |
 | Privileges | `sudo` for writing firmware settings. Reading works without it, except CPU power (RAPL), which needs root. |
 | Terminal | At least 72×20 (96×24 recommended), UTF-8 locale |
-| Optional | `nvidia-smi` at `/usr/bin/nvidia-smi` for GPU data; `legionaura` for keyboard RGB |
+| Optional | `libnvidia-ml` (NVML) or `nvidia-smi` on `PATH` for GPU data; `legionaura` on `PATH` for keyboard RGB |
 
 Check that your machine is supported:
 
@@ -115,11 +115,20 @@ Writes check the firmware's min, max and step, write once, then read the value b
 | `ppt_pl1_spl` | CPU sustained power limit | W |
 | `ppt_pl2_sppt` | CPU boost power limit | W |
 | `ppt_cpu_cl` | CPU cross-load power limit | W |
+| `ppt_pl1_spl_cl` | CPU sustained limit under cross-load | W |
+| `ppt_pl2_sppt_cl` | CPU boost limit under cross-load | W |
+| `ppt_pl3_fppt` | CPU fast (PL3) power limit | W |
+| `ppt_pl3_fppt_cl` | CPU PL3 limit under cross-load | W |
+| `ppt_pl4_ipl` | CPU peak (PL4) power limit | W |
+| `ppt_pl4_ipl_cl` | CPU PL4 limit under cross-load | W |
+| `ppt_pl1_apu_spl` | APU sustained power limit | W |
 | `ppt_pl1_tau` | CPU boost duration | s |
 | `cpu_temp` | CPU temperature limit | °C |
 | `gpu_nv_ctgp` | GPU configurable total graphics power | W |
 | `gpu_nv_ppab` | GPU power performance aware boost | W |
 | `gpu_nv_ac_offset` | GPU AC power baseline offset | W |
+| `gpu_nv_bpl` | GPU base power limit | W |
+| `gpu_nv_cpu_boost` | GPU power taken from the CPU boost budget | W |
 | `gpu_temp` | GPU temperature limit | °C |
 
 Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show the active mode's live values, which may sit outside that range. Read-back confirms the configuration, not real workload wattage.
@@ -165,8 +174,8 @@ Use `--socket PATH` to point the CLI or dashboard at a specific socket.
 
 ## Where the readings come from
 
-- CPU temperature: hottest sensor from `coretemp`, `k10temp` or `zenpower`. Power: RAPL package energy deltas (needs root). Clocks: cpufreq. Utilization: `/proc/stat`.
-- GPU: `nvidia-smi` (querying can wake a sleeping GPU). The dashboard shows the first GPU; JSON lists all.
+- CPU: Intel and AMD Ryzen are supported. Temperature comes from `coretemp` (Package id), `k10temp` or `zenpower` (Tdie, else Tctl). Power: powercap RAPL package energy deltas (needs root; AMD Zen uses the same driver). AMD is tested with simulated sysfs only. Clocks: cpufreq. Utilization: `/proc/stat`.
+- GPU: NVML (`libnvidia-ml`) when present, else `nvidia-smi`. While the GPU is runtime-suspended it is not queried, so loqctl does not wake it; the panel shows `asleep`. The dashboard shows the first GPU; JSON lists all.
 - RAM: `/proc/meminfo`. Battery, AC and fans: sysfs, when present.
 - Missing readings show as `N/A` / `null`.
 
@@ -181,12 +190,11 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | "RAPL needs root: run sudo loqctl serve" | CPU power reads are root-only on some kernels. Use the privileged server; do not run the TUI with `sudo -E` |
 | "A loqctl server is already running" | Another `loqctl serve` answers on the socket; stop it first. A stale socket is removed automatically |
 | "legionaura not found" | Install LegionAura (AUR package `legionaura` on Arch) |
-| GPU shows offline | `nvidia-smi` missing, not at `/usr/bin/nvidia-smi`, or driver not loaded |
+| GPU shows offline | Neither `libnvidia-ml` nor `nvidia-smi` (on `PATH`) is usable, or the driver is not loaded. `asleep` means the GPU is runtime-suspended |
 
 ## Known limitations
 
 - Linux and Lenovo-WMI hardware only. Not tested on other distros or other Lenovo models.
-- Absolute paths for `nvidia-smi` and `legionaura` (`/usr/bin/...`) may not match NixOS or custom installs.
 - Privilege escalation is `sudo` only (no `doas`/`pkexec`).
 - Keyboard RGB depends on the third-party `legionaura` tool.
 
