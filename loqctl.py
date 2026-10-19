@@ -726,6 +726,7 @@ class Keyboard:
         self.wave_dir = "ltr"
         self.zones = ["ffffff"] * self.ZONES
         self.dirty = False  # in-memory edits not yet confirmed applied; load() leaves them alone
+        self.edits = 0  # bumped per in-memory edit; a job only clears dirty if no edit came after it
         self.last_message = ""
         self.last_seq = 0
         self._cond = threading.Condition()
@@ -805,6 +806,11 @@ class Keyboard:
     def apply_current(self):
         return self._run(self.command())
 
+    def mark_dirty(self):
+        with self._cond:
+            self.edits += 1
+            self.dirty = True
+
     @property
     def busy(self):
         with self._cond:
@@ -813,7 +819,7 @@ class Keyboard:
     def submit(self, args, label):
         """Queue one legionaura run; a newer submit replaces one that has not started."""
         with self._cond:
-            self._job = (list(args), label)
+            self._job = (list(args), label, self.edits)
             if self._thread is None:
                 self._thread = threading.Thread(target=self._worker, daemon=True)
                 self._thread.start()
@@ -826,7 +832,7 @@ class Keyboard:
                     self._cond.wait()
                 if self._stop:
                     return
-                args, label = self._job
+                args, label, edits = self._job
                 self._job = None
                 self._running = True
             ok = False
@@ -839,7 +845,7 @@ class Keyboard:
                 message = f"legionaura: {exc}"
             with self._cond:
                 self._running = False
-                if ok and self._job is None:
+                if ok and self._job is None and edits == self.edits:
                     self.dirty = False
                 self.last_message = message
                 self.last_seq += 1
@@ -1469,7 +1475,7 @@ class Dashboard:
     def kb_set_hsv(self, h, s, v):
         kb = self.keyboard
         kb.zones[self.kb_zone] = rgb_to_hex(*hsv_to_rgb(h, s, v))
-        kb.dirty = True
+        kb.mark_dirty()
         if self.kb_live:
             # Live tweaking uses static so zone colors are visible regardless of effect.
             try:
@@ -1525,7 +1531,7 @@ class Dashboard:
         elif ch == ord("e"):
             idx = kb.EFFECTS.index(kb.effect) if kb.effect in kb.EFFECTS else 0
             kb.effect = kb.EFFECTS[(idx + 1) % len(kb.EFFECTS)]
-            kb.dirty = True
+            kb.mark_dirty()
             self.notice = f"Effect → {kb.effect}"
             if self.kb_live:
                 try:
@@ -1534,7 +1540,7 @@ class Dashboard:
                     self.notice = str(exc)
         elif ch == ord("b"):
             kb.brightness = 1 if kb.brightness == 2 else 2
-            kb.dirty = True
+            kb.mark_dirty()
             self.notice = f"Brightness → {'low' if kb.brightness == 1 else 'high'}"
             if self.kb_live:
                 try:
@@ -1543,7 +1549,7 @@ class Dashboard:
                     self.notice = str(exc)
         elif ch == ord("w"):
             kb.wave_dir = "rtl" if kb.wave_dir == "ltr" else "ltr"
-            kb.dirty = True
+            kb.mark_dirty()
             self.notice = f"Wave → {kb.wave_dir}"
             if self.kb_live and kb.effect == "wave":
                 try:
@@ -1553,7 +1559,7 @@ class Dashboard:
         elif ch == ord("c"):
             color = kb.zones[self.kb_zone]
             kb.zones = [color] * kb.ZONES
-            kb.dirty = True
+            kb.mark_dirty()
             self.notice = f"Copied #{color} to all zones."
             if self.kb_live:
                 try:

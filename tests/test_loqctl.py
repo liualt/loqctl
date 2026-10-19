@@ -751,6 +751,33 @@ class KeyboardWorkerTests(unittest.TestCase):
         self.assertFalse(kb.dirty)
         kb.close()
 
+    def test_dirty_kept_for_edits_after_submit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps({"zones": ["aaaaaa"] * 4}))
+            kb = self.kb(config)
+            release, started = threading.Event(), threading.Event()
+
+            def fake_run(args):
+                started.set()
+                release.wait(2)
+                return "OK"
+
+            kb._run = fake_run
+            kb.mark_dirty()
+            kb.submit(["a"], "a")
+            self.assertTrue(started.wait(2))
+            kb.zones = ["bbbbbb"] * 4
+            kb.mark_dirty()
+            release.set()
+            deadline = time.monotonic() + 2
+            while kb.busy and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(kb.dirty)
+            kb.load()
+            self.assertEqual(kb.zones, ["bbbbbb"] * 4)
+            kb.close()
+
     def test_worker_survives_oserror(self):
         kb = self.kb()
         results = [OSError("boom"), "OK"]
