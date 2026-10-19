@@ -95,8 +95,8 @@ def effective_value(mode, key, current, table):
 
 
 def valid_table(table):
-    """True for dict mode -> dict FIELDS key -> int."""
-    return isinstance(table, dict) and all(
+    """True for a non-empty dict mode -> dict FIELDS key -> int."""
+    return isinstance(table, dict) and bool(table) and all(
         isinstance(mode, str) and isinstance(row, dict)
         and all(k in FIELD_IDS and type(v) is int for k, v in row.items())
         for mode, row in table.items())
@@ -142,8 +142,8 @@ def save_cache(table, root=Path("/sys")):
     path = cache_path()
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as handle:
             json.dump({"version": CACHE_VERSION, "product": product, "bios": bios, "table": table}, handle)
         os.replace(tmp, path)

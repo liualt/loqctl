@@ -53,7 +53,7 @@ class ParseTests(unittest.TestCase):
         self.assertTrue(capdata.valid_table(table))
 
     def test_valid_table_shape(self):
-        for bad in (None, [], {"balanced": []}, {"balanced": {"nope": 1}}, {"balanced": {"ppt_pl1_spl": "1"}},
+        for bad in (None, [], {}, {"balanced": []}, {"balanced": {"nope": 1}}, {"balanced": {"ppt_pl1_spl": "1"}},
                     {"balanced": {"ppt_pl1_spl": True}}):
             self.assertFalse(capdata.valid_table(bad), bad)
 
