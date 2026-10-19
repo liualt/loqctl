@@ -1,6 +1,6 @@
 # loqctl
 
-A btop-style terminal dashboard and CLI for Lenovo LOQ laptops on Linux. It shows live CPU, NVIDIA GPU, memory, battery and fan readings next to the firmware power and thermal limits, and lets you change those limits with read-back verification. Keyboard RGB is driven through [LegionAura](https://github.com/nivedck/LegionAura). UI colors come only from your terminal's ANSI palette.
+A btop-style hardware monitor and control tool for Lenovo LOQ (and Legion) laptops on Linux. It shows temperatures, power draw per RAPL domain, voltages, clocks, fans and throttling next to the firmware power and thermal limits that cause them, and lets you change those limits with read-back verification. It is not a process monitor; use btop for that. Keyboard RGB is driven through [LegionAura](https://github.com/nivedck/LegionAura). UI colors come only from your terminal's ANSI palette.
 
 ![preview](preview.png)
 
@@ -11,7 +11,7 @@ A btop-style terminal dashboard and CLI for Lenovo LOQ laptops on Linux. It show
 | OS | Linux only (uses `/sys`, `/proc`, `SO_PEERCRED`, `curses`) |
 | Python | 3.10+ (standard library only, no `pip install` needed; see `requirements.txt`) |
 | Kernel | Lenovo WMI drivers `lenovo-wmi-gamezone` and `lenovo-wmi-other`. You need `/sys/class/firmware-attributes/lenovo-wmi-other*/` to exist. Linux 6.17 or newer is required for these drivers; check your own kernel with the command below. |
-| Privileges | `sudo` for writing firmware settings. Reading works without it, except CPU power (RAPL), which needs root. |
+| Privileges | `sudo` for writing firmware settings. Reading works without it, except CPU power (RAPL) on kernels that make it root-only and CPU Vcore (always root). |
 | Terminal | At least 72×20 (96×24 recommended), UTF-8 locale |
 | Optional | `libnvidia-ml` (NVML) or `nvidia-smi` on `PATH` for GPU data; `legionaura` on `PATH` for keyboard RGB |
 
@@ -21,6 +21,7 @@ Check that your machine is supported:
 ls /sys/class/firmware-attributes/        # expect lenovo-wmi-other-0
 cat /sys/class/platform-profile/*/name    # expect lenovo-wmi-gamezone
 cat /sys/class/platform-profile/*/choices # expect a "custom" entry
+uname -r                                  # 6.17 or newer
 ```
 
 If the first command fails, loqctl can still show telemetry but cannot change firmware limits.
@@ -94,7 +95,8 @@ Firmware writes need root. You have two options:
 | `c` | Copy the selected zone color to all four |
 | `Space` | Toggle live apply |
 | `Enter` | Apply via `legionaura` |
-| `Esc` | Back |
+| `Esc` / `l` | Back |
+| `q` | Quit |
 
 Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the real RGB. Settings are read from `~/.config/legionaura/config.json`.
 
@@ -184,7 +186,9 @@ curl --unix-socket /run/loqctl-$(id -u)/control.sock \
 | POST | `/v1/mode` | `{"mode":"custom"}` |
 | POST | `/v1/attributes/NAME` | `{"value":50}` |
 
-Use `--socket PATH` to point the CLI or dashboard at a specific socket.
+The server allows the user in `SUDO_UID`. If you start it as root without sudo, pass `--uid UID` so your user can connect.
+
+Use `--socket PATH` to point the CLI or dashboard at a specific socket. Without it, a socket that does not accept connections is ignored with a notice and loqctl reads locally.
 
 ## Where the readings come from
 
@@ -203,12 +207,16 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | "Select custom mode before changing firmware limits" or "Limits are only editable in custom mode. Select custom first." | Limits are only writable in `custom` mode; select `custom` on the mode row and press Enter |
 | "RAPL needs root: run sudo loqctl serve" | CPU power reads are root-only on some kernels. Use the privileged server; do not run the TUI with `sudo -E` |
 | "A loqctl server is already running" | Another `loqctl serve` answers on the socket; stop it first. A stale socket is removed automatically |
+| "sudo not authenticated" or "sudo credentials expired" | The sudo cache expired (or you skipped it at start). Press `s` to authenticate; staged edits are kept |
+| "Ignored stale API socket" | A server left its socket behind. loqctl reads locally; restart `sudo loqctl serve` if you want the server |
 | "legionaura not found" | Install LegionAura (AUR package `legionaura` on Arch) |
 | GPU shows offline | Neither `libnvidia-ml` nor `nvidia-smi` (on `PATH`) is usable, or the driver is not loaded. `asleep` means the GPU is runtime-suspended |
 
 ## Known limitations
 
-- Linux and Lenovo-WMI hardware only. Not tested on other distros or other Lenovo models.
+- Linux and Lenovo-WMI hardware only. Tested on a LOQ 15IRX9 (Intel) on CachyOS; not tested on other distros or other Lenovo models.
+- AMD CPU paths (`k10temp`, `zenpower`, RAPL on Zen) are tested with simulated sysfs only.
+- EC temperatures depend on the `legion_laptop` hwmon name, which has not been verified on hardware.
 - Privilege escalation is `sudo` only (no `doas`/`pkexec`).
 - Keyboard RGB depends on the third-party `legionaura` tool.
 
@@ -220,6 +228,20 @@ python3 loqctl.py status        # or: python3 -m loqctl status
 ```
 
 Tests use a temporary simulated sysfs and never touch real laptop settings.
+
+| Module | Role |
+| --- | --- |
+| `loqctl.py` | Single-file entry point (also what `sudo` runs for batched applies) |
+| `loqctl/cli.py` | Argument parsing and subcommands |
+| `loqctl/common.py` | Shared helpers, the `FIELDS` write allowlist |
+| `loqctl/hardware.py` | Firmware reads and verified writes |
+| `loqctl/sensors.py` | Telemetry sources, NVML via `ctypes`, the background sampler |
+| `loqctl/api.py` | Unix-socket HTTP server and client |
+| `loqctl/backend.py` | Chooses local access or the API server |
+| `loqctl/keyboard.py` | LegionAura keyboard control |
+| `loqctl/ui.py`, `loqctl/colors.py` | Curses dashboard and ANSI color helpers |
+
+Why Python and the standard library: [ADR-001](docs/adr/001-language.md).
 
 ## License
 
