@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import errno
+import os
 from pathlib import Path
 import threading
 
+from .capdata import effective_value, read_mode_table
 from .common import FIELDS, ControlError, read
 
 class Hardware:
@@ -21,10 +23,26 @@ class Hardware:
                             self.root / "firmware/acpi/platform_profile")
         self.choices = self.profile.parent / ("choices" if self.profile.name == "profile"
                                                else "platform_profile_choices")
+        self._limits = (None, None)  # (table, reason); static per boot
+        self._limits_tried = False
+
+    def mode_limits(self):
+        """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
+        with self.lock:
+            if not self._limits_tried or (self._limits[0] is None and os.geteuid() == 0):
+                self._limits, self._limits_tried = read_mode_table(self.root), True
+            return self._limits
+
+    def set_mode_limits(self, table, reason=None):
+        """Inject a table fetched elsewhere (sudo helper or cache) for non-root reads."""
+        with self.lock:
+            self._limits, self._limits_tried = (table, None if table else reason), True
 
     def capabilities(self):
         with self.lock:
             attrs = {}
+            mode = read(self.profile)
+            table, reason = self.mode_limits()
             for key, (label, unit) in FIELDS.items():
                 path = self.base / key if self.base else None
                 if path is None or not path.is_dir():
@@ -38,10 +56,11 @@ class Hardware:
                         item[name] = None
                 item["available"] = all(item[n] is not None for n in
                                         ("current_value", "min_value", "max_value", "scalar_increment"))
+                item["effective_value"] = effective_value(mode, key, item["current_value"], table)
                 attrs[key] = item
             return {"model": read(self.root / "class/dmi/id/product_name", "Lenovo LOQ"),
-                    "mode": read(self.profile), "modes": (read(self.choices, "") or "").split(),
-                    "attributes": attrs}
+                    "mode": mode, "modes": (read(self.choices, "") or "").split(),
+                    "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
 
     def _write(self, path, value):
         try:

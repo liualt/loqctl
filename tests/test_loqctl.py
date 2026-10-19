@@ -379,6 +379,7 @@ class FirmwareTests(unittest.TestCase):
     def local_dashboard(self):
         dashboard = self.dashboard()
         dashboard.backend.remote = False
+        dashboard.backend.load_mode_limits = Mock()
         dashboard.s = Mock()
         return dashboard
 
@@ -1277,7 +1278,7 @@ class Stage8Tests(unittest.TestCase):
         self.assertTrue(any("█" in t or "▄" in t for t in rows[11] if "┄" not in t))
 
     def state(self):
-        attrs = {k: {"current_value": v} for k, v in (("ppt_pl1_spl", 55), ("ppt_pl2_sppt", 115),
+        attrs = {k: {"effective_value": v} for k, v in (("ppt_pl1_spl", 55), ("ppt_pl2_sppt", 115),
                                                       ("gpu_nv_ctgp", 115))}
         return {"attributes": attrs}
 

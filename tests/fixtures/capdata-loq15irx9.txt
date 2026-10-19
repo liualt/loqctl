@@ -1,0 +1,640 @@
+== /sys/kernel/debug/lenovo_wmi/7A8F5407-CB67-4D6E-B547-39B3BE018154-19/capdata
+LENOVO_CAPABILITY_DATA_01[0]:
+  id:             0x01010100 [dev:  1, feat:  1, mode:  1, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  65
+  step:           1
+  min_value:      60
+  max_value:      167
+LENOVO_CAPABILITY_DATA_01[1]:
+  id:             0x01010200 [dev:  1, feat:  1, mode:  2, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  119
+  step:           1
+  min_value:      60
+  max_value:      167
+LENOVO_CAPABILITY_DATA_01[2]:
+  id:             0x01010300 [dev:  1, feat:  1, mode:  3, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  162
+  step:           1
+  min_value:      60
+  max_value:      167
+LENOVO_CAPABILITY_DATA_01[3]:
+  id:             0x0101ff00 [dev:  1, feat:  1, mode: 255, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  119
+  step:           1
+  min_value:      60
+  max_value:      167
+LENOVO_CAPABILITY_DATA_01[4]:
+  id:             0x0101e000 [dev:  1, feat:  1, mode: 224, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  162
+  step:           1
+  min_value:      60
+  max_value:      167
+LENOVO_CAPABILITY_DATA_01[5]:
+  id:             0x01020100 [dev:  1, feat:  2, mode:  1, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  55
+  step:           1
+  min_value:      50
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[6]:
+  id:             0x01020200 [dev:  1, feat:  2, mode:  2, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  60
+  step:           1
+  min_value:      50
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[7]:
+  id:             0x01020300 [dev:  1, feat:  2, mode:  3, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  90
+  step:           1
+  min_value:      50
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[8]:
+  id:             0x0102ff00 [dev:  1, feat:  2, mode: 255, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  60
+  step:           1
+  min_value:      50
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[9]:
+  id:             0x0102e000 [dev:  1, feat:  2, mode: 224, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  95
+  step:           1
+  min_value:      50
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[10]:
+  id:             0x01040100 [dev:  1, feat:  4, mode:  1, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  97
+  step:           1
+  min_value:      85
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[11]:
+  id:             0x01040200 [dev:  1, feat:  4, mode:  2, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  97
+  step:           1
+  min_value:      85
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[12]:
+  id:             0x01040300 [dev:  1, feat:  4, mode:  3, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  97
+  step:           1
+  min_value:      85
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[13]:
+  id:             0x0104ff00 [dev:  1, feat:  4, mode: 255, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  97
+  step:           1
+  min_value:      85
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[14]:
+  id:             0x0104e000 [dev:  1, feat:  4, mode: 224, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  97
+  step:           1
+  min_value:      85
+  max_value:      100
+LENOVO_CAPABILITY_DATA_01[15]:
+  id:             0x01060100 [dev:  1, feat:  6, mode:  1, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  35
+  step:           1
+  min_value:      30
+  max_value:      55
+LENOVO_CAPABILITY_DATA_01[16]:
+  id:             0x01060200 [dev:  1, feat:  6, mode:  2, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  55
+  step:           1
+  min_value:      30
+  max_value:      55
+LENOVO_CAPABILITY_DATA_01[17]:
+  id:             0x01060300 [dev:  1, feat:  6, mode:  3, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  55
+  step:           1
+  min_value:      30
+  max_value:      55
+LENOVO_CAPABILITY_DATA_01[18]:
+  id:             0x0106ff00 [dev:  1, feat:  6, mode: 255, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  55
+  step:           1
+  min_value:      30
+  max_value:      55
+LENOVO_CAPABILITY_DATA_01[19]:
+  id:             0x0106e000 [dev:  1, feat:  6, mode: 224, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  55
+  step:           1
+  min_value:      30
+  max_value:      55
+LENOVO_CAPABILITY_DATA_01[20]:
+  id:             0x01070100 [dev:  1, feat:  7, mode:  1, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  56
+  step:           0
+  min_value:      0
+  max_value:      56
+LENOVO_CAPABILITY_DATA_01[21]:
+  id:             0x01070200 [dev:  1, feat:  7, mode:  2, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  56
+  step:           0
+  min_value:      0
+  max_value:      56
+LENOVO_CAPABILITY_DATA_01[22]:
+  id:             0x01070300 [dev:  1, feat:  7, mode:  3, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  56
+  step:           0
+  min_value:      0
+  max_value:      56
+LENOVO_CAPABILITY_DATA_01[23]:
+  id:             0x0107ff00 [dev:  1, feat:  7, mode: 255, type:  0]
+  supported:      0x00000407 [+RWV]
+  default_value:  56
+  step:           0
+  min_value:      0
+  max_value:      56
+LENOVO_CAPABILITY_DATA_01[24]:
+  id:             0x0107e000 [dev:  1, feat:  7, mode: 224, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  56
+  step:           0
+  min_value:      0
+  max_value:      56
+LENOVO_CAPABILITY_DATA_01[25]:
+  id:             0x02010100 [dev:  2, feat:  1, mode:  1, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  10
+  step:           0
+  min_value:      10
+  max_value:      25
+LENOVO_CAPABILITY_DATA_01[26]:
+  id:             0x02010200 [dev:  2, feat:  1, mode:  2, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  20
+  step:           0
+  min_value:      10
+  max_value:      25
+LENOVO_CAPABILITY_DATA_01[27]:
+  id:             0x02010300 [dev:  2, feat:  1, mode:  3, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  25
+  step:           0
+  min_value:      10
+  max_value:      25
+LENOVO_CAPABILITY_DATA_01[28]:
+  id:             0x0201ff00 [dev:  2, feat:  1, mode: 255, type:  0]
+  supported:      0x00000407 [+RWV]
+  default_value:  20
+  step:           0
+  min_value:      10
+  max_value:      25
+LENOVO_CAPABILITY_DATA_01[29]:
+  id:             0x0201e000 [dev:  2, feat:  1, mode: 224, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  10
+  step:           0
+  min_value:      10
+  max_value:      25
+LENOVO_CAPABILITY_DATA_01[30]:
+  id:             0x02020100 [dev:  2, feat:  2, mode:  1, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  55
+  step:           0
+  min_value:      55
+  max_value:      105
+LENOVO_CAPABILITY_DATA_01[31]:
+  id:             0x02020200 [dev:  2, feat:  2, mode:  2, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  60
+  step:           0
+  min_value:      55
+  max_value:      105
+LENOVO_CAPABILITY_DATA_01[32]:
+  id:             0x02020300 [dev:  2, feat:  2, mode:  3, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  90
+  step:           0
+  min_value:      55
+  max_value:      105
+LENOVO_CAPABILITY_DATA_01[33]:
+  id:             0x0202ff00 [dev:  2, feat:  2, mode: 255, type:  0]
+  supported:      0x00000407 [+RWV]
+  default_value:  60
+  step:           0
+  min_value:      55
+  max_value:      105
+LENOVO_CAPABILITY_DATA_01[34]:
+  id:             0x0202e000 [dev:  2, feat:  2, mode: 224, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  105
+  step:           0
+  min_value:      55
+  max_value:      105
+LENOVO_CAPABILITY_DATA_01[35]:
+  id:             0x02030100 [dev:  2, feat:  3, mode:  1, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  87
+  step:           1
+  min_value:      75
+  max_value:      87
+LENOVO_CAPABILITY_DATA_01[36]:
+  id:             0x02030200 [dev:  2, feat:  3, mode:  2, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  87
+  step:           1
+  min_value:      75
+  max_value:      87
+LENOVO_CAPABILITY_DATA_01[37]:
+  id:             0x02030300 [dev:  2, feat:  3, mode:  3, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  87
+  step:           1
+  min_value:      75
+  max_value:      87
+LENOVO_CAPABILITY_DATA_01[38]:
+  id:             0x0203ff00 [dev:  2, feat:  3, mode: 255, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  87
+  step:           1
+  min_value:      75
+  max_value:      87
+LENOVO_CAPABILITY_DATA_01[39]:
+  id:             0x0203e000 [dev:  2, feat:  3, mode: 224, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  87
+  step:           1
+  min_value:      75
+  max_value:      87
+LENOVO_CAPABILITY_DATA_01[40]:
+  id:             0x02040100 [dev:  2, feat:  4, mode:  1, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  20
+  step:           1
+  min_value:      10
+  max_value:      80
+LENOVO_CAPABILITY_DATA_01[41]:
+  id:             0x02040200 [dev:  2, feat:  4, mode:  2, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  55
+  step:           1
+  min_value:      10
+  max_value:      80
+LENOVO_CAPABILITY_DATA_01[42]:
+  id:             0x02040300 [dev:  2, feat:  4, mode:  3, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  55
+  step:           1
+  min_value:      10
+  max_value:      80
+LENOVO_CAPABILITY_DATA_01[43]:
+  id:             0x0204ff00 [dev:  2, feat:  4, mode: 255, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  55
+  step:           1
+  min_value:      10
+  max_value:      80
+LENOVO_CAPABILITY_DATA_01[44]:
+  id:             0x0204e000 [dev:  2, feat:  4, mode: 224, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  55
+  step:           1
+  min_value:      10
+  max_value:      80
+LENOVO_CAPABILITY_DATA_01[45]:
+  id:             0x01080100 [dev:  1, feat:  8, mode:  1, type:  0]
+  supported:      0x00000008 [+   ]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[46]:
+  id:             0x01080200 [dev:  1, feat:  8, mode:  2, type:  0]
+  supported:      0x0000004f [+RWV]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[47]:
+  id:             0x01080300 [dev:  1, feat:  8, mode:  3, type:  0]
+  supported:      0x0000004f [+RWV]
+  default_value:  1
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[48]:
+  id:             0x0108ff00 [dev:  1, feat:  8, mode: 255, type:  0]
+  supported:      0x0000014f [+RWV]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[49]:
+  id:             0x0108e000 [dev:  1, feat:  8, mode: 224, type:  0]
+  supported:      0x0000004f [+RWV]
+  default_value:  1
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[50]:
+  id:             0x02050100 [dev:  2, feat:  5, mode:  1, type:  0]
+  supported:      0x00000008 [+   ]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[51]:
+  id:             0x02050200 [dev:  2, feat:  5, mode:  2, type:  0]
+  supported:      0x0000004f [+RWV]
+  default_value:  0
+  step:           150
+  min_value:      0
+  max_value:      200
+LENOVO_CAPABILITY_DATA_01[52]:
+  id:             0x02050300 [dev:  2, feat:  5, mode:  3, type:  0]
+  supported:      0x0000004f [+RWV]
+  default_value:  1
+  step:           150
+  min_value:      0
+  max_value:      200
+LENOVO_CAPABILITY_DATA_01[53]:
+  id:             0x0205ff00 [dev:  2, feat:  5, mode: 255, type:  0]
+  supported:      0x0000014f [+RWV]
+  default_value:  0
+  step:           150
+  min_value:      0
+  max_value:      200
+LENOVO_CAPABILITY_DATA_01[54]:
+  id:             0x0205e000 [dev:  2, feat:  5, mode: 224, type:  0]
+  supported:      0x0000004f [+RWV]
+  default_value:  1
+  step:           150
+  min_value:      0
+  max_value:      200
+LENOVO_CAPABILITY_DATA_01[55]:
+  id:             0x01080100 [dev:  1, feat:  8, mode:  1, type:  0]
+  supported:      0x00000010 [+   ]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[56]:
+  id:             0x01080200 [dev:  1, feat:  8, mode:  2, type:  0]
+  supported:      0x00000057 [+RWV]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[57]:
+  id:             0x01080300 [dev:  1, feat:  8, mode:  3, type:  0]
+  supported:      0x00000057 [+RWV]
+  default_value:  1
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[58]:
+  id:             0x0108ff00 [dev:  1, feat:  8, mode: 255, type:  0]
+  supported:      0x00000097 [+RWV]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[59]:
+  id:             0x0108e000 [dev:  1, feat:  8, mode: 224, type:  0]
+  supported:      0x00000057 [+RWV]
+  default_value:  1
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[60]:
+  id:             0x02050100 [dev:  2, feat:  5, mode:  1, type:  0]
+  supported:      0x00000010 [+   ]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      0
+LENOVO_CAPABILITY_DATA_01[61]:
+  id:             0x02050200 [dev:  2, feat:  5, mode:  2, type:  0]
+  supported:      0x00000057 [+RWV]
+  default_value:  0
+  step:           150
+  min_value:      0
+  max_value:      200
+LENOVO_CAPABILITY_DATA_01[62]:
+  id:             0x02050300 [dev:  2, feat:  5, mode:  3, type:  0]
+  supported:      0x00000057 [+RWV]
+  default_value:  1
+  step:           150
+  min_value:      0
+  max_value:      200
+LENOVO_CAPABILITY_DATA_01[63]:
+  id:             0x0205ff00 [dev:  2, feat:  5, mode: 255, type:  0]
+  supported:      0x00000097 [+RWV]
+  default_value:  0
+  step:           150
+  min_value:      0
+  max_value:      200
+LENOVO_CAPABILITY_DATA_01[64]:
+  id:             0x0205e000 [dev:  2, feat:  5, mode: 224, type:  0]
+  supported:      0x00000057 [+RWV]
+  default_value:  1
+  step:           150
+  min_value:      0
+  max_value:      200
+LENOVO_CAPABILITY_DATA_01[65]:
+  id:             0x020b0100 [dev:  2, feat: 11, mode:  1, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  15
+  step:           0
+  min_value:      0
+  max_value:      15
+LENOVO_CAPABILITY_DATA_01[66]:
+  id:             0x020b0200 [dev:  2, feat: 11, mode:  2, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      15
+LENOVO_CAPABILITY_DATA_01[67]:
+  id:             0x020b0300 [dev:  2, feat: 11, mode:  3, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      15
+LENOVO_CAPABILITY_DATA_01[68]:
+  id:             0x020bff00 [dev:  2, feat: 11, mode: 255, type:  0]
+  supported:      0x00000407 [+RWV]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      15
+LENOVO_CAPABILITY_DATA_01[69]:
+  id:             0x020be000 [dev:  2, feat: 11, mode: 224, type:  0]
+  supported:      0x00000401 [+  V]
+  default_value:  0
+  step:           0
+  min_value:      0
+  max_value:      15
+== /sys/kernel/debug/lenovo_wmi/362A3AFE-3D96-4665-8530-96DAD5BB300E-18/capdata
+LENOVO_CAPABILITY_DATA_00[0]:
+  id:             0x00010000 [dev:  0, feat:  1, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[1]:
+  id:             0x00020000 [dev:  0, feat:  2, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[2]:
+  id:             0x00030000 [dev:  0, feat:  3, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[3]:
+  id:             0x00040000 [dev:  0, feat:  4, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[4]:
+  id:             0x00050001 [dev:  0, feat:  5, mode:  0, type:  1]
+  supported:      0x00000000 [    ]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[5]:
+  id:             0x00050002 [dev:  0, feat:  5, mode:  0, type:  2]
+  supported:      0x00000000 [    ]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[6]:
+  id:             0x00060000 [dev:  0, feat:  6, mode:  0, type:  0]
+  supported:      0x00000000 [    ]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[7]:
+  id:             0x000b0000 [dev:  0, feat: 11, mode:  0, type:  0]
+  supported:      0x00000000 [    ]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[8]:
+  id:             0x000e0000 [dev:  0, feat: 14, mode:  0, type:  0]
+  supported:      0x00000000 [    ]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[9]:
+  id:             0x00100000 [dev:  0, feat: 16, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[10]:
+  id:             0x00120000 [dev:  0, feat: 18, mode:  0, type:  0]
+  supported:      0x00000000 [    ]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[11]:
+  id:             0x00130000 [dev:  0, feat: 19, mode:  0, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[12]:
+  id:             0x00140000 [dev:  0, feat: 20, mode:  0, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[13]:
+  id:             0x00150000 [dev:  0, feat: 21, mode:  0, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[14]:
+  id:             0x00160000 [dev:  0, feat: 22, mode:  0, type:  0]
+  supported:      0x00000000 [    ]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[15]:
+  id:             0x00170000 [dev:  0, feat: 23, mode:  0, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[16]:
+  id:             0x00180000 [dev:  0, feat: 24, mode:  0, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[17]:
+  id:             0x00190000 [dev:  0, feat: 25, mode:  0, type:  0]
+  supported:      0x00000001 [   V]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[18]:
+  id:             0x001a0000 [dev:  0, feat: 26, mode:  0, type:  0]
+  supported:      0x00000000 [    ]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[19]:
+  id:             0x001b0000 [dev:  0, feat: 27, mode:  0, type:  0]
+  supported:      0x00000000 [    ]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[20]:
+  id:             0x001c0001 [dev:  0, feat: 28, mode:  0, type:  1]
+  supported:      0x00000005 [  WV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[21]:
+  id:             0x001c0002 [dev:  0, feat: 28, mode:  0, type:  2]
+  supported:      0x00000005 [  WV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[22]:
+  id:             0x001d0000 [dev:  0, feat: 29, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[23]:
+  id:             0x01080000 [dev:  1, feat:  8, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[24]:
+  id:             0x02050000 [dev:  2, feat:  5, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[25]:
+  id:             0x03010001 [dev:  3, feat:  1, mode:  0, type:  1]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[26]:
+  id:             0x03010002 [dev:  3, feat:  1, mode:  0, type:  2]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[27]:
+  id:             0x03020000 [dev:  3, feat:  2, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[28]:
+  id:             0x03030000 [dev:  3, feat:  3, mode:  0, type:  0]
+  supported:      0x00000003 [ R V]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[29]:
+  id:             0x04010000 [dev:  4, feat:  1, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[30]:
+  id:             0x04020000 [dev:  4, feat:  2, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[31]:
+  id:             0x04030001 [dev:  4, feat:  3, mode:  0, type:  1]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[32]:
+  id:             0x04030002 [dev:  4, feat:  3, mode:  0, type:  2]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[33]:
+  id:             0x04040000 [dev:  4, feat:  4, mode:  0, type:  0]
+  supported:      0x00000000 [    ]
+  default_value:  0
+LENOVO_CAPABILITY_DATA_00[34]:
+  id:             0x05010000 [dev:  5, feat:  1, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[35]:
+  id:             0x05040000 [dev:  5, feat:  4, mode:  0, type:  0]
+  supported:      0x00000007 [ RWV]
+  default_value:  1
+LENOVO_CAPABILITY_DATA_00[36]:
+  id:             0x05050000 [dev:  5, feat:  5, mode:  0, type:  0]
+  supported:      0x00000000 [    ]
+  default_value:  1

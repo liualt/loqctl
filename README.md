@@ -138,7 +138,7 @@ Writes check the firmware's min, max and step, write once, then read the value b
 | `gpu_nv_cpu_boost` | GPU power taken from the CPU boost budget | W |
 | `gpu_temp` | GPU temperature limit | °C |
 
-Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show the active mode's live values, which may sit outside that range. Read-back confirms the configuration, not real workload wattage.
+Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show that mode's firmware limits. sysfs `current_value` only holds the custom settings (the firmware returns them in every mode), so loqctl reads the real per-mode defaults from the firmware capability table that the kernel dumps in debugfs (`/sys/kernel/debug/lenovo_wmi/*/capdata`, root only). It reads the table as root once (via sudo, or directly under `sudo loqctl serve`) and caches it per product and BIOS version in `~/.cache/loqctl/mode-limits.json`, so later starts need no sudo. Press `m` for a mode-by-mode overlay, or run `loqctl limits` for the same data as JSON; without root the stock-mode values show N/A. Read-back confirms the configuration, not real workload wattage.
 
 ### Telemetry
 

@@ -8,6 +8,7 @@ import threading
 import time
 
 from .api import http_client, request, socket_alive
+from .capdata import fetch_via_sudo, load_cache, save_cache
 from .common import ControlError, socket_path
 from .hardware import Hardware
 from .sensors import Sampler, Sensors
@@ -24,6 +25,18 @@ class Backend:
         self.latest = {}
         self.stop = threading.Event()
         self.wake = threading.Event()
+
+    def load_mode_limits(self, allow_sudo=True):
+        """Local non-root reads: fill the stock-mode table from the cache, else one sudo fetch."""
+        hardware = self.hardware
+        if self.remote or os.geteuid() == 0 or hardware.base is None or hardware.mode_limits()[0]:
+            return
+        table, reason = load_cache(hardware.root), "needs root"
+        if table is None and allow_sudo:
+            table, reason = fetch_via_sudo()
+            if table:
+                save_cache(table, hardware.root)
+        hardware.set_mode_limits(table, reason)
 
     def snapshot(self):
         if self.remote:

@@ -7,6 +7,7 @@ import importlib.util
 import math
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 def _lazy(name):
@@ -52,6 +53,15 @@ FIELDS = {
     "gpu_nv_cpu_boost": ("GPU CPU boost", "W"),
     "gpu_temp": ("GPU temperature limit", "°C"),
 }
+# FIELDS key -> (dev, feat, type) in the firmware capability table (kernel wmi-other.c).
+FIELD_IDS = {
+    "ppt_pl2_sppt": (1, 1, 0), "ppt_pl1_spl": (1, 2, 0), "ppt_pl3_fppt": (1, 3, 0),
+    "cpu_temp": (1, 4, 0), "ppt_pl1_apu_spl": (1, 5, 0), "ppt_cpu_cl": (1, 6, 0),
+    "ppt_pl1_tau": (1, 7, 0), "ppt_pl4_ipl": (1, 9, 0), "ppt_pl1_spl_cl": (1, 2, 1),
+    "ppt_pl2_sppt_cl": (1, 1, 1), "ppt_pl3_fppt_cl": (1, 3, 1), "ppt_pl4_ipl_cl": (1, 9, 1),
+    "gpu_nv_ppab": (2, 1, 0), "gpu_nv_ctgp": (2, 2, 0), "gpu_temp": (2, 3, 0),
+    "gpu_nv_ac_offset": (2, 4, 0), "gpu_nv_bpl": (2, 10, 0), "gpu_nv_cpu_boost": (2, 11, 0),
+}
 # NVML clocks-event reasons; 0x1 (gpu_idle) is not a throttle and is omitted.
 THROTTLE_BITS = ((0x2, "app_clocks"), (0x4, "sw_power_cap"), (0x8, "hw_slowdown"),
                  (0x10, "sync_boost"), (0x20, "sw_thermal"), (0x40, "hw_thermal"),
@@ -67,6 +77,25 @@ BAR_EMPTY = "░"
 
 class ControlError(Exception):
     pass
+
+
+class SudoExpired(ControlError):
+    pass
+
+
+def sudo_run(args, timeout=30):
+    """Run `loqctl.py <args>` as root via `sudo -n`; returns stdout, raises ControlError."""
+    command = ["sudo", "-n", "--", sys.executable, "-I", ENTRY, *args]
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise ControlError("sudo timed out.") from exc
+    stderr = (result.stderr or "").strip()
+    if result.returncode:
+        if "password is required" in stderr or "a terminal is required" in stderr:
+            raise SudoExpired("sudo credentials expired.")
+        raise ControlError(stderr or (result.stdout or "").strip() or f"sudo exited with code {result.returncode}")
+    return result.stdout or "", stderr
 
 
 def read(path, default=None):

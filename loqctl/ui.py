@@ -6,13 +6,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import time
 
 from . import VERSION
 from .api import http_client
+from .capdata import effective_value
 from .colors import hex_to_rgb, hsv_to_rgb, nearest_ansi, rgb_to_hex, rgb_to_hsv
-from .common import (BAR_EMPTY, BAR_FILL, ENTRY, FIELDS, SPARK, ControlError, _lazy, clamp, fmt)
+from .common import (BAR_EMPTY, BAR_FILL, FIELDS, SPARK, ControlError, SudoExpired, _lazy, clamp, fmt,
+                     sudo_run)
 from .keyboard import Keyboard
 
 collections = _lazy("collections")
@@ -95,6 +96,7 @@ class Theme:
 
 class Dashboard:
     MIN_W, MIN_H = 72, 20
+    show_limits = False
 
     def __init__(self, screen, backend, sudo_ok=True):
         self.s, self.backend = screen, backend
@@ -279,13 +281,15 @@ class Dashboard:
         if self.panel == "keyboard":
             keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
         else:
-            keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  t sensors  Space pause  v results  ? help  q"
+            keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  t sensors  m modes  Space pause  v results  ? help  q"
         self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)
 
         if self.help:
             self.draw_help()
         if self.show_results:
             self.draw_results()
+        if self.show_limits:
+            self.draw_limits(state)
         self.s.refresh()
 
     def draw_main(self, state, metrics, y, x, height, width):
@@ -326,9 +330,9 @@ class Dashboard:
                 label, current, unit = "Platform mode", state.get("mode", "N/A"), ""
             else:
                 item = state["attributes"][key]
-                label, current, unit = item["label"], item["current_value"], item["unit"]
+                label, current, unit = item["label"], item.get("effective_value"), item["unit"]
             staged = self.pending.get(key)
-            value = f"{current if current is not None else 'N/A'}{unit}"
+            value = "N/A" if current is None else f"{current}{unit}"
             if key != "mode" and self.locked(state):
                 line = f"{marker} {label:<20} {value}"
                 self.put(yy, x + 1, line[: width - 3], self.theme.TEXT, bold=chosen, dim=True)
@@ -360,9 +364,15 @@ class Dashboard:
             self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
             self.put(detail_y + 2, x + 2, f"Available: {modes}"[: width - 4], self.theme.TEXT, dim=True)
         elif self.locked(state):
-            self.put(detail_y + 1, x + 2, f"Limits are locked in {state.get('mode') or 'N/A'} mode"[: width - 4],
-                     self.theme.WARN)
-            self.put(detail_y + 2, x + 2, "Select custom on the mode row and press Enter."[: width - 4],
+            item, mode = state["attributes"][key], state.get("mode") or "N/A"
+            if item.get("effective_value") is not None:
+                note = f"{mode} limit from firmware table · custom default {fmt(item['default_value'])}"
+            else:
+                reason = state.get("mode_limits_error")
+                note = (reason if reason and not reason.startswith("needs root") else
+                        "Stock-mode limits need root: press s or run sudo loqctl serve")
+            self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
+            self.put(detail_y + 2, x + 2, f"Limits are locked in {mode} mode; select custom on the mode row."[: width - 4],
                      self.theme.TEXT, dim=True)
         else:
             item = state["attributes"][key]
@@ -382,7 +392,7 @@ class Dashboard:
         attrs = state.get("attributes") or {}
 
         def limit(key):
-            return (attrs.get(key) or {}).get("current_value")
+            return (attrs.get(key) or {}).get("effective_value")
 
         # Split right column into cpu / gpu / sys with flexible heights.
         cpu_h = max(7, height * 38 // 100)
@@ -605,6 +615,7 @@ class Dashboard:
             "          Enter apply all    d custom default   r discard all",
             "          v last apply results   Limits need custom mode (Enter on mode row)",
             "          s sudo authenticate (shown when needed)",
+            "          m mode limits overlay: every mode's firmware limits",
             "",
             "Keyboard  l open lighting panel   Esc back to firmware",
             "          1–4 select zone   ←/→ adjust HSV   ↑↓ channel",
@@ -644,6 +655,31 @@ class Dashboard:
         for i, line in enumerate(textwrap.wrap(error, bw - 4)[:3]):
             self.put(by + bh - 5 + i, bx + 2, line, self.theme.WARN)
         self.put(by + bh - 2, bx + 2, "Enter / Esc closes · v reopens · failed edits remain staged", self.theme.ACCENT)
+
+    def draw_limits(self, state):
+        h, w = self.s.getmaxyx()
+        modes = state.get("modes") or []
+        rows = self.rows(state)[1:]
+        attrs, table = state.get("attributes") or {}, state.get("mode_limits")
+        bw = min(w - 4, 26 + 13 * len(modes))
+        bh = min(h - 2, len(rows) + 6)
+        bx, by = (w - bw) // 2, max(0, (h - bh) // 2)
+        self.fill(by, bx, bh, bw)
+        self.box(by, bx, bh, bw, "mode limits", self.theme.ACCENT)
+        self.put(by + 1, bx + 2, "CONTROL", self.theme.ACCENT, True)
+        for col, mode in enumerate(modes):
+            self.put(by + 1, bx + 26 + 13 * col, f"{mode:>12}", self.theme.ACCENT, True)
+        for i, key in enumerate(rows[: bh - 5]):
+            self.put(by + 2 + i, bx + 2, attrs[key]["label"][:23], self.theme.TEXT)
+            for col, mode in enumerate(modes):
+                value = effective_value(mode, key, attrs[key].get("current_value"), table)
+                self.put(by + 2 + i, bx + 26 + 13 * col, f"{fmt(value):>12}", self.theme.TEXT,
+                         bold=mode == state.get("mode"))
+        note = "Custom is live; other modes come from the firmware table."
+        if table is None:
+            note = "Stock-mode limits need root: press s or run sudo loqctl serve"
+        self.put(by + bh - 3, bx + 2, note[: bw - 4], self.theme.WARN if table is None else self.theme.TEXT, dim=table is not None)
+        self.put(by + bh - 2, bx + 2, "Enter / Esc / m closes", self.theme.ACCENT)
 
     def stage(self, state, key, value):
         if key == "mode":
@@ -694,19 +730,13 @@ class Dashboard:
 
     def run_sudo_apply(self, changes):
         """Apply all changes in one `sudo -n` call; returns the per-item results."""
-        command = ["sudo", "-n", "--", sys.executable, "-I", ENTRY, "_apply", json.dumps(changes)]
         try:
-            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
-        except subprocess.TimeoutExpired as exc:
-            raise ControlError("sudo apply timed out; edits stay staged.") from exc
-        stderr = (result.stderr or "").strip()
-        if result.returncode:
-            if "password is required" in stderr or "a terminal is required" in stderr:
-                self.sudo_expired = True
-                raise ControlError("sudo credentials expired. Press s to re-authenticate; edits stay staged.")
-            raise ControlError(stderr or (result.stdout or "").strip() or f"sudo exited with code {result.returncode}")
+            stdout, stderr = sudo_run(["_apply", json.dumps(changes)])
+        except SudoExpired as exc:
+            self.sudo_expired = True
+            raise ControlError("sudo credentials expired. Press s to re-authenticate; edits stay staged.") from exc
         try:
-            results = json.loads(result.stdout)
+            results = json.loads(stdout)
             if not isinstance(results, list) or not all(isinstance(r, dict) and "key" in r and "status" in r
                                                         for r in results):
                 raise ValueError
@@ -727,6 +757,8 @@ class Dashboard:
         if ok:
             self.sudo_expired = False
         self.notice = "sudo authenticated." if ok else "sudo authentication failed."
+        if ok:
+            self.backend.load_mode_limits()
 
     def read_current(self, key):
         controls = self.backend.controls()
@@ -910,6 +942,12 @@ class Dashboard:
             elif ch == ord("q"):
                 self.running = False
             return
+        if self.show_limits:
+            if ch in (10, 13, curses.KEY_ENTER, 27, ord("m")):
+                self.show_limits = False
+            elif ch == ord("q"):
+                self.running = False
+            return
         if self.help:
             if ch in (ord("?"), 27):
                 self.help = False
@@ -945,6 +983,8 @@ class Dashboard:
             self.running = False
         elif ch == ord("?"):
             self.help = True
+        elif ch == ord("m"):
+            self.show_limits = True
         elif ch == ord("t"):
             self.view = "sensors" if self.view == "summary" else "summary"
         elif ch == ord("l"):

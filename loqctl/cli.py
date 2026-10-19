@@ -12,6 +12,7 @@ import sys
 from . import VERSION
 from .api import http_client
 from .backend import Backend
+from .capdata import limits_report
 from .common import FIELDS, ControlError, _lazy, owner_uid
 from .hardware import Hardware, apply_batch
 
@@ -47,10 +48,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Lenovo LOQ firmware controls and live terminal telemetry")
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--socket", help="Connect to an existing loqctl Unix socket")
-    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,mode,set,kb,serve}")
+    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,mode,set,kb,serve}")
     commands.add_parser("tui", help="Open the dashboard (default)")
     for cmd in ("status", "metrics", "capabilities"):
         commands.add_parser(cmd, help="Print " + cmd + " as JSON")
+    commands.add_parser("limits", help="Print per-mode firmware limits as JSON")
     mode = commands.add_parser("mode", help="Read or set the platform mode")
     mode.add_argument("value", nargs="?")
     setting = commands.add_parser("set", help="Set one firmware attribute, with readback verification")
@@ -62,6 +64,7 @@ def main(argv=None):
     server.add_argument("--uid", type=int, default=owner_uid(), help="UID permitted to connect; defaults to SUDO_UID")
     internal = commands.add_parser("_apply")
     internal.add_argument("changes", help="JSON list of [key, value] pairs")
+    commands.add_parser("_capdata")
     args = parser.parse_args(argv)
     try:
         if args.command == "serve":
@@ -70,6 +73,10 @@ def main(argv=None):
             return 0
         if args.command == "_apply":
             result = apply_batch(Hardware(), json.loads(args.changes))
+        elif args.command == "_capdata":
+            result, reason = Hardware().mode_limits()
+            if result is None:
+                raise ControlError(reason)
         elif args.command == "kb":
             # REMAINDER may include a leading "--" from argparse.
             kb_args = list(args.args or [])
@@ -88,17 +95,24 @@ def main(argv=None):
                     raise ControlError("The dashboard needs a terminal. Use status for JSON output.")
                 from .ui import Dashboard
                 sudo_ok = preauth(backend)
+                backend.load_mode_limits(allow_sudo=sudo_ok)
                 curses.wrapper(lambda screen: Dashboard(screen, backend, sudo_ok=sudo_ok).run())
                 return 0
             elif args.command in ("status", "metrics"):
+                if args.command == "status":
+                    backend.load_mode_limits()
                 result = backend.snapshot()
                 if args.command == "metrics":
                     result = result.get("metrics", {})
-            elif args.command == "capabilities" or (args.command == "mode" and args.value is None):
+            elif args.command in ("capabilities", "limits") or (args.command == "mode" and args.value is None):
                 from .api import request
+                if args.command != "mode":
+                    backend.load_mode_limits()
                 result = request(backend.path, "GET", "/v1/capabilities") if backend.remote else backend.hardware.capabilities()
                 if args.command == "mode":
                     result = {"mode": result["mode"], "modes": result["modes"]}
+                elif args.command == "limits":
+                    result = limits_report(result)
             elif args.command == "mode":
                 result = backend.write("mode", args.value)
             elif args.command == "set":
