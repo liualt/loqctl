@@ -59,6 +59,7 @@ loqctl
 | `d` | Stage the firmware default for the selected control |
 | `r` | Discard staged edits |
 | `l` | Keyboard lighting panel |
+| `t` | Toggle the full sensors view (temperatures, power, voltages, throttling) |
 | `Space` | Pause telemetry |
 | `v` | Reopen the last apply results |
 | `s` | Authenticate sudo (shown when needed) |
@@ -132,6 +133,15 @@ Writes check the firmware's min, max and step, write once, then read the value b
 | `gpu_temp` | GPU temperature limit | °C |
 
 Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show the active mode's live values, which may sit outside that range. Read-back confirms the configuration, not real workload wattage.
+
+### Telemetry
+
+Every source appears only when the system exposes it; anything else shows `N/A` (never a guessed value). Slower sources refresh every 5 seconds.
+
+- Power: all RAPL domains (package, core, uncore, psys, dram), battery watts and status, USB-C source watts/volts/amps. PL1/PL2 and cTGP are drawn as markers on the CPU and GPU power charts.
+- Temperatures: CPU cores (coretemp, k10temp, zenpower), ACPI, NVMe, RAM (spd5118, jc42), Wi-Fi, GPU (NVML or amdgpu) and the EC when the `legion_laptop` module provides it.
+- Voltages: battery and hwmon `in*` inputs. CPU Vcore needs root (run `loqctl serve` as root) on Intel with the `msr` module loaded; it is N/A on AMD. GPU voltage is not available from NVML.
+- Throttling: Intel thermal-throttle event counts and NVML clocks-event reasons.
 
 ### Keyboard CLI
 

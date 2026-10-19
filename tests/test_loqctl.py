@@ -1076,7 +1076,7 @@ class Stage6Tests(unittest.TestCase):
         self.put("proc/meminfo", "MemTotal: 1024 kB\nMemAvailable: 512 kB")
         sensors = loq.Sensors(self.root, self.root / "proc")
         sensors.gpu = lambda: {"available": False}
-        with patch.object(loq.time, "monotonic", side_effect=[100.0, 102.0]):
+        with patch.object(loq.time, "monotonic", side_effect=[100.0, 100.0, 102.0, 102.0]):
             first = sensors.sample()
             self.put("class/powercap/intel-rapl:0/energy_uj", "21000000")
             second = sensors.sample()
@@ -1095,6 +1095,224 @@ class Stage6Tests(unittest.TestCase):
         with patch.object(loq.shutil, "which", return_value=None):
             with self.assertRaisesRegex(loq.ControlError, "not found"):
                 kb._run(["off"])
+
+
+class Stage8Tests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.put("proc/uptime", "10 5")
+        self.put("proc/meminfo", "MemTotal: 1024 kB\nMemAvailable: 512 kB")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def put(self, rel, text):
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def sensors(self):
+        s = loq.Sensors(self.root, self.root / "proc", self.root / "dev")
+        s.gpu = lambda: {"available": False}
+        return s
+
+    def rapl(self, d, name, uj):
+        self.put(f"class/powercap/{d}/name", name)
+        self.put(f"class/powercap/{d}/energy_uj", str(uj))
+        self.put(f"class/powercap/{d}/max_energy_range_uj", "1000000000")
+
+    def test_rapl_all_domains(self):
+        for d, n in (("intel-rapl:0", "package-0"), ("intel-rapl:0:0", "core"), ("intel-rapl:1", "psys"),
+                     ("intel-rapl-mmio:0", "package-0")):
+            self.rapl(d, n, 1000000)
+        s = self.sensors()
+        with patch.object(loq.time, "monotonic", side_effect=[0, 0, 0, 2, 2, 2]):
+            s.rapl_power()
+            for d, uj in (("intel-rapl:0", 11000000), ("intel-rapl:0:0", 5000000), ("intel-rapl:1", 21000000),
+                          ("intel-rapl-mmio:0", 99000000)):
+                self.put(f"class/powercap/{d}/energy_uj", str(uj))
+            rapl, package, _ = s.rapl_power()
+        self.assertEqual(set(rapl), {"package-0", "package-0/core", "psys"})
+        self.assertAlmostEqual(rapl["package-0"], 5.0)
+        self.assertAlmostEqual(rapl["package-0/core"], 2.0)
+        self.assertAlmostEqual(rapl["psys"], 10.0)
+        self.assertAlmostEqual(package, 5.0)
+
+    def test_battery_and_usbc_power(self):
+        self.put("class/power_supply/BAT1/type", "Battery")
+        self.put("class/power_supply/BAT1/status", "Discharging")
+        self.put("class/power_supply/BAT1/power_now", "15000000")
+        self.put("class/power_supply/ucsi-source-psy-USBC000:001/online", "1")
+        self.put("class/power_supply/ucsi-source-psy-USBC000:001/voltage_now", "20000000")
+        self.put("class/power_supply/ucsi-source-psy-USBC000:001/current_now", "3000000")
+        self.put("class/power_supply/ucsi-source-psy-USBC000:002/online", "0")
+        self.put("class/power_supply/ucsi-source-psy-USBC000:002/voltage_now", "5000000")
+        out = self.sensors().sample()["power"]
+        self.assertEqual((out["battery_w"], out["battery_status"]), (15.0, "Discharging"))
+        by = {u["name"][-3:]: u for u in out["usbc"]}
+        self.assertEqual((by["001"]["online"], by["001"]["watts"]), (True, 60.0))
+        self.assertEqual((by["002"]["online"], by["002"]["volts"], by["002"]["amps"], by["002"]["watts"]),
+                         (False, 5.0, None, None))
+
+    def test_temperature_groups(self):
+        def hw(n, name, temps):
+            self.put(f"class/hwmon/hwmon{n}/name", name)
+            for i, (label, v) in enumerate(temps, 1):
+                self.put(f"class/hwmon/hwmon{n}/temp{i}_input", str(v * 1000))
+                if label:
+                    self.put(f"class/hwmon/hwmon{n}/temp{i}_label", label)
+        hw(0, "spd5118", [(None, 30)])
+        hw(1, "spd5118", [(None, 31)])
+        hw(2, "nvme", [("Composite", 40), ("Sensor 1", 41)])
+        hw(3, "coretemp", [("Package id 0", 60), ("Core 10", 55), ("Core 2", 54)])
+        hw(4, "acpitz", [(None, 50)])
+        hw(5, "iwlwifi_1", [(None, 45)])
+        hw(6, "legion_hwmon", [("EC", 48)])
+        hw(7, "mystery", [(None, 99)])
+        temps = self.sensors().sample()["temperatures"]
+        self.assertEqual([(t["group"], t["label"]) for t in temps], [
+            ("cpu", "Core 2"), ("cpu", "Core 10"), ("cpu", "Package id 0"), ("ec", "EC"), ("acpi", "temp 1"),
+            ("nvme", "Composite"), ("nvme", "Sensor 1"), ("ram", "DIMM 1"), ("ram", "DIMM 2"), ("wifi", "temp 1")])
+
+    def test_voltages(self):
+        self.put("class/power_supply/BAT1/type", "Battery")
+        self.put("class/power_supply/BAT1/voltage_now", "16415000")
+        self.put("class/hwmon/hwmon0/name", "BAT1")
+        self.put("class/hwmon/hwmon0/in0_input", "16415")
+        s = self.sensors()
+        s.gpu = lambda: {"available": True, "devices": [{"name": "G", "temperature_c": 50}]}
+        with patch.object(loq.os, "geteuid", return_value=1000):
+            m = s.sample()
+        volts = {v["label"]: v["v"] for v in m["voltages"]}
+        self.assertEqual(volts["Battery"], 16.415)
+        self.assertEqual(volts["BAT1 in0"], 16.415)
+        self.assertIsNone(volts["GPU core"])
+        self.assertIsNone(volts["CPU Vcore"])
+        self.assertIn({"group": "gpu", "label": "G", "c": 50}, m["temperatures"])
+
+    def test_cpu_vcore_msr(self):
+        s = self.sensors()
+        self.put("proc/cpuinfo", "processor : 0\nvendor_id : GenuineIntel\n")
+        msr = self.root / "dev/cpu/0/msr"
+        with patch.object(loq.os, "geteuid", return_value=0):
+            self.assertIsNone(s.cpu_vcore())  # no msr node
+            msr.parent.mkdir(parents=True)
+            msr.write_bytes(bytes(0x198) + (0x2000 << 32).to_bytes(8, "little"))
+            self.assertEqual(s.cpu_vcore(), 1.0)
+            self.put("proc/cpuinfo", "vendor_id : AuthenticAMD\n")
+            self.assertIsNone(s.cpu_vcore())
+        self.put("proc/cpuinfo", "vendor_id : GenuineIntel\n")
+        with patch.object(loq.os, "geteuid", return_value=1000):
+            self.assertIsNone(s.cpu_vcore())
+
+    def test_cpu_throttle_deltas(self):
+        def counts(core, pkg):
+            for i in (0, 1):
+                self.put(f"devices/system/cpu/cpu{i}/thermal_throttle/core_throttle_count", str(core))
+                self.put(f"devices/system/cpu/cpu{i}/thermal_throttle/package_throttle_count", str(pkg))
+                self.put(f"devices/system/cpu/cpu{i}/topology/physical_package_id", "0")
+        s = self.sensors()
+        counts(1, 5)
+        first = s.cpu_throttle()
+        self.assertEqual(first, {"core_events": None, "package_events": None, "active": None})
+        counts(3, 6)
+        second = s.cpu_throttle()
+        self.assertEqual((second["core_events"], second["package_events"], second["active"]), (4, 1, True))
+        self.assertIs(s.cpu_throttle()["active"], False)
+
+    def test_nvml_throttle_reasons(self):
+        lib = FakeNVML()
+        lib.nvmlDeviceGetCurrentClocksEventReasons = lambda h, box: (setattr(box._obj, "value", 0x1 | 0x4 | 0x40), 0)[1]
+        self.assertEqual(loq.NVML(lib).read()[0]["throttle"], ["sw_power_cap", "hw_thermal"])
+        self.assertIsNone(loq.NVML(FakeNVML()).read()[0]["throttle"])
+
+    def test_slow_sources_cached_for_5s(self):
+        s = self.sensors()
+        slow = {"battery_w": None, "battery_status": None, "usbc": [], "temperatures": [], "voltages": [],
+                "cpu_throttle": {}}
+        s.read_slow = Mock(return_value=slow)
+        for now in (0, 1, 5.1):
+            s.sample(now)
+        self.assertEqual(s.read_slow.call_count, 2)
+
+    def stub_dash(self, h=30, w=100):
+        dash = loq.Dashboard.__new__(loq.Dashboard)
+        dash.theme = loq.Theme(False)
+        dash.history = {k: loq.collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
+        dash.view = "summary"
+        dash.s = Mock()
+        dash.s.getmaxyx.return_value = (h, w)
+        calls = []
+        dash.put = lambda y, x, text, *a, **k: calls.append((y, x, str(text)))
+        return dash, calls
+
+    def test_chart_rows_markers(self):
+        dash, calls = self.stub_dash()
+        dash.history["cpu_w"].extend([None, 0, 50, 100, 200])
+        dash.chart_rows(10, 5, 8, 3, "cpu_w", 100, 1, [(50, 2), (100, 3)])
+        self.assertTrue(all(10 <= y < 13 and 5 <= x and x + len(t) <= 13 for y, x, t in calls))
+        rows = {}
+        for y, x, t in calls:
+            rows.setdefault(y, []).append(t)
+        self.assertIn("┄", "".join(rows[11]))
+        self.assertIn("┄", "".join(rows[10]))  # value >= ceiling maps to the top row
+        self.assertTrue(any("█" in t for t in rows[12]))
+        self.assertTrue(any("█" in t or "▄" in t for t in rows[11] if "┄" not in t))
+
+    def state(self):
+        attrs = {k: {"current_value": v} for k, v in (("ppt_pl1_spl", 55), ("ppt_pl2_sppt", 115),
+                                                      ("gpu_nv_ctgp", 115))}
+        return {"attributes": attrs}
+
+    def test_summary_view_with_markers(self):
+        dash, calls = self.stub_dash(45)
+        dash.history["cpu_w"].extend([20, 45, 60])
+        dash.history["gpu_w"].extend([30, 80])
+        metrics = {"cpu": {"utilization_pct": 5, "power_w": 45.2, "cores": {}},
+                   "gpu": {"devices": [{"name": "G", "power_w": 80.1, "power_limit_w": 140,
+                                        "throttle": ["sw_power_cap"]}]},
+                   "throttle": {"cpu": {"active": True}}}
+        dash.draw_telemetry(self.state(), metrics, 1, 40, 42, 60)
+        text = "\n".join(t for _, _, t in calls)
+        self.assertIn("W 45.2 · PL1 55 · PL2 115", text)
+        self.assertIn("W 80.1 · cTGP 115 · limit 140", text)
+        self.assertIn("THROTTLE", text)
+        self.assertIn("throttle: sw_power_cap", text)
+        self.assertIn("┄", text)
+        self.assertTrue(all(0 <= y < 45 and x + len(t) <= 100 for y, x, t in calls))
+        calls.clear()
+        dash.draw_telemetry({}, {"cpu": {}}, 1, 40, 22, 60)  # no limits, small box
+        self.assertIn("PL1 N/A", "\n".join(t for _, _, t in calls))
+
+    def test_sensors_view_draws_na(self):
+        dash, calls = self.stub_dash()
+        dash.draw_sensors({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
+                           "power": {"rapl": {"psys": None}, "battery_w": None, "battery_status": None,
+                                     "usbc": []},
+                           "voltages": [{"label": "CPU Vcore", "v": None}],
+                           "throttle": {"cpu": {"core_events": None}, "gpu": None}}, 1, 0, 30, 60)
+        text = "\n".join(t for _, _, t in calls)
+        for needle in ("Temperatures", "Core 0", "psys", "CPU Vcore", "Throttle"):
+            self.assertIn(needle, text)
+        self.assertGreaterEqual(text.count("N/A"), 6)
+        calls.clear()
+        dash.draw_sensors({"temperatures": [{"group": "cpu", "label": str(i), "c": 1} for i in range(40)]},
+                          1, 0, 8, 60)
+        self.assertEqual(calls[-1][2], "…")
+        self.assertTrue(all(y <= 8 for y, _, _ in calls))
+        dash.help = False
+        dash.show_results = False
+        dash.panel = "main"
+        dash.paused = False
+        dash.rows = lambda state: ["mode"]
+        dash.selected = 0
+        dash.locked = lambda state: True
+        dash.fields, dash.invalid = {}, set()
+        dash.handle(ord("t"), {})
+        self.assertEqual(dash.view, "sensors")
+        dash.handle(ord("t"), {})
+        self.assertEqual(dash.view, "summary")
 
 
 if __name__ == "__main__":

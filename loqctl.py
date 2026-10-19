@@ -45,10 +45,12 @@ csv = _lazy("csv")
 curses = _lazy("curses")
 http_client = _lazy("http.client")
 http_server = _lazy("http.server")
+re = _lazy("re")
 socketserver = _lazy("socketserver")
 textwrap = _lazy("textwrap")
 
 VERSION = "0.2.0"
+SLOW_INTERVAL = 5  # seconds between refreshes of slow telemetry sources
 ENTRY = str(Path(__file__).resolve())
 LEGIONAURA = "legionaura"
 LEGIONAURA_CONFIG = Path.home() / ".config/legionaura/config.json"
@@ -75,6 +77,14 @@ FIELDS = {
     "gpu_nv_cpu_boost": ("GPU CPU boost", "W"),
     "gpu_temp": ("GPU temperature limit", "°C"),
 }
+# NVML clocks-event reasons; 0x1 (gpu_idle) is not a throttle and is omitted.
+THROTTLE_BITS = ((0x2, "app_clocks"), (0x4, "sw_power_cap"), (0x8, "hw_slowdown"),
+                 (0x10, "sync_boost"), (0x20, "sw_thermal"), (0x40, "hw_thermal"),
+                 (0x80, "hw_power_brake"), (0x100, "display_clocks"))
+TEMP_GROUPS = {"coretemp": "cpu", "k10temp": "cpu", "zenpower": "cpu", "acpitz": "acpi",
+               "nvme": "nvme", "spd5118": "ram", "jc42": "ram", "amdgpu": "gpu",
+               "legion_hwmon": "ec"}  # legion_hwmon: LenovoLegionLinux module name, unverified
+GROUP_ORDER = ("cpu", "gpu", "ec", "acpi", "nvme", "ram", "wifi")
 SPARK = "▁▂▃▄▅▆▇█"
 BAR_FILL = "█"
 BAR_EMPTY = "░"
@@ -398,6 +408,13 @@ class NVML:
                 memclk = value(lib.nvmlDeviceGetClockInfo, ct.c_uint, handle, 2)
                 util = value(lib.nvmlDeviceGetUtilizationRates, Util, handle)
                 mem = value(lib.nvmlDeviceGetMemoryInfo, Mem, handle)
+                reasons = None
+                for symbol in ("nvmlDeviceGetCurrentClocksEventReasons",  # older drivers: ...ThrottleReasons
+                               "nvmlDeviceGetCurrentClocksThrottleReasons"):
+                    call = getattr(lib, symbol, None)
+                    reasons = value(call, ct.c_ulonglong, handle) if call else None
+                    if reasons is not None:
+                        break
                 mib = 1024 * 1024
                 devices.append({
                     "name": name.value.decode(errors="replace") if named else None,
@@ -408,7 +425,9 @@ class NVML:
                     "memory_clock_mhz": memclk.value if memclk is not None else None,
                     "utilization_pct": util.gpu if util is not None else None,
                     "memory_used_mib": mem.used / mib if mem is not None else None,
-                    "memory_total_mib": mem.total / mib if mem is not None else None})
+                    "memory_total_mib": mem.total / mib if mem is not None else None,
+                    "throttle": [n for bit, n in THROTTLE_BITS if reasons.value & bit]
+                    if reasons is not None else None})
             return devices
         except (OSError, AttributeError):
             self.failed = True
@@ -416,11 +435,14 @@ class NVML:
 
 
 class Sensors:
-    def __init__(self, root=Path("/sys"), proc=Path("/proc")):
-        self.root, self.proc = Path(root), Path(proc)
+    def __init__(self, root=Path("/sys"), proc=Path("/proc"), dev=Path("/dev")):
+        self.root, self.proc, self.dev = Path(root), Path(proc), Path(dev)
         self.nvml = NVML()
         self.previous_cpu = {}
         self.previous_energy = {}
+        self.previous_throttle = None
+        self.slow = None
+        self.slow_at = None
 
     def cpu_usage(self):
         result = {}
@@ -438,20 +460,31 @@ class Sensors:
             self.previous_cpu[parts[0]] = (total, idle)
         return result
 
-    def cpu_power(self):
-        watts, sources, denied = [], [], False
+    def rapl_power(self):
+        """Watts per RAPL domain, the package sum and a status line."""
+        rapl, package, sources, denied = {}, [], [], False
         # AMD Zen exposes package energy through the same powercap intel-rapl driver
         # (amd_energy was removed in 5.13), so one glob covers both vendors.
-        for path in sorted(self.root.glob("class/powercap/intel-rapl:*")):
-            if not (read(path / "name", "") or "").startswith("package-"):
-                continue  # exclude nested domains and duplicate MMIO counters
+        for path in sorted(self.root.glob("class/powercap/intel-rapl:*")):  # excludes intel-rapl-mmio duplicates
+            name = read(path / "name", "") or ""
+            if not name:
+                continue
+            parent = path.name.count(":") > 1
+            if parent:
+                parent_name = read(path.with_name(path.name.rsplit(":", 1)[0]) / "name", "") or ""
+                key = f"{parent_name}/{name}"
+            else:
+                key = name
+            top_package = not parent and name.startswith("package-")
             energy = scaled(path / "energy_uj")
             now = time.monotonic()
             if energy is None:
-                denied = True
+                denied = denied or top_package
+                rapl[key] = None
                 continue
             previous = self.previous_energy.get(str(path))
             self.previous_energy[str(path)] = (now, energy)
+            rapl[key] = None
             if previous:
                 delta = energy - previous[1]
                 if delta < 0:
@@ -461,11 +494,16 @@ class Sensors:
                     delta += maximum
                 elapsed = now - previous[0]
                 if elapsed > 0 and delta >= 0:
-                    watts.append(delta / 1_000_000 / elapsed)
-                    sources.append(read(path / "name"))
-        return (sum(watts) if watts else None,
+                    rapl[key] = delta / 1_000_000 / elapsed
+                    if top_package:
+                        package.append(rapl[key])
+                        sources.append(name)
+        return (rapl, sum(package) if package else None,
                 "RAPL package energy" if sources else
                 "RAPL needs root: run sudo loqctl serve" if denied else "Waiting for RAPL samples or no package counter")
+
+    def cpu_power(self):
+        return self.rapl_power()[1:]
 
     def gpu_suspended(self):
         for path in self.root.glob("bus/pci/devices/*"):
@@ -532,7 +570,96 @@ class Sensors:
                 best = (value, label)
         return best
 
-    def sample(self):
+    def cpu_vcore(self):
+        """CPU core voltage from MSR 0x198 (IA32_PERF_STATUS); root and Intel only."""
+        # AMD TBD: no stable MSR/sysfs source, so it stays None there.
+        if os.geteuid() != 0:
+            return None
+        vendor = next((line.split(":", 1)[1].strip() for line in (read(self.proc / "cpuinfo", "") or "").splitlines()
+                       if line.startswith("vendor_id")), None)
+        msr = self.dev / "cpu/0/msr"
+        if vendor != "GenuineIntel" or not msr.exists():
+            return None
+        try:
+            fd = os.open(msr, os.O_RDONLY)
+            try:
+                raw = os.pread(fd, 8, 0x198)
+            finally:
+                os.close(fd)
+            if len(raw) != 8:
+                return None
+            return ((int.from_bytes(raw, "little") >> 32) & 0xFFFF) / 8192
+        except OSError:
+            return None
+
+    def cpu_throttle(self):
+        cpus = sorted(self.root.glob("devices/system/cpu/cpu[0-9]*/thermal_throttle"))
+        core, package, seen = None, None, set()
+        for path in cpus:
+            if (v := scaled(path / "core_throttle_count")) is not None:
+                core = (core or 0) + v
+            cpu = path.parent
+            pkg = read(cpu / "topology/physical_package_id")
+            if pkg is None and cpu.name != "cpu0":
+                continue
+            if pkg in seen:
+                continue
+            seen.add(pkg)
+            if (v := scaled(path / "package_throttle_count")) is not None:
+                package = (package or 0) + v
+        previous, self.previous_throttle = self.previous_throttle, (core, package)
+
+        def delta(now, before):
+            return None if now is None or before is None else max(0, now - before)
+        events = [delta(core, previous[0] if previous else None), delta(package, previous[1] if previous else None)]
+        known = [e for e in events if e is not None]
+        return {"core_events": events[0], "package_events": events[1],
+                "active": any(e > 0 for e in known) if known else None}
+
+    def read_slow(self, hwmons):
+        """Sources refreshed every SLOW_INTERVAL seconds."""
+        battery_w, battery_status, battery_v, usbc = None, None, None, []
+        for p in sorted(self.root.glob("class/power_supply/*")):
+            kind = read(p / "type")
+            if kind == "Battery" and battery_w is None and battery_status is None:
+                volts, amps = scaled(p / "voltage_now", 1e6), scaled(p / "current_now", 1e6)
+                battery_w = scaled(p / "power_now", 1e6)
+                if battery_w is None and volts is not None and amps is not None:
+                    battery_w = volts * amps
+                battery_status, battery_v = read(p / "status"), volts
+            elif p.name.startswith("ucsi"):
+                volts, amps = scaled(p / "voltage_now", 1e6), scaled(p / "current_now", 1e6)
+                online = read(p / "online")
+                usbc.append({"name": p.name, "online": online == "1" if online is not None else None,
+                             "volts": volts, "amps": amps,
+                             "watts": volts * amps if volts is not None and amps is not None else None})
+        temperatures, voltages, dimm = [], [], 0
+        if battery_v is not None:
+            voltages.append({"label": "Battery", "v": battery_v})
+        for hw in hwmons:
+            name = read(hw / "name", "") or ""
+            group = "wifi" if name.startswith("iwlwifi") else TEMP_GROUPS.get(name)
+            for p in sorted(hw.glob("temp*_input")):
+                value = scaled(p, 1000)
+                if group is None or value is None:
+                    continue
+                num = p.name[4:].split("_")[0]
+                label = read(p.with_name(f"temp{num}_label"))
+                if group == "ram":
+                    dimm += 1
+                    label = f"DIMM {dimm}"
+                temperatures.append({"group": group, "label": label or f"temp {num}", "c": value})
+            for p in sorted(hw.glob("in*_input")):
+                value = scaled(p, 1000)
+                num = p.name[2:].split("_")[0]
+                label = read(p.with_name(f"in{num}_label")) or f"in{num}"
+                voltages.append({"label": f"{name} {label}", "v": value})
+        voltages.append({"label": "CPU Vcore", "v": self.cpu_vcore()})
+        return {"battery_w": battery_w, "battery_status": battery_status, "usbc": usbc,
+                "temperatures": temperatures, "voltages": voltages, "cpu_throttle": self.cpu_throttle()}
+
+    def sample(self, now=None):
+        now = time.monotonic() if now is None else now
         usage = self.cpu_usage()
         fans = []
         hwmons = sorted(self.root.glob("class/hwmon/hwmon*"))
@@ -543,8 +670,11 @@ class Sensors:
                              "rpm": scaled(p)})
         mhz = [v for p in self.root.glob("devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")
                if (v := scaled(p, 1000)) is not None]
-        power, power_source = self.cpu_power()
+        rapl, power, power_source = self.rapl_power()
         temperature, temperature_source = self.cpu_temperature(hwmons)
+        if self.slow is None or self.slow_at is None or now - self.slow_at >= SLOW_INTERVAL:
+            self.slow, self.slow_at = self.read_slow(hwmons), now
+        slow = self.slow
         mem = {}
         for line in (read(self.proc / "meminfo", "") or "").splitlines():
             key, value = line.split(":", 1)
@@ -558,15 +688,28 @@ class Sensors:
                                 "status": read(p / "status"), "power_w": scaled(p / "power_now", 1e6)})
             elif (online := read(p / "online")) is not None:
                 ac.append(online == "1")
+        gpu = self.gpu()
+        devices = gpu.get("devices") or []
+        temperatures = list(slow["temperatures"]) + [
+            {"group": "gpu", "label": d.get("name") or "GPU", "c": d["temperature_c"]}
+            for d in devices if d.get("temperature_c") is not None]
+        temperatures.sort(key=lambda t: (GROUP_ORDER.index(t["group"]), [
+            int(c) if c.isdigit() else c for c in re.split(r"(\d+)", t["label"])]))
+        voltages = list(slow["voltages"]) + ([{"label": "GPU core", "v": None}] if devices else [])
         return {"timestamp": time.time(),
                 "cpu": {"utilization_pct": usage.pop("cpu", None), "cores": usage,
                         "temperature_c": temperature, "temperature_source": temperature_source,
                         "power_w": power, "power_source": power_source,
                         "clock_mhz": sum(mhz) / len(mhz) if mhz else None,
                         "max_clock_mhz": max(mhz) if mhz else None},
-                "gpu": self.gpu(), "memory": {"total_mib": total,
+                "gpu": gpu, "memory": {"total_mib": total,
                     "used_mib": total - available if total is not None and available is not None else None},
                 "battery": battery, "ac_online": any(ac) if ac else None, "fans": fans,
+                "power": {"rapl": rapl, "battery_w": slow["battery_w"],
+                          "battery_status": slow["battery_status"], "usbc": slow["usbc"]},
+                "temperatures": temperatures, "voltages": voltages,
+                "throttle": {"cpu": slow["cpu_throttle"],
+                             "gpu": devices[0].get("throttle") if devices else None},
                 "load": list(os.getloadavg()), "uptime_s": number((read(self.proc / "uptime", "0")).split()[0])}
 
 
@@ -1025,6 +1168,7 @@ class Dashboard:
         self.running = True
         self.paused = False
         self.panel = "main"  # main | keyboard
+        self.view = "summary"  # summary | sensors (main panel only)
         self.theme = Theme(curses.has_colors())
         self.keyboard = Keyboard()
         self.kb_zone = 0
@@ -1100,6 +1244,31 @@ class Dashboard:
                 plot.append(SPARK[min(7, max(0, round(value / max(1, ceiling) * 7)))])
         self.put(y, x, "".join(plot).rjust(width), color)
 
+    def chart_rows(self, y, x, width, height, key, ceiling=100, color=1, markers=()):
+        """Multi-row bar chart (eighth blocks), right-aligned; markers are (value, color) lines."""
+        width, height = max(0, width), max(0, height)
+        if not width or not height:
+            return
+        ceiling = max(1, ceiling)
+        values = list(self.history[key])[-width:]
+        pad = width - len(values)
+        eighths = [None if v is None else round(clamp(v / ceiling, 0, 1) * height * 8) for v in values]
+        marks = {}
+        for value, mark_color in markers:
+            if value is not None:
+                marks.setdefault(min(height - 1, int(clamp(value / ceiling, 0, 1) * height)), []).append(mark_color)
+        for line in range(height):  # line 0 is the bottom row
+            cells = []
+            for e in eighths:
+                n = 0 if e is None else clamp(e - line * 8, 0, 8)
+                cells.append(" " if n == 0 else SPARK[n - 1])
+            row = y + height - 1 - line
+            self.put(row, x, "".join(cells).rjust(width), color)
+            if line in marks:
+                for col in range(width):
+                    if col < pad or cells[col - pad] == " ":
+                        self.put(row, x + col, "┄", marks[line][-1])
+
     @staticmethod
     def locked(state):
         # Gate on the LIVE mode; a staged mode never unlocks limit rows.
@@ -1166,7 +1335,7 @@ class Dashboard:
         if self.panel == "keyboard":
             keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
         else:
-            keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  Space pause  v results  ? help  q"
+            keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  t sensors  Space pause  v results  ? help  q"
         self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)
 
         if self.help:
@@ -1180,7 +1349,10 @@ class Dashboard:
         right_x = x + left_w + 1
         right_w = width - left_w - 1
         self.draw_controls(state, y, x, height, left_w)
-        self.draw_telemetry(metrics, y, right_x, height, right_w)
+        if self.view == "sensors":
+            self.draw_sensors(metrics, y, right_x, height, right_w)
+        else:
+            self.draw_telemetry(state, metrics, y, right_x, height, right_w)
 
     def draw_controls(self, state, y, x, height, width):
         pending_n = len(self.pending)
@@ -1257,11 +1429,16 @@ class Dashboard:
                      f"{item['min_value']}–{item['max_value']} {item['unit']}  ·  step {step_txt}  ·  default {item['default_value']}"
                      [: width - 4], self.theme.TEXT, dim=True)
 
-    def draw_telemetry(self, metrics, y, x, height, width):
+    def draw_telemetry(self, state, metrics, y, x, height, width):
         cpu = metrics.get("cpu") or {}
         gpu = next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
         gpu_meta = metrics.get("gpu") or {}
         memory = metrics.get("memory") or {}
+        throttle = metrics.get("throttle") or {}
+        attrs = state.get("attributes") or {}
+
+        def limit(key):
+            return (attrs.get(key) or {}).get("current_value")
 
         # Split right column into cpu / gpu / sys with flexible heights.
         cpu_h = max(7, height * 38 // 100)
@@ -1279,7 +1456,12 @@ class Dashboard:
             fmt(cpu.get("temperature_c"), "°C"),
             fmt(cpu.get("power_w"), "W", 1),
         ]))
+        throttled = bool((throttle.get("cpu") or {}).get("active"))
+        if throttled:
+            cpu_right = (cpu_right + " · " if cpu_right else "") + "THROTTLE"
         self.box(y, x, cpu_h, width, "cpu", self.theme.OK, cpu_right)
+        if throttled:
+            self.put(y, x + width - 11, "THROTTLE", self.theme.BAD, True)
         ix, iw = x + 2, width - 4
         self.bar(y + 1, ix, iw, cpu.get("utilization_pct"), self.theme.load(cpu.get("utilization_pct")))
         temp_c = cpu.get("temperature_c")
@@ -1289,15 +1471,22 @@ class Dashboard:
                  self.theme.heat(temp_c))
         if cpu_h >= 7:
             self.chart(y + 3, ix, iw, "cpu", color=self.theme.OK)
-        if cpu_h >= 8:
-            self.put(y + 4, ix, "W ", self.theme.WARN, dim=True)
-            self.chart(y + 4, ix + 2, iw - 2, "cpu_w", ceiling=170, color=self.theme.WARN)
+        pl1, pl2 = limit("ppt_pl1_spl"), limit("ppt_pl2_sppt")
+        cpu_label = f"W {fmt(cpu.get('power_w'), '', 1)} · PL1 {fmt(pl1)} · PL2 {fmt(pl2)}"
+        cpu_ceiling = max(pl2 or 0, max((v for v in self.history["cpu_w"] if v is not None), default=0), 1)
+        cpu_marks = [(v, c) for v, c in ((pl1, self.theme.WARN), (pl2, self.theme.BAD)) if v is not None]
         if cpu_h >= 9:
-            cores = list((cpu.get("cores") or {}).values())
-            spark = "".join("·" if c is None else SPARK[min(7, round((c or 0) * 7 / 100))] for c in cores)
-            self.put(y + 5, ix, f"cores {spark}"[:iw], self.theme.OK)
-        if cpu_h >= 10:
-            self.put(y + 6, ix, (cpu.get("power_source") or "Sampling…")[:iw], self.theme.TEXT, dim=True)
+            self.put(y + 4, ix, cpu_label[:iw], self.theme.WARN, dim=True)
+            self.chart_rows(y + 5, ix, iw, 3, "cpu_w", cpu_ceiling, self.theme.WARN, cpu_marks)
+            if cpu_h >= 10:
+                cores = list((cpu.get("cores") or {}).values())
+                spark = "".join("·" if c is None else SPARK[min(7, round((c or 0) * 7 / 100))] for c in cores)
+                self.put(y + 8, ix, f"cores {spark}"[:iw], self.theme.OK)
+            if cpu_h >= 11:
+                self.put(y + 9, ix, (cpu.get("power_source") or "Sampling…")[:iw], self.theme.TEXT, dim=True)
+        elif cpu_h >= 8:
+            self.put(y + 4, ix, cpu_label[:iw], self.theme.WARN, dim=True)
+            self.chart(y + 4, ix + len(cpu_label) + 1, iw - len(cpu_label) - 1, "cpu_w", cpu_ceiling, self.theme.WARN)
 
         # GPU
         gy = y + cpu_h
@@ -1314,16 +1503,30 @@ class Dashboard:
             self.put(gy + 3, ix,
                      f"core {fmt(gpu.get('clock_mhz'), ' MHz')}  mem {fmt(gpu.get('memory_clock_mhz'), ' MHz')}"[:iw],
                      self.theme.TEXT, dim=True)
-            if gpu_h >= 7:
-                self.put(gy + 4, ix,
+            r, last = gy + 4, gy + gpu_h - 2
+            if r <= last and gpu_h >= 7:
+                self.put(r, ix,
                          f"vram {fmt(gpu.get('memory_used_mib'))}/{fmt(gpu.get('memory_total_mib'), ' MiB')}  "
                          f"limit {fmt(gpu.get('power_limit_w'), ' W')}"[:iw],
                          self.theme.TEXT, dim=True)
-            if gpu_h >= 8:
-                self.chart(gy + 5, ix, iw, "gpu", color=self.theme.GPU)
-            if gpu_h >= 9:
-                self.put(gy + 6, ix, "W ", self.theme.WARN, dim=True)
-                self.chart(gy + 6, ix + 2, iw - 2, "gpu_w", ceiling=140, color=self.theme.WARN)
+                r += 1
+            reasons = gpu.get("throttle") or []
+            if reasons and r <= last:
+                self.put(r, ix, ("throttle: " + ", ".join(reasons))[:iw], self.theme.BAD)
+                r += 1
+            if r <= last and gpu_h >= 8:
+                self.chart(r, ix, iw, "gpu", color=self.theme.GPU)
+                r += 1
+            ctgp, plimit = limit("gpu_nv_ctgp"), gpu.get("power_limit_w")
+            gpu_label = f"W {fmt(gpu.get('power_w'), '', 1)} · cTGP {fmt(ctgp)} · limit {fmt(plimit)}"
+            gpu_ceiling = max(ctgp or 0, plimit or 0, max((v for v in self.history["gpu_w"] if v is not None), default=0), 1)
+            gpu_marks = [(v, c) for v, c in ((ctgp, self.theme.WARN), (plimit, self.theme.BAD)) if v is not None]
+            if gpu_h >= 9 and last - r + 1 >= 4:
+                self.put(r, ix, gpu_label[:iw], self.theme.WARN, dim=True)
+                self.chart_rows(r + 1, ix, iw, min(3, last - r), "gpu_w", gpu_ceiling, self.theme.WARN, gpu_marks)
+            elif gpu_h >= 9 and r <= last:
+                self.put(r, ix, gpu_label[:iw], self.theme.WARN, dim=True)
+                self.chart(r, ix + len(gpu_label) + 1, iw - len(gpu_label) - 1, "gpu_w", gpu_ceiling, self.theme.WARN)
 
         # System
         sy = gy + gpu_h
@@ -1349,6 +1552,41 @@ class Dashboard:
             up = f"  up {int(uptime // 3600)}h{int(uptime % 3600 // 60):02d}m" if uptime is not None else ""
             self.put(sy + 4, ix, ("load " + " ".join(fmt(v, decimals=2) for v in loads) + up)[:iw],
                      self.theme.TEXT, dim=True)
+
+    def draw_sensors(self, metrics, y, x, height, width):
+        self.box(y, x, height, width, "sensors", self.theme.INFO, "t summary")
+        ix, iw = x + 2, width - 4
+        na = lambda v, unit="", d=1: fmt(v, unit, d)
+        lines = [("Temperatures", self.theme.ACCENT, True)]
+        temps = metrics.get("temperatures") or []
+        lines += [(f"  {t['group']:<6} {t['label']:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)
+                  for t in temps] or [("  N/A", self.theme.TEXT, False)]
+        power = metrics.get("power") or {}
+        lines.append(("Power", self.theme.ACCENT, True))
+        for name, watts in (power.get("rapl") or {}).items():
+            lines.append((f"  {name:<24} {na(watts, ' W')}", self.theme.TEXT, False))
+        if "battery_w" in power:
+            lines.append((f"  {'battery':<24} {na(power.get('battery_w'), ' W')}  {power.get('battery_status') or 'N/A'}",
+                          self.theme.TEXT, False))
+        for u in power.get("usbc") or []:
+            lines.append((f"  {u['name'][:24]:<24} {na(u['watts'], ' W')}  {na(u['volts'], ' V', 2)}  "
+                          f"{na(u['amps'], ' A', 2)}", self.theme.TEXT, False))
+        lines.append(("Voltages", self.theme.ACCENT, True))
+        lines += [(f"  {v['label'][:30]:<30} {na(v['v'], ' V', 3)}", self.theme.TEXT, False)
+                  for v in metrics.get("voltages") or []] or [("  N/A", self.theme.TEXT, False)]
+        throttle = metrics.get("throttle") or {}
+        cpu_t, gpu_t = throttle.get("cpu") or {}, throttle.get("gpu")
+        lines.append(("Throttle", self.theme.ACCENT, True))
+        lines.append((f"  cpu core {na(cpu_t.get('core_events'), '', 0)}  package {na(cpu_t.get('package_events'), '', 0)}"
+                      f"  active {'N/A' if cpu_t.get('active') is None else 'yes' if cpu_t['active'] else 'no'}",
+                      self.theme.BAD if cpu_t.get("active") else self.theme.TEXT, False))
+        lines.append(("  gpu " + ("N/A" if gpu_t is None else ", ".join(gpu_t) or "none"),
+                      self.theme.BAD if gpu_t else self.theme.TEXT, False))
+        room = height - 2
+        if len(lines) > room:
+            lines = lines[:max(0, room - 1)] + [("…", self.theme.TEXT, False)]
+        for i, (text, color, bold) in enumerate(lines):
+            self.put(y + 1 + i, ix, text[:iw], color, bold)
 
     def draw_keyboard(self, y, x, height, width):
         kb = self.keyboard
@@ -1430,7 +1668,7 @@ class Dashboard:
             "          c copy color to all zones   Space toggle live apply",
             "          Enter apply via legionaura",
             "",
-            "Global    Space pause telemetry   ? help   q quit",
+            "Global    t sensors view   Space pause telemetry   ? help   q quit",
             "Colors use your terminal ANSI palette only (no custom RGB UI).",
             "Press ? or Esc to close.",
         ]
@@ -1742,6 +1980,8 @@ class Dashboard:
         if not rows:
             if ch == ord("q"):
                 self.running = False
+            elif ch == ord("t"):
+                self.view = "sensors" if self.view == "summary" else "summary"
             elif ch == ord("l"):
                 self.panel = "keyboard"
                 self.keyboard.load()
@@ -1761,6 +2001,8 @@ class Dashboard:
             self.running = False
         elif ch == ord("?"):
             self.help = True
+        elif ch == ord("t"):
+            self.view = "sensors" if self.view == "summary" else "summary"
         elif ch == ord("l"):
             self.panel = "keyboard"
             self.keyboard.load()
