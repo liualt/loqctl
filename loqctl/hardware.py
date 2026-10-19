@@ -9,7 +9,8 @@ from pathlib import Path
 import threading
 
 from .capdata import effective_value, read_mode_table
-from .common import FIELDS, ControlError, read
+from .common import FIELDS, ControlError, read, scaled
+from .fancurve import find_legion_hwmon, read_curve, speed_unit, write_curve
 
 class Hardware:
     def __init__(self, root=Path("/sys")):
@@ -122,6 +123,29 @@ class Hardware:
             actual = self._write(self.base / key / "current_value", value)
             return {"attribute": key, "value": value, "previous": item["current_value"],
                     "current": int(actual), "verified": True}
+
+
+    def fancurve(self):
+        """Fan curve and RPM from the legion_laptop hwmon, or {"available": False, "reason": ...}."""
+        with self.lock:
+            hwmon = find_legion_hwmon(self.root)
+            if hwmon is None:
+                return {"available": False, "reason": "legion_laptop hwmon not found"}
+            points = read_curve(hwmon)
+            if not points:
+                return {"available": False, "reason": "legion_hwmon exposes no fan curve points"}
+            return {"available": True, "hwmon": str(hwmon), "unit": speed_unit(hwmon), "points": points,
+                    "rpm": [scaled(hwmon / f"fan{n}_input") for n in (1, 2)]}
+
+    def write_fancurve(self, points):
+        with self.lock:
+            mode = self.read_mode()
+            if mode != "custom":
+                raise ControlError(f"Fan curves are locked in {mode} mode. Select custom first.")
+            hwmon = find_legion_hwmon(self.root)
+            if hwmon is None:
+                raise ControlError("legion_laptop hwmon not found.")
+            return write_curve(hwmon, points, speed_unit(hwmon))
 
 
 def apply_batch(hardware, changes):

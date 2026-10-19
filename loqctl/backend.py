@@ -80,6 +80,14 @@ class Backend:
             return request(self.path, "POST", endpoint, {"mode" if key == "mode" else "value": value})
         return self.hardware.set_mode(value) if key == "mode" else self.hardware.set_value(key, value)
 
+    def fancurve(self):
+        return request(self.path, "GET", "/v1/fancurve") if self.remote else self.hardware.fancurve()
+
+    def write_fancurve(self, points):
+        if self.remote:
+            return request(self.path, "POST", "/v1/fancurve", {"points": points})
+        return self.hardware.write_fancurve(points)
+
     def close(self):
         self.stop.set()
         self.wake.set()

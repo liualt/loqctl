@@ -48,11 +48,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Lenovo LOQ firmware controls and live terminal telemetry")
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--socket", help="Connect to an existing loqctl Unix socket")
-    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,mode,set,kb,serve}")
+    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,fan,mode,set,kb,serve}")
     commands.add_parser("tui", help="Open the dashboard (default)")
     for cmd in ("status", "metrics", "capabilities"):
         commands.add_parser(cmd, help="Print " + cmd + " as JSON")
     commands.add_parser("limits", help="Print per-mode firmware limits as JSON")
+    commands.add_parser("fan", help="Print the fan curve and RPM as JSON")
     mode = commands.add_parser("mode", help="Read or set the platform mode")
     mode.add_argument("value", nargs="?")
     setting = commands.add_parser("set", help="Set one firmware attribute, with readback verification")
@@ -65,6 +66,8 @@ def main(argv=None):
     internal = commands.add_parser("_apply")
     internal.add_argument("changes", help="JSON list of [key, value] pairs")
     commands.add_parser("_capdata")
+    fancurve = commands.add_parser("_fancurve")
+    fancurve.add_argument("points", help="JSON list of fan curve points")
     args = parser.parse_args(argv)
     try:
         if args.command == "serve":
@@ -73,6 +76,8 @@ def main(argv=None):
             return 0
         if args.command == "_apply":
             result = apply_batch(Hardware(), json.loads(args.changes))
+        elif args.command == "_fancurve":
+            result = Hardware().write_fancurve(json.loads(args.points))
         elif args.command == "_capdata":
             result, reason = Hardware().mode_limits()
             if result is None:
@@ -113,6 +118,8 @@ def main(argv=None):
                     result = {"mode": result["mode"], "modes": result["modes"]}
                 elif args.command == "limits":
                     result = limits_report(result)
+            elif args.command == "fan":
+                result = backend.fancurve()
             elif args.command == "mode":
                 result = backend.write("mode", args.value)
             elif args.command == "set":

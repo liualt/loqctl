@@ -15,6 +15,7 @@ from .colors import hex_to_rgb, hsv_to_rgb, nearest_ansi, rgb_to_hex, rgb_to_hsv
 from .common import (BAR_EMPTY, BAR_FILL, FIELDS, SPARK, ControlError, SudoExpired, _lazy, clamp, fmt,
                      sudo_run)
 from .keyboard import Keyboard
+from .ui_fans import FanPanel
 
 collections = _lazy("collections")
 curses = _lazy("curses")
@@ -94,7 +95,7 @@ class Theme:
         }.get(ansi_color, self.TEXT)
 
 
-class Dashboard:
+class Dashboard(FanPanel):
     MIN_W, MIN_H = 72, 20
     show_limits = False
 
@@ -113,7 +114,7 @@ class Dashboard:
         self.help = False
         self.running = True
         self.paused = False
-        self.panel = "main"  # main | keyboard
+        self.panel = "main"  # main | keyboard | fans
         self.view = "summary"  # summary | sensors (main panel only)
         self.theme = Theme(curses.has_colors())
         self.keyboard = Keyboard()
@@ -121,6 +122,7 @@ class Dashboard:
         self.kb_channel = 0  # 0=H 1=S 2=V
         self.kb_live = True
         self.kb_seen = 0
+        self.fan_init()
         self._set_escdelay()
         try:
             curses.curs_set(0)
@@ -267,6 +269,8 @@ class Dashboard:
 
         if self.panel == "keyboard":
             self.draw_keyboard(1, 0, h - 3, w)
+        elif self.panel == "fans":
+            self.draw_fans(state, metrics, 1, 0, h - 3, w)
         else:
             self.draw_main(state, metrics, 1, 0, h - 3, w)
 
@@ -280,8 +284,10 @@ class Dashboard:
         self.put(h - 2, 1, status[: w - 3], self.theme.WARN if warn else self.theme.TEXT)
         if self.panel == "keyboard":
             keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
+        elif self.panel == "fans":
+            keys = "arrows cell  0-9 type  +/- step  Enter apply  r discard  Esc clear/back  f back  q quit"
         else:
-            keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  t sensors  m modes  Space pause  v results  ? help  q"
+            keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  f fans  t sensors  m modes  Space pause  v results  ? help  q"
         self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)
 
         if self.help:
@@ -605,7 +611,7 @@ class Dashboard:
     def draw_help(self):
         h, w = self.s.getmaxyx()
         bw = min(86, w - 4)
-        bh = min(19, h - 2)
+        bh = min(21, h - 2)
         bx, by = (w - bw) // 2, max(1, (h - bh) // 2)
         self.fill(by, bx, bh, bw)
         self.box(by, bx, bh, bw, "help", self.theme.ACCENT)
@@ -623,6 +629,8 @@ class Dashboard:
             "          c copy color to all zones   Space toggle live apply",
             "          Enter apply via legionaura",
             "",
+            "Fans      f open fan curves (custom mode only)   arrows move cell",
+            "          0-9 type   +/- step   Enter apply all   r discard   Esc clear/back",
             "Global    t sensors view   Space pause telemetry   ? help   q quit",
             "Colors use your terminal ANSI palette only (no custom RGB UI).",
             "Press ? or Esc to close.",
@@ -728,13 +736,17 @@ class Dashboard:
         else:
             self.invalid.discard(key)
 
-    def run_sudo_apply(self, changes):
-        """Apply all changes in one `sudo -n` call; returns the per-item results."""
+    def sudo_call(self, args):
+        """Run an internal subcommand through `sudo -n`; flags the expiry banner when it lapsed."""
         try:
-            stdout, stderr = sudo_run(["_apply", json.dumps(changes)])
+            return sudo_run(args)
         except SudoExpired as exc:
             self.sudo_expired = True
             raise ControlError("sudo credentials expired. Press s to re-authenticate; edits stay staged.") from exc
+
+    def run_sudo_apply(self, changes):
+        """Apply all changes in one `sudo -n` call; returns the per-item results."""
+        stdout, stderr = self.sudo_call(["_apply", json.dumps(changes)])
         try:
             results = json.loads(stdout)
             if not isinstance(results, list) or not all(isinstance(r, dict) and "key" in r and "status" in r
@@ -961,6 +973,9 @@ class Dashboard:
         if getattr(self, "panel", "main") == "keyboard":
             self.handle_keyboard(ch)
             return
+        if getattr(self, "panel", "main") == "fans":
+            self.handle_fans(ch, state)
+            return
 
         rows = self.rows(state)
         if not rows:
@@ -973,6 +988,8 @@ class Dashboard:
                 self.keyboard.recheck()
                 self.keyboard.load()
                 self.notice = "Keyboard lighting."
+            elif ch == ord("f"):
+                self.open_fans()
             return
         self.selected = clamp(self.selected, 0, len(rows) - 1)
         key = rows[self.selected]
@@ -1001,6 +1018,8 @@ class Dashboard:
             self.keyboard.recheck()
             self.keyboard.load()
             self.notice = "Keyboard lighting. Esc returns."
+        elif ch == ord("f"):
+            self.open_fans()
         elif ch == ord(" "):
             self.paused = not self.paused
             self.notice = "Telemetry paused." if self.paused else "Telemetry resumed."

@@ -13,7 +13,7 @@ A btop-style hardware monitor and control tool for Lenovo LOQ (and Legion) lapto
 | Kernel | Lenovo WMI drivers `lenovo-wmi-gamezone` and `lenovo-wmi-other`. You need `/sys/class/firmware-attributes/lenovo-wmi-other*/` to exist. Linux 6.17 or newer is required for these drivers; check your own kernel with the command below. |
 | Privileges | `sudo` for writing firmware settings. Reading works without it, except CPU power (RAPL) on kernels that make it root-only and CPU Vcore (always root). |
 | Terminal | At least 72×20 (96×24 recommended), UTF-8 locale |
-| Optional | `libnvidia-ml` (NVML) or `nvidia-smi` on `PATH` for GPU data; `legionaura` on `PATH` for keyboard RGB |
+| Optional | `libnvidia-ml` (NVML) or `nvidia-smi` on `PATH` for GPU data; `legionaura` on `PATH` for keyboard RGB; the LenovoLegionLinux `legion_laptop` kernel module for fan curves |
 
 Check that your machine is supported:
 
@@ -100,6 +100,28 @@ Firmware writes need root. You have two options:
 
 Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the real RGB. Settings are read from `~/.config/legionaura/config.json`.
 
+### Fan curves (`f`)
+
+Fan curves are read and written through the [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux) `legion_laptop` kernel module (loqctl does not copy its code; it only uses the hwmon files the module exposes). Without the module the panel says so and shows fan RPM only.
+
+- Load the module with `enable_platformprofile=0` next to the mainline `lenovo-wmi-gamezone` driver, so gamezone stays the single platform-profile provider (loqctl keeps using it).
+- Curves are editable only while the live platform mode is `custom`, like limits. Other modes show "Fan curves are locked in <mode> mode".
+- The firmware resets the curve when the mode changes and on reboot.
+- The panel shows a chart (fan 1 and fan 2 speed per point) above a table with CPU/GPU/IC up and down temperatures, fan speeds in percent, and read-only accel/decel. "down" is the absolute lower temperature of a step (the `_temp_hyst` file). With the `level` speed unit the editor steps in 10 % levels.
+- `loqctl fan` prints the curve, speed unit and RPM as JSON.
+
+| Key | Action |
+| --- | --- |
+| `←→↑↓` | Move the cell |
+| `0`–`9`, `Backspace` | Type into the cell (struck current value, then the new one; red when invalid) |
+| `+` / `-` | Step 1 °C, 5 % (or one level) |
+| `Esc` | Clear the cell, or go back when nothing is typed |
+| `r` | Discard all edits |
+| `Enter` | Apply all edits; jumps to the first invalid cell instead |
+| `f` | Back |
+
+Safety: writes go only to an allowlist of the per-point temperature and pwm files (existing files only, never created), never `fanN_target`, `auto_points_size`, `minifancurve`, `lockfancontroller` or `fan_fullspeed`. Every write is verified by reading the whole curve back. A curve is refused before any write unless: all values are integers (temperatures 0-127, pwm 0-255); upper temperatures and fan speeds never drop from one point to the next; each down temperature is below its own up temperature and below the previous point's up temperature; fans run at least 40 % after a point whose CPU or GPU up temperature is 80 °C or more, and at least 60 % at the last point.
+
 ## CLI
 
 Read commands print JSON.
@@ -108,6 +130,7 @@ Read commands print JSON.
 loqctl status
 loqctl metrics
 loqctl capabilities
+loqctl fan                           # fan curve, speed unit and RPM as JSON
 loqctl mode                          # current mode and available modes
 sudo loqctl mode custom
 sudo loqctl set ppt_pl1_spl 50
@@ -183,8 +206,10 @@ curl --unix-socket /run/loqctl-$(id -u)/control.sock \
 | GET | `/v1/status` | Firmware and telemetry |
 | GET | `/v1/metrics` | Telemetry (about 1 Hz) |
 | GET | `/v1/capabilities` | Modes, bounds, defaults |
+| GET | `/v1/fancurve` | Fan curve, speed unit, RPM (or `available: false`) |
 | POST | `/v1/mode` | `{"mode":"custom"}` |
 | POST | `/v1/attributes/NAME` | `{"value":50}` |
+| POST | `/v1/fancurve` | `{"points":[...]}`, custom mode only, per-field results |
 
 The server allows the user in `SUDO_UID`. If you start it as root without sudo, pass `--uid UID` so your user can connect.
 
@@ -239,6 +264,8 @@ Tests use a temporary simulated sysfs and never touch real laptop settings.
 | `loqctl/api.py` | Unix-socket HTTP server and client |
 | `loqctl/backend.py` | Chooses local access or the API server |
 | `loqctl/keyboard.py` | LegionAura keyboard control |
+| `loqctl/fancurve.py` | Fan curve reads, validation and verified writes (legion_laptop hwmon) |
+| `loqctl/ui_fans.py` | Fan curve panel of the dashboard |
 | `loqctl/ui.py`, `loqctl/colors.py` | Curses dashboard and ANSI color helpers |
 
 Why Python and the standard library: [ADR-001](docs/adr/001-language.md).
