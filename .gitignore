@@ -1,3 +1,12 @@
+# Local working notes and research, not project code
+todo
+reports/
+research_notes/
+
+# Python caches and environments
 __pycache__/
 *.pyc
-todo
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
