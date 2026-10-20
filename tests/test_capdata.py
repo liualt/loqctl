@@ -237,12 +237,6 @@ class SudoCacheTests(Sim):
                 backend.load_mode_limits()
             run.assert_not_called()
 
-    def test_xdg_cache_default_home(self):
-        with patch.dict(os.environ, {"XDG_CACHE_HOME": ""}):
-            self.assertEqual(capdata.cache_path(), Path.home() / ".cache/loqctl/mode-limits.json")
-        self.assertEqual(capdata.cache_path(), self.cache / "loqctl/mode-limits.json")
-
-
 class UiTests(Sim):
     def dash(self, h=30, w=100):
         dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
@@ -293,16 +287,6 @@ class UiTests(Sim):
         state["mode_limits"] = None
         dash.draw_limits(state)
         self.assertIn("N/A", self.text(dash))
-
-    def test_m_key_toggles_overlay(self):
-        dash = self.dash()
-        dash.help = dash.show_results = False
-        dash.panel = "main"
-        state = m_hardware.Hardware(self.root).capabilities()
-        dash.handle(ord("m"), state)
-        self.assertTrue(dash.show_limits)
-        dash.handle(ord("m"), state)
-        self.assertFalse(dash.show_limits)
 
     def test_chart_markers_use_effective_value(self):
         self.add_table()

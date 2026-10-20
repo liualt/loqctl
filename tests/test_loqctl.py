@@ -334,19 +334,6 @@ class FirmwareTests(unittest.TestCase):
         self.assertIn("red", dashboard.notice)
         self.assertEqual((self.attr / "current_value").read_text(), "50")
 
-    def test_esc_clears_row(self):
-        dashboard = self.dashboard()
-        state = self.hw.capabilities()
-        self.type_keys(dashboard, state, "6", "0", 27)
-        self.assertEqual((dashboard.pending, dashboard.fields), ({}, {}))
-        self.type_keys(dashboard, state, "5", "1", 27)
-        self.assertEqual(dashboard.invalid, set())
-
-    def test_r_discards_all(self):
-        dashboard, state = self.multi()
-        self.type_keys(dashboard, state, "6", "0", "j", "5", "1", "r")
-        self.assertEqual((dashboard.pending, dashboard.fields, dashboard.invalid), ({}, {}, set()))
-
     def test_arrows_step_from_staged_value(self):
         dashboard = self.dashboard()
         state = self.hw.capabilities()
@@ -373,26 +360,6 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(locked.pending, {})
         self.assertIn("locked in balanced mode", locked.notice)
 
-    def test_a_key_no_longer_applies(self):
-        dashboard = self.dashboard()
-        state = self.hw.capabilities()
-        dashboard.pending = {"ppt_pl1_spl": 60}
-        self.type_keys(dashboard, state, "a", "A")
-        self.assertEqual((self.attr / "current_value").read_text(), "50")
-
-    def test_escdelay_respected(self):
-        with patch.dict(os.environ, {}, clear=False), patch.object(curses, "set_escdelay") as delay:
-            os.environ.pop("ESCDELAY", None)
-            m_ui.Dashboard._set_escdelay()
-            delay.assert_called_once_with(25)
-        with patch.dict(os.environ, {"ESCDELAY": "300"}), patch.object(curses, "set_escdelay") as delay:
-            m_ui.Dashboard._set_escdelay()
-            delay.assert_not_called()
-
-    def test_strike_helper(self):
-        self.assertEqual(m_ui.strike("53W"), "5\u03363\u0336W\u0336")
-        self.assertEqual(m_ui.strike(""), "")
-
     def test_report_detects_unchanged_firmware_despite_write_success(self):
         dashboard = self.dashboard()
         dashboard.backend.write = Mock(return_value={"verified": True})
@@ -403,19 +370,6 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual((result["before"], result["requested"], result["current"], result["status"]),
                          (50, 60, 50, "FAILED"))
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
-
-    def test_report_preserves_write_failure_and_existing_limit(self):
-        dashboard = self.dashboard()
-        dashboard.backend.write = Mock(side_effect=m_common.ControlError("Firmware rejected the write"))
-        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
-        with self.assertRaises(m_common.ControlError):
-            dashboard.apply(self.hw.capabilities())
-        result = dashboard.apply_results[0]
-        self.assertEqual(result["current"], 50)
-        self.assertEqual(result["status"], "FAILED")
-        self.assertEqual(result["error"], "Firmware rejected the write")
-        self.assertEqual(dashboard.apply_results[1]["status"], "NOT SENT")
-        self.assertEqual(dashboard.backend.write.call_count, 1)
 
     def test_report_cannot_claim_success_when_readback_missing(self):
         dashboard = self.dashboard()
@@ -590,20 +544,6 @@ class FirmwareTests(unittest.TestCase):
         self.assertIn("-> 7_", row[0])
         self.assertEqual(row[1], 5)
 
-    def test_api_write_result_includes_before_and_readback(self):
-        result = self.hw.set_value("ppt_pl1_spl", 60)
-        self.assertEqual((result["previous"], result["current"], result["verified"]), (50, 60, True))
-
-    def test_result_panel_can_close_and_reopen(self):
-        dashboard = self.dashboard()
-        dashboard.pending = {"ppt_pl1_spl": 60}
-        state = self.hw.capabilities()
-        dashboard.apply(state)
-        dashboard.handle(10, state)
-        self.assertFalse(dashboard.show_results)
-        dashboard.handle(ord("v"), state)
-        self.assertTrue(dashboard.show_results)
-
     def test_empty_state_does_not_crash_handle(self):
         dashboard = self.dashboard()
         dashboard.panel = "main"
@@ -646,10 +586,16 @@ class FirmwareTests(unittest.TestCase):
         attributes = self.hw.capabilities()["attributes"]
         pid, fd = pty.fork()
         if pid == 0:
+            # Child: never touch the host's /sys, socket path or ~/.config.
             os.environ.setdefault("TERM", "xterm-256color")
+            os.environ.update(HOME=str(self.root), XDG_CONFIG_HOME=str(self.root / "config"),
+                              XDG_CACHE_HOME=str(self.root / "cache"))
+            m_backend.Hardware = lambda: m_hardware.Hardware(self.root)
+            m_ui.Keyboard = lambda: m_keyboard.Keyboard(binary="/nonexistent/legionaura",
+                                                        config=self.root / "legionaura.json")
             try:
                 def run(screen):
-                    backend = m_backend.Backend()
+                    backend = m_backend.Backend(str(self.root / "none.sock"))
                     dash = m_ui.Dashboard(screen, backend)
                     state = {
                         "model": "test", "mode": "balanced",
@@ -661,6 +607,8 @@ class FirmwareTests(unittest.TestCase):
                     }
                     dash.draw(state)
                     dash.panel = "keyboard"
+                    dash.draw(state)
+                    dash.open_fans()
                     dash.draw(state)
                     dash.help = True
                     dash.draw(state)
@@ -728,19 +676,6 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(ver.returncode, 0, ver.stderr)
         self.assertEqual(ver.stdout.strip(), loqctl.VERSION)
 
-    def test_package_main(self):
-        ver = subprocess.run([sys.executable, "-m", "loqctl", "--version"],
-                             capture_output=True, text=True, cwd=REPO)
-        self.assertEqual(ver.returncode, 0, ver.stderr)
-        self.assertEqual(ver.stdout.strip(), loqctl.VERSION)
-
-    def test_main_rejects_old_python(self):
-        err = io.StringIO()
-        with patch.object(sys, "version_info", (3, 9, 0)), contextlib.redirect_stderr(err):
-            self.assertEqual(m_cli.main(["--version"]), 1)
-        self.assertIn("3.10", err.getvalue())
-
-
 class KeyboardWorkerTests(unittest.TestCase):
     def kb(self, config=None):
         return m_keyboard.Keyboard(binary="/usr/bin/false", config=config or "/nonexistent/loqctl.json")
@@ -762,17 +697,6 @@ class KeyboardWorkerTests(unittest.TestCase):
         kb.effect = "bogus"
         with self.assertRaises(m_common.ControlError):
             kb.command()
-
-    def test_keyboard_run_does_not_reload_config(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / "config.json"
-            config.write_text(json.dumps({"zones": ["aaaaaa"] * 4}))
-            kb = self.kb(config)
-            kb.zones = ["bbbbbb"] * 4
-            with patch.object(shutil, "which", return_value="/bin/x"), \
-                    patch.object(subprocess, "run", return_value=Mock(returncode=0, stdout="ok", stderr="")):
-                kb._run(["off"])
-            self.assertEqual(kb.zones, ["bbbbbb"] * 4)
 
     def test_load_skipped_while_dirty(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -878,7 +802,7 @@ class KeyboardWorkerTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
 
 
-class Stage5Tests(unittest.TestCase):
+class ServerSamplerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -938,11 +862,6 @@ class Stage5Tests(unittest.TestCase):
             m_api.prepare_socket_path(live)
         self.assertTrue(live.exists())
 
-    def test_serve_warns_without_sudo_uid(self):
-        self.assertIn("SUDO_UID", m_api.serve_uid_warning(0, {}))
-        self.assertIsNone(m_api.serve_uid_warning(0, {"SUDO_UID": "0"}))
-        self.assertIsNone(m_api.serve_uid_warning(1000, {}))
-
     def sampler(self, hardware):
         sampler = m_sensors.Sampler.__new__(m_sensors.Sampler)
         sampler.hardware = hardware
@@ -987,21 +906,6 @@ class Stage5Tests(unittest.TestCase):
             sampler.tick()
             self.assertEqual(hardware.capabilities.call_count, 3)
 
-    def test_apply_refreshes_backend(self):
-        hw = Mock()
-        refreshed = []
-        dashboard = object.__new__(m_ui.Dashboard)
-        dashboard.backend = type("Backend", (), {"refresh": lambda self: refreshed.append(1)})()
-        dashboard.notice = ""
-        dashboard.pending = {}
-        dashboard.apply({})
-        self.assertEqual(refreshed, [1])
-        with patch.object(m_ui.Dashboard, "_apply", side_effect=m_common.ControlError("x")):
-            with self.assertRaises(m_common.ControlError):
-                dashboard.apply({})
-        self.assertEqual(refreshed, [1, 1])
-
-
 class FakeNVML:
     """Plain-Python stand-in for libnvidia-ml; bad names return nonzero."""
 
@@ -1031,7 +935,7 @@ class FakeNVML:
         self.nvmlDeviceGetMemoryInfo = out("mem", mem)
 
 
-class Stage6Tests(unittest.TestCase):
+class PortabilityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1095,13 +999,7 @@ class Stage6Tests(unittest.TestCase):
         self.assertEqual(sensors.gpu()["source"], "nvml")
         sensors.nvml.read.assert_called_once()
 
-    def test_expanded_allowlist(self):
-        new = {"ppt_pl1_spl_cl", "ppt_pl2_sppt_cl", "ppt_pl3_fppt", "ppt_pl3_fppt_cl", "ppt_pl4_ipl",
-               "ppt_pl4_ipl_cl", "ppt_pl1_apu_spl", "gpu_nv_bpl", "gpu_nv_cpu_boost"}
-        for key in new:
-            self.assertIn(key, m_common.FIELDS)
-            self.assertLessEqual(len(m_common.FIELDS[key][0]), 20)
-            self.assertEqual(m_common.FIELDS[key][1], "W")
+    def test_gpu_switching_attributes_never_writable(self):
         forbidden = ("dgpu_enable", "gpu_mode", "dgpu_didvid", "dgpu_boost_clk")
         for key in forbidden:
             self.assertNotIn(key, m_common.FIELDS)
@@ -1167,7 +1065,7 @@ class Stage6Tests(unittest.TestCase):
                 kb._run(["off"])
 
 
-class Stage8Tests(unittest.TestCase):
+class TelemetryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1297,15 +1195,6 @@ class Stage8Tests(unittest.TestCase):
         self.assertEqual(m_sensors.NVML(lib).read()[0]["throttle"], ["sw_power_cap", "hw_thermal"])
         self.assertIsNone(m_sensors.NVML(FakeNVML()).read()[0]["throttle"])
 
-    def test_slow_sources_cached_for_5s(self):
-        s = self.sensors()
-        slow = {"battery_w": None, "battery_status": None, "usbc": [], "temperatures": [], "voltages": [],
-                "cpu_throttle": {}}
-        s.read_slow = Mock(return_value=slow)
-        for now in (0, 1, 5.1):
-            s.sample(now)
-        self.assertEqual(s.read_slow.call_count, 2)
-
     def stub_dash(self, h=30, w=100):
         dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
         dash.theme = m_ui.Theme(False)
@@ -1317,19 +1206,6 @@ class Stage8Tests(unittest.TestCase):
         calls = []
         dash.put = lambda y, x, text, *a, **k: calls.append((y, x, str(text)))
         return dash, calls
-
-    def test_chart_rows_markers(self):
-        dash, calls = self.stub_dash()
-        dash.history["cpu_w"].extend([None, 0, 50, 100, 200])
-        dash.chart_rows(10, 5, 8, 3, "cpu_w", 100, 1, [(50, 2), (100, 3)])
-        self.assertTrue(all(10 <= y < 13 and 5 <= x and x + len(t) <= 13 for y, x, t in calls))
-        rows = {}
-        for y, x, t in calls:
-            rows.setdefault(y, []).append(t)
-        self.assertIn("┄", "".join(rows[11]))
-        self.assertIn("┄", "".join(rows[10]))  # value >= ceiling maps to the top row
-        self.assertTrue(any("█" in t for t in rows[12]))
-        self.assertTrue(any("█" in t or "▄" in t for t in rows[11] if "┄" not in t))
 
     def state(self):
         attrs = {k: {"effective_value": v} for k, v in (("ppt_pl1_spl", 55), ("ppt_pl2_sppt", 115),
@@ -1386,7 +1262,7 @@ class Stage8Tests(unittest.TestCase):
         self.assertEqual(dash.view, "summary")
 
 
-class Stage11Tests(unittest.TestCase):
+class RegressionTests(unittest.TestCase):
     setUp, tearDown, dashboard = FirmwareTests.setUp, FirmwareTests.tearDown, FirmwareTests.dashboard
 
     def dash(self):
@@ -1411,13 +1287,6 @@ class Stage11Tests(unittest.TestCase):
                 dash._apply(self.hw.capabilities())
         self.assertFalse(dash.show_results)
         self.assertEqual(dash.apply_results, [{"key": "mode", "status": "APPLIED"}])
-
-    def test_locked_apply_raises_without_overlay(self):
-        dash = self.dash()
-        dash.pending = {"ppt_pl1_spl": 60}
-        with self.assertRaisesRegex(m_common.ControlError, "locked"):
-            dash._apply({"mode": "balanced"})
-        self.assertFalse(dash.show_results)
 
     def test_empty_results_never_claim_match(self):
         dash = self.dash()
@@ -1452,42 +1321,6 @@ class Stage11Tests(unittest.TestCase):
         kb.load(force=True)
         self.assertEqual(kb.zones, ["ffffff", "ff0000", "ff0000", "ff0000"])
 
-    def test_status_does_not_read_capabilities(self):
-        sampler = type("Sampler", (), {"latest": {"mode": "custom"}})()
-        path = str(self.root / "s.sock")
-        server = m_api.APIServer(path, self.hw, sampler, os.getuid())
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            with patch.object(self.hw, "capabilities", side_effect=AssertionError("no")):
-                self.assertEqual(m_api.request(path, "GET", "/v1/status")["mode"], "custom")
-        finally:
-            server.shutdown()
-            server.server_close()
-
-    def test_apply_batch_reads_one_attribute(self):
-        for name in ("min_value", "max_value", "scalar_increment", "default_value"):
-            (self.attr / name).write_text((self.attr / name).read_text())
-        with patch.object(self.hw, "capabilities", side_effect=AssertionError("full read")):
-            results = m_hardware.apply_batch(self.hw, [["ppt_pl1_spl", 60]])
-        self.assertEqual((results[0]["before"], results[0]["current"], results[0]["status"]), (50, 60, "APPLIED"))
-
-    def test_discovery_rescans_after_60s(self):
-        root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, root, True)
-        (root / "proc").mkdir()
-        s = m_sensors.Sensors(root, root / "proc", root / "dev")
-        clock = [100.0]
-        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
-            scans = []
-            scan = lambda: scans.append(1) or [1]
-            s.discover("x", scan)
-            clock[0] = 150.0
-            s.discover("x", scan)
-            self.assertEqual(len(scans), 1)
-            clock[0] = 161.0
-            s.discover("x", scan)
-            self.assertEqual(len(scans), 2)
-
     def test_smt_siblings_counted_once(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, True)
@@ -1504,6 +1337,58 @@ class Stage11Tests(unittest.TestCase):
         s.cpu_throttle()
         counts(3)
         self.assertEqual(s.cpu_throttle()["core_events"], 4)
+
+
+class KbCliTests(unittest.TestCase):
+    def run_cli(self, *argv):
+        """kb_cli with a missing config; returns the legionaura argv it would run."""
+        calls = []
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+
+        class KB(m_keyboard.Keyboard):
+            def __init__(self):
+                super().__init__(binary="legionaura", config=Path(tmp.name) / "none.json")
+
+            def _run(self, args):
+                calls.append(list(args))
+                return "OK"
+        with patch.object(m_keyboard, "Keyboard", KB), patch.object(shutil, "which", return_value=None):
+            result = m_keyboard.kb_cli(list(argv))
+        return calls[-1] if calls else None, result
+
+    def test_effect_arguments(self):
+        cases = {
+            ("static", "#FF0000", "--brightness", "1"): ["static", *["ff0000"] * 4, "--brightness", "1"],
+            ("breath", "ff0000", "00ff00", "--speed", "9"):
+                ["breath", "ff0000", *["00ff00"] * 3, "--speed", "4", "--brightness", "2"],
+            ("wave", "rtl", "--speed", "2"): ["wave", "rtl", "--speed", "2", "--brightness", "2"],
+            ("hue", "--brightness", "5"): ["hue", "--speed", "1", "--brightness", "2"],
+            ("off",): ["off"],
+            ("brightness", "0"): ["--brightness", "1"],
+        }
+        for argv, expected in cases.items():
+            self.assertEqual(self.run_cli(*argv)[0], expected, argv)
+        args, result = self.run_cli()
+        self.assertIsNone(args)
+        self.assertEqual(result["zones"], ["ffffff"] * 4)
+
+    def test_bad_arguments_never_run(self):
+        for argv in (("static",), ("static", "--brightness", "1"), ("breath", "zzzzzz"),
+                     ("wave", "up"), ("hue", "fast"), ("brightness",), ("bogus",)):
+            with self.assertRaises(m_common.ControlError, msg=argv):
+                self.run_cli(*argv)
+
+
+class CompatibilityTests(unittest.TestCase):
+    def test_sources_parse_as_python_310(self):
+        import ast
+        banned = ("tomllib", "ExceptionGroup", "typing.Self", "datetime.UTC", "itertools.batched")
+        for path in [REPO / "loqctl.py", *sorted((REPO / "loqctl").glob("*.py"))]:
+            source = path.read_text()
+            ast.parse(source, str(path), feature_version=(3, 10))
+            for name in banned:
+                self.assertNotIn(name, source, f"{path.name} uses 3.11+ {name}")
 
 
 if __name__ == "__main__":

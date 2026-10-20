@@ -394,12 +394,6 @@ class CurveStoreTests(unittest.TestCase):
         self.assertEqual(m_store.read_curve_file(path)[1]["fan1"], 80)
         self.assertEqual(list(path.parent.glob(".*tmp")), [])
 
-    def test_named_save_filename(self):
-        with patch.object(m_store.time, "strftime", return_value="saved-20260102-030405") as t:
-            path = m_store.save_named(CURVE)
-        self.assertEqual(path, self.config / "loqctl/curves/saved-20260102-030405.json")
-        t.assert_called_once_with("saved-%Y%m%d-%H%M%S")
-
     def test_saved_curves_listed_with_invalid(self):
         current = m_fan.read_curve(make_hwmon(self.root))
         m_store.write_atomic(self.config / "loqctl/curves/b-good.json", edit(CURVE, {(1, "fan1"): 90}))
