@@ -346,6 +346,8 @@ class Sensors:
                 value = scaled(p, 1000)
                 if group is None or value is None:
                     continue
+                if group == "ec" and value == 0:
+                    value = None  # legion_hwmon reports 0 for a sensor the model does not have
                 num = p.name[4:].split("_")[0]
                 label = read(p.with_name(f"temp{num}_label"))
                 if group == "ram":

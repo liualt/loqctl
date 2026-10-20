@@ -146,10 +146,10 @@ class Dashboard(FanPanel):
 
     def put(self, y, x, text, color=0, bold=False, dim=False):
         h, w = self.s.getmaxyx()
-        if y < 0 or y >= h or x < 0 or x >= w - 1:
+        if y < 0 or y >= h or x < 0 or x >= w:
             return
-        try:
-            self.s.addnstr(y, x, str(text), max(0, w - x - 1), self.theme.attr(color, bold, dim))
+        try:  # the bottom-right cell writes but raises because the cursor cannot advance
+            self.s.addnstr(y, x, str(text), w - x, self.theme.attr(color, bold, dim))
         except curses.error:
             pass
 
@@ -286,7 +286,7 @@ class Dashboard(FanPanel):
         if self.panel == "keyboard":
             keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
         elif self.panel == "fans":
-            keys = "arrows cell  0-9 type  +/- step  Enter apply  r discard  Esc clear/back  f back  q quit"
+            keys = "Tab/[ ] point  ←→ temp  ↑↓ speed  Shift bigger step  Enter apply  r discard  p preset  W save  Esc back  q quit"
         else:
             keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  f fans  t sensors  m modes  Space pause  v results  ? help  q"
         self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)
@@ -635,9 +635,9 @@ class Dashboard(FanPanel):
             "          c copy color to all zones   Space toggle live apply",
             "          Enter apply via legionaura",
             "",
-            "Fans      f open fan curves (custom mode only)   arrows move cell",
-            "          0-9 type   +/- step   Enter apply all   r discard   Esc clear/back",
-            "          p preset   W save curve   q quit",
+            "Fans      f open fan curves (edits need custom mode)   Tab/[ ] select point",
+            "          ←→ temperature   ↑↓ speed (both fans)   Shift+arrow bigger step",
+            "          Enter apply   r discard   p preset   W save curve   Esc back",
             "Global    t sensors view   Space pause telemetry   ? help   q quit",
             "Colors use your terminal ANSI palette only (no custom RGB UI).",
             "Press ? or Esc to close.",

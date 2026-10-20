@@ -1136,12 +1136,15 @@ class TelemetryTests(unittest.TestCase):
         hw(3, "coretemp", [("Package id 0", 60), ("Core 10", 55), ("Core 2", 54)])
         hw(4, "acpitz", [(None, 50)])
         hw(5, "iwlwifi_1", [(None, 45)])
-        hw(6, "legion_hwmon", [("EC", 48)])
+        hw(6, "legion_hwmon", [("CPU Temperature", 48), ("IC Temperature", 0)])
         hw(7, "mystery", [(None, 99)])
         temps = self.sensors().sample()["temperatures"]
         self.assertEqual([(t["group"], t["label"]) for t in temps], [
-            ("cpu", "Core 2"), ("cpu", "Core 10"), ("cpu", "Package id 0"), ("ec", "EC"), ("acpi", "temp 1"),
+            ("cpu", "Core 2"), ("cpu", "Core 10"), ("cpu", "Package id 0"), ("ec", "CPU Temperature"),
+            ("ec", "IC Temperature"), ("acpi", "temp 1"),
             ("nvme", "Composite"), ("nvme", "Sensor 1"), ("ram", "DIMM 1"), ("ram", "DIMM 2"), ("wifi", "temp 1")])
+        ec = {t["label"]: t["c"] for t in temps if t["group"] == "ec"}
+        self.assertEqual(ec, {"CPU Temperature": 48.0, "IC Temperature": None})  # 0 means no sensor
 
     def test_voltages(self):
         self.put("class/power_supply/BAT1/type", "Battery")
@@ -1298,6 +1301,17 @@ class RegressionTests(unittest.TestCase):
         dash.fill = dash.box = Mock()
         dash.draw_results()
         self.assertFalse(any("matched firmware" in c for c in calls))
+
+    def test_put_draws_the_last_column(self):
+        dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
+        dash.theme = m_ui.Theme(False)
+        dash.s = Mock()
+        dash.s.getmaxyx.return_value = (10, 20)
+        dash.put(0, 19, "│")  # right box border
+        dash.s.addnstr.assert_called_once_with(0, 19, "│", 1, 0)
+        dash.put(0, 20, "x")
+        dash.put(10, 0, "x")
+        self.assertEqual(dash.s.addnstr.call_count, 1)
 
     def test_external_mode_change_drops_staged_limits(self):
         dash = self.dash()

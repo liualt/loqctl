@@ -12,7 +12,7 @@ import stat
 import time
 
 from .common import ControlError
-from .fancurve import SPEEDS, WRITABLE, merge_curve, min_speed, validate_curve
+from .fancurve import SPEEDS, WRITABLE, Scale, merge_curve, min_speed, validate_curve
 
 MAX_FILE = 65536
 PRESETS = (("firmware", 1.0), ("quiet", 0.8), ("cool", 1.2))
@@ -79,16 +79,16 @@ def read_curve_file(path, uid=None):
     return data["points"]
 
 
-def check_curve(current, points):
+def check_curve(current, points, scale=None):
     """None when `points` may be staged over `current`, else the reason."""
     try:
-        errors = validate_curve(merge_curve(current, points))
+        errors = validate_curve(merge_curve(current, points), scale)
     except ControlError as exc:
         return str(exc)
     return errors[0][2] if errors else None
 
 
-def saved_curves(current):
+def saved_curves(current, scale=None):
     """[(name, points or None)] sorted by name; None marks a curve that does not validate."""
     found = []
     for path in sorted((config_dir() / "curves").glob("*.json")):
@@ -97,31 +97,29 @@ def saved_curves(current):
         except ControlError:
             found.append((path.stem, None))
             continue
-        found.append((path.stem, None if check_curve(current, points) else points))
+        found.append((path.stem, None if check_curve(current, points, scale) else points))
     return found
 
 
-def snap_level(pwm):
-    return round(round(pwm * 10 / 255) * 255 / 10)
-
-
-def preset_curve(base, factor, unit=None):
-    """Base curve with fan speeds scaled (capped at 100 %), then raised to the minimums."""
+def preset_curve(base, factor, scale=None):
+    """Base curve with fan speeds scaled in display units (capped at the top speed), stored
+    as canonical pwm values, then raised to the minimums."""
+    scale = scale or Scale()
     points = copy.deepcopy(base)
     for p in points:
         for f in SPEEDS:
-            if p.get(f) is not None:
-                p[f] = min(255, round(p[f] * factor))
-                p[f] = snap_level(p[f]) if unit == "level" else p[f]
+            if p.get(f) is not None and factor != 1:
+                value = min(scale.top, round(scale.show(p[f]) * factor / scale.step()) * scale.step())
+                p[f] = scale.pwm(value)
     for i, p in enumerate(points):
         for f in SPEEDS:
             if p.get(f) is not None:
-                p[f] = max(p[f], min_speed(points, i))
+                p[f] = max(p[f], min_speed(points, i, scale))
     return points
 
 
-def preset_options(base, current, unit=None):
-    return [(name, preset_curve(base, factor, unit)) for name, factor in PRESETS] + saved_curves(current)
+def preset_options(base, current, scale=None):
+    return [(name, preset_curve(base, factor, scale)) for name, factor in PRESETS] + saved_curves(current, scale)
 
 
 class Reapplier:

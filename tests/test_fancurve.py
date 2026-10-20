@@ -9,11 +9,14 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import curses
 from loqctl import api as m_api, backend as m_backend, cli as m_cli, common as m_common
 from loqctl import curvestore as m_store, fancurve as m_fan, hardware as m_hardware, sensors as m_sensors, ui as m_ui
+from loqctl import ui_fans as m_panel
 from tests import test_loqctl as base
 
 CURVE = [
@@ -23,12 +26,33 @@ CURVE = [
 ]
 
 
-def make_hwmon(root, curve=CURVE, unit="percent", name="legion_hwmon"):
+def stock_point(cpu, gpu, ic, fan1, fan2):
+    return dict(cpu_up=cpu[0], cpu_down=cpu[1], gpu_up=gpu[0], gpu_down=gpu[1], ic_up=ic[0], ic_down=ic[1],
+                fan1=fan1, fan2=fan2)
+
+
+# Read from a LOQ 15IRX9 (BIOS NECN44WW, LenovoLegionLinux 0.1.3) in balanced mode, unit rpm,
+# fan1_max 10000: fan 1 0..3700 RPM, fan 2 0..4000 RPM. Down temperatures sit above the
+# previous point's up temperature, and there are no accel/decel files.
+NECN_STOCK = [
+    stock_point((69, 0), (69, 0), (42, 0), 0, 0),
+    stock_point((71, 70), (71, 70), (63, 40), 63, 71),
+    stock_point((75, 73), (75, 73), (65, 59), 86, 94),
+    *[stock_point((75, 73), (75, 73), (ic, 60), 94, 102) for ic in (68, 76, 77, 87, 97)],
+    stock_point((99, 73), (99, 73), (105, 89), 94, 102),
+    stock_point((100, 94), (100, 94), (120, 90), 94, 102),
+]
+RPM = m_fan.Scale("rpm", 10000)
+
+
+def make_hwmon(root, curve=CURVE, unit="percent", name="legion_hwmon", max_rpm=None):
     hwmon = Path(root) / "class/hwmon/hwmon5"
     (hwmon / "device").mkdir(parents=True)
     (hwmon / "name").write_text(name)
     if unit:
         (hwmon / "device/fancurve_speed_unit").write_text(unit)
+    if max_rpm:
+        (hwmon / "fan1_max").write_text(str(max_rpm))
     (hwmon / "fan1_input").write_text("2100")
     (hwmon / "fan1_target").write_text("0")
     for n, point in enumerate(curve, 1):
@@ -45,12 +69,23 @@ def edit(curve, changes):
     return out
 
 
+class ImmediateThread:
+    """threading.Thread stand-in that runs the target on start()."""
+
+    def __init__(self, target, daemon=None):
+        self.target = target
+
+    def start(self):
+        self.target()
+
+
 class FanCurveTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.hwmon = make_hwmon(self.root)
+        self.pct = m_fan.Scale("percent")
 
     def fields(self, errors):
         return {(i, f) for i, f, _ in errors}
@@ -73,13 +108,18 @@ class FanCurveTests(unittest.TestCase):
         self.assertEqual(points[2]["fan2"], 180)
         self.assertEqual(m_fan.speed_unit(self.hwmon), "percent")
 
+    def test_stock_loq_curve_is_valid(self):
+        self.assertEqual(m_fan.validate_curve(NECN_STOCK, RPM), [])
+        self.assertEqual([RPM.show(p["fan1"]) for p in NECN_STOCK],
+                         [0, 2500, 3400, 3700, 3700, 3700, 3700, 3700, 3700, 3700])
+        self.assertEqual(RPM.show(NECN_STOCK[-1]["fan2"]), 4000)
+
     def test_validate_ok_and_each_rule(self):
         self.assertEqual(m_fan.validate_curve(copy.deepcopy(CURVE)), [])
         cases = {
             "temps": (edit(CURVE, {(1, "cpu_up"): 30}), (1, "cpu_up")),
             "speeds": (edit(CURVE, {(2, "fan1"): 70}), (2, "fan1")),
-            "lower_vs_upper": (edit(CURVE, {(1, "gpu_down"): 60}), (1, "gpu_down")),
-            "lower_vs_previous": (edit(CURVE, {(1, "ic_down"): 40}), (1, "ic_down")),
+            "down_above_up": (edit(CURVE, {(1, "gpu_down"): 61}), (1, "gpu_down")),
             "range_temp": (edit(CURVE, {(2, "cpu_up"): 128}), (2, "cpu_up")),
             "range_pwm": (edit(CURVE, {(2, "fan2"): 256}), (2, "fan2")),
             "type": (edit(CURVE, {(0, "cpu_up"): "40"}), (0, "cpu_up")),
@@ -87,47 +127,60 @@ class FanCurveTests(unittest.TestCase):
             "last_point": (edit(CURVE, {(2, "fan1"): 140}), (2, "fan1")),
         }
         for name, (curve, cell) in cases.items():
-            errors = m_fan.validate_curve(curve)
-            self.assertTrue(errors, name)
-            if cell:
-                self.assertIn(cell, self.fields(errors), name)
+            self.assertIn(cell, self.fields(m_fan.validate_curve(curve)), name)
+        # Down at or above the previous up temperature is what the firmware ships.
+        self.assertEqual(m_fan.validate_curve(edit(CURVE, {(1, "ic_down"): 45})), [])
 
-    def test_hot_rule_needs_40_percent_after_hot_point(self):
+    def test_floors_per_unit(self):
         hot = edit(CURVE, {(0, "cpu_up"): 80, (1, "cpu_up"): 85, (2, "cpu_up"): 90,
-                             (1, "fan1"): 0, (0, "fan1"): 0, (1, "fan2"): 0, (2, "fan1"): 160, (2, "fan2"): 160,
-                             (0, "cpu_down"): 0, (1, "cpu_down"): 35, (2, "cpu_down"): 55})
+                           (1, "fan1"): 0, (1, "fan2"): 0, (2, "fan1"): 160, (2, "fan2"): 160})
         self.assertEqual(self.fields(m_fan.validate_curve(hot)), {(1, "fan1"), (1, "fan2")})
-        hot[1]["fan1"] = hot[1]["fan2"] = 102
+        hot[1]["fan1"] = hot[1]["fan2"] = 102  # 40 %
         self.assertEqual(m_fan.validate_curve(hot), [])
-        hot[1]["fan1"] = 101
-        self.assertEqual(self.fields(m_fan.validate_curve(hot)), {(1, "fan1")})
+        # rpm: 2000 RPM after a hot step, 3000 RPM on the last point.
+        low = edit(NECN_STOCK, {(9, "fan1"): RPM.pwm(2900), (9, "fan2"): RPM.pwm(3000)})
+        floors = [(i, f) for i, f, m in m_fan.validate_curve(low, RPM) if "needs at least 3000 RPM" in m]
+        self.assertEqual(floors, [(9, "fan1")])
+
+    def test_scale_matches_module_rounding(self):
+        # The module stores ceil(pwm * max_rpm / 25500) and reads back floor(byte * 25500 / max_rpm).
+        for max_rpm in (10000, 5400, 4400):
+            scale = m_fan.Scale("rpm", max_rpm)
+            for rpm in range(0, max_rpm + 1, 100):
+                pwm = scale.pwm(rpm)
+                stored = -(-pwm * max_rpm // 25500)
+                self.assertEqual(stored * 100, rpm, (max_rpm, rpm))
+                self.assertEqual(stored * 25500 // max_rpm, pwm)  # readback is the same pwm
+        level = m_fan.Scale("level")
+        self.assertEqual([level.show(level.pwm(n)) for n in range(11)], list(range(11)))
+        self.assertTrue(self.pct.same(128, 127))  # percent drifts by one on readback
+        self.assertFalse(RPM.same(94, 102))
+        self.assertEqual(m_fan.Scale("rpm", 0).max_rpm, 10000)
+        self.assertEqual((RPM.label, RPM.text(94), self.pct.text(128), level.text(128)), ("RPM", "3700 RPM", "50%", "5 level"))
 
     def test_write_only_changed_files_in_order(self):
         writes = []
         real = m_fan._write_file
         with patch.object(m_fan, "_write_file", side_effect=lambda p, v: (writes.append(p.name), real(p, v))):
             results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 90, (1, "cpu_up"): 61,
-                                                                    (2, "gpu_up"): 91}), "percent")
+                                                                    (2, "gpu_up"): 91}), self.pct)
         self.assertEqual(writes, ["pwm1_auto_point2_temp", "pwm2_auto_point3_temp", "pwm1_auto_point2_pwm"])
         self.assertEqual({r["status"] for r in results}, {"APPLIED"})
         self.assertEqual(m_fan.read_curve(self.hwmon)[1]["fan1"], 90)
-        self.assertEqual((self.hwmon / "fan1_target").read_text(), "0")
-        self.assertEqual(m_fan.write_curve(self.hwmon, m_fan.read_curve(self.hwmon), "percent"), [])
+        self.assertEqual(m_fan.write_curve(self.hwmon, m_fan.read_curve(self.hwmon), self.pct), [])
 
     def test_never_touches_fan_target_or_other_files(self):
         self.assertTrue(all("target" not in p and "points_size" not in p for p in m_fan.FILE_MAP.values()))
         with patch.object(m_fan.os, "open", wraps=os.open) as opened:
-            m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan2"): 100}), "percent")
+            m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan2"): 100}), self.pct)
         self.assertEqual([Path(c.args[0]).name for c in opened.call_args_list], ["pwm2_auto_point2_pwm"])
+        self.assertEqual((self.hwmon / "fan1_target").read_text(), "0")
 
     def test_invalid_target_refused_with_no_writes(self):
         with patch.object(m_fan, "_write_file") as write:
-            with self.assertRaises(m_common.ControlError):
-                m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "cpu_up"): 30, (1, "fan1"): 90}), "percent")
-            with self.assertRaises(m_common.ControlError):
-                m_fan.write_curve(self.hwmon, CURVE[:2], "percent")
-            with self.assertRaises(m_common.ControlError):
-                m_fan.write_curve(self.hwmon, edit(CURVE, {(0, "bogus"): 1}), "percent")
+            for target in (edit(CURVE, {(1, "cpu_up"): 30, (1, "fan1"): 90}), CURVE[:2], edit(CURVE, {(0, "bogus"): 1})):
+                with self.assertRaises(m_common.ControlError):
+                    m_fan.write_curve(self.hwmon, target, self.pct)
         write.assert_not_called()
 
     def test_symlink_and_foreign_path_rejected(self):
@@ -136,25 +189,26 @@ class FanCurveTests(unittest.TestCase):
         link = self.hwmon / "pwm1_auto_point2_pwm"
         link.unlink()
         link.symlink_to(outside)
-        results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 90}), "percent")
+        results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 90}), self.pct)
         self.assertEqual(results[0]["status"], "FAILED")
         self.assertEqual(outside.read_text(), "1")
         with self.assertRaises(m_common.ControlError):
             m_fan._path(self.hwmon, "fan1_target", 1)
 
-    def test_readback_mismatch_and_level_rounding(self):
+    def test_readback_verification_per_unit(self):
         with patch.object(m_fan, "_write_file"):
-            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 90}), "percent")
+            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 90}), self.pct)
         self.assertEqual((results[0]["status"], results[0]["current"]), ("FAILED", 80))
         self.assertIn("firmware reports", results[0]["error"])
 
-        def rounding(path, value):  # level unit: pwm snaps to level * 255 / 10
-            path.write_text(str(round(round(value * 10 / 255) * 255 / 10)))
-        with patch.object(m_fan, "_write_file", side_effect=rounding):
-            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 100}), "level")
-        self.assertEqual(results[0]["status"], "APPLIED")
-        self.assertEqual(m_fan.pct_to_pwm(46, "level"), 128)
-        self.assertEqual(m_fan.pwm_to_pct(128, "level"), 50)
+        def module(path, value):  # the rpm unit as legion_laptop stores and reads it back
+            stored = -(-int(value) * 10000 // 25500)
+            path.write_text(str(stored * 25500 // 10000))
+        rpm_hwmon = make_hwmon(self.root / "rpm", NECN_STOCK, "rpm", max_rpm=10000)
+        target = edit(NECN_STOCK, {(9, "fan1"): RPM.pwm(4500), (9, "fan2"): RPM.pwm(4800)})
+        with patch.object(m_fan, "_write_file", side_effect=module):
+            results = m_fan.write_curve(rpm_hwmon, target, RPM)
+        self.assertEqual([r["status"] for r in results], ["APPLIED", "APPLIED"])
 
     def test_stops_at_first_failure(self):
         calls = []
@@ -163,14 +217,14 @@ class FanCurveTests(unittest.TestCase):
             calls.append(path.name)
             raise m_common.ControlError("boom")
         with patch.object(m_fan, "_write_file", side_effect=failing):
-            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "cpu_up"): 61, (1, "fan1"): 90}), "percent")
+            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "cpu_up"): 61, (1, "fan1"): 90}), self.pct)
         self.assertEqual([r["status"] for r in results], ["FAILED", "NOT SENT"])
         self.assertEqual(len(calls), 1)
 
     def test_errno_messages(self):
         path = self.hwmon / "pwm1_auto_point2_pwm"
-        for code, text in ((errno.EPERM, "refuses unvalidated"), (errno.EBUSY, "custom"),
-                           (errno.EOPNOTSUPP, "does not support")):
+        for code, text in ((errno.EPERM, "refuses unvalidated"), (errno.EBUSY, "locked"),
+                           (errno.EOPNOTSUPP, "rejected")):
             with patch.object(m_fan.os, "open", side_effect=OSError(code, "x")):
                 with self.assertRaisesRegex(m_common.ControlError, text):
                     m_fan._write_file(path, 1)
@@ -179,24 +233,71 @@ class FanCurveTests(unittest.TestCase):
         self.assertFalse((self.hwmon / "missing").exists())
 
 
+class MoveTests(unittest.TestCase):
+    offsets = [RPM.show(p["fan2"]) - RPM.show(p["fan1"]) for p in NECN_STOCK]
+
+    def test_temperature_moves_cpu_and_gpu_within_neighbours(self):
+        points, delta = m_panel.move_temp(NECN_STOCK, 1, 1)
+        self.assertEqual(delta, 1)
+        self.assertEqual({k: points[1][k] for k in ("cpu_up", "cpu_down", "gpu_up", "gpu_down", "ic_up")},
+                         {"cpu_up": 72, "cpu_down": 71, "gpu_up": 72, "gpu_down": 71, "ic_up": 63})
+        points, delta = m_panel.move_temp(NECN_STOCK, 1, 10)  # next point is at 75
+        self.assertEqual((delta, points[1]["cpu_up"]), (4, 75))
+        points, delta = m_panel.move_temp(NECN_STOCK, 4, 1)  # 75 between two 75s cannot move
+        self.assertEqual((delta, points), (0, NECN_STOCK))
+        points, delta = m_panel.move_temp(NECN_STOCK, 9, 50)
+        self.assertEqual(points[9]["cpu_up"], 127)
+        self.assertEqual(m_fan.validate_curve(points, RPM), [])
+
+    def test_speed_moves_both_fans_and_keeps_order(self):
+        points, moved = m_panel.move_speed(NECN_STOCK, 1, 100, RPM, self.offsets)
+        self.assertTrue(moved)
+        self.assertEqual((RPM.show(points[1]["fan1"]), RPM.show(points[1]["fan2"])), (2600, 2900))
+        points, _ = m_panel.move_speed(NECN_STOCK, 1, 5000, RPM, self.offsets)
+        self.assertEqual(RPM.show(points[1]["fan1"]), 3400)  # held below point 3
+        points, moved = m_panel.move_speed(NECN_STOCK, 0, -100, RPM, self.offsets)
+        self.assertFalse(moved)
+        points, _ = m_panel.move_speed(NECN_STOCK, 9, 5000, RPM, self.offsets)
+        self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (8700, 9000))
+        points, _ = m_panel.move_speed(NECN_STOCK, 9, 50000, RPM, self.offsets)
+        self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (10000, 10000))
+        self.assertEqual(m_fan.validate_curve(points, RPM), [])
+
+
 class FanCurveSurfaceTests(unittest.TestCase):
-    setUp, tearDown, dashboard = base.FirmwareTests.setUp, base.FirmwareTests.tearDown, base.FirmwareTests.dashboard
+    dashboard = base.FirmwareTests.dashboard
 
     def setUp(self):
         base.FirmwareTests.setUp(self)
+        self.addCleanup(self.temp.cleanup)
         self.hwmon = make_hwmon(self.root)
+        thread = patch.object(m_panel, "threading", SimpleNamespace(Thread=ImmediateThread))
+        thread.start()
+        self.addCleanup(thread.stop)
 
     def set_mode(self, mode):
         self.hw.set_mode(mode)
 
-    def test_hardware_fancurve_and_gate(self):
+    def test_hardware_fancurve_cache_and_gate(self):
         data = self.hw.fancurve()
         self.assertTrue(data["available"])
-        self.assertEqual((data["unit"], data["rpm"][0], data["rpm"][1]), ("percent", 2100.0, None))
+        self.assertEqual((data["unit"], data["max_rpm"], data["rpm"][0], data["rpm"][1]),
+                         ("percent", 10000, 2100.0, None))
         self.assertEqual(len(data["points"]), 3)
-        self.set_mode("balanced")
+        with patch.object(m_hardware, "read_curve", side_effect=AssertionError("read again")):
+            data["points"][0]["fan1"] = 99  # callers get a copy
+            self.assertEqual(self.hw.fancurve()["points"][0]["fan1"], 0)
+        with patch.object(m_hardware, "read_curve", wraps=m_fan.read_curve) as read:
+            self.hw.fancurve(fresh=True)
+            self.set_mode("balanced")  # a mode change may reset the curve
+            self.hw.fancurve()
+            self.assertEqual(read.call_count, 2)
         with self.assertRaisesRegex(m_common.ControlError, "locked in balanced mode"):
             self.hw.write_fancurve(CURVE)
+        self.set_mode("custom")
+        self.hw.fancurve()
+        self.hw.write_fancurve(edit(CURVE, {(1, "fan1"): 90}))
+        self.assertEqual(self.hw.fancurve()["points"][1]["fan1"], 90)  # write drops the cache
         self.assertFalse(m_hardware.Hardware(self.root / "nowhere").fancurve()["available"])
 
     def test_internal_cli_prints_results(self):
@@ -263,58 +364,72 @@ class FanCurveSurfaceTests(unittest.TestCase):
         for key in keys:
             dash.handle(ord(key) if isinstance(key, str) else key, state)
 
+    def test_open_loads_in_background(self):
+        dash = self.dash()
+        started = []
+        with patch.object(m_panel, "threading", SimpleNamespace(
+                Thread=lambda target, daemon=None: Mock(start=lambda: started.append(target)))):
+            self.keys(dash, {"mode": "custom"}, "f")
+        self.assertTrue(dash.fan_loading)
+        dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
+        self.assertIn("Reading the fan curve", "\n".join(dash.puts))
+        started[0]()
+        dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
+        self.assertTrue(dash.fan["available"])
+
     def test_locked_notice_in_balanced(self):
         dash = self.dash("balanced")
         state = {"mode": "balanced"}
-        self.keys(dash, state, "f", "4", "5", 10)
+        self.keys(dash, state, "f", curses.KEY_UP, 10)
         self.assertEqual(dash.panel, "fans")
         self.assertIn("Fan curves are locked in balanced mode", dash.notice)
-        self.assertEqual(dash.fan_pending, {})
-        self.assertEqual(m_fan.read_curve(self.hwmon)[0]["cpu_up"], 40)
+        self.assertIsNone(dash.fan_edit)
+        self.assertEqual(m_fan.read_curve(self.hwmon)[0]["fan1"], 0)
 
-    def test_typing_and_enter_applies_via_backend(self):
+    def test_select_move_and_apply(self):
         dash = self.dash()
         state = {"mode": "custom"}
-        self.keys(dash, state, "f", "4", "5")
-        self.assertEqual(dash.fan_pending, {(0, "cpu_up"): 45})
+        self.keys(dash, state, "f", "]", 9)
+        self.assertEqual(dash.fan_sel, 2)
+        self.keys(dash, state, "[", curses.KEY_BTAB, curses.KEY_BTAB)
+        self.assertEqual(dash.fan_sel, 2)
+        self.keys(dash, state, "[", curses.KEY_RIGHT, curses.KEY_SRIGHT, curses.KEY_UP)  # point 2
+        self.assertEqual((dash.fan_edit[1]["cpu_up"], dash.fan_edit[1]["gpu_down"]), (66, 41))
+        self.assertEqual((dash.fan_edit[1]["fan1"], dash.fan_edit[1]["fan2"]), (92, 92))  # 31 % + 5 % = 36 %
         self.keys(dash, state, 10)
-        self.assertEqual(m_fan.read_curve(self.hwmon)[0]["cpu_up"], 45)
-        self.assertEqual(dash.fan_pending, {})
-        self.assertIn("Applied and verified 1", dash.notice)
+        point = m_fan.read_curve(self.hwmon)[1]
+        self.assertEqual((point["cpu_up"], point["fan1"], point["fan2"]), (66, 92, 92))
+        self.assertIsNone(dash.fan_edit)
+        self.assertIn("Applied and verified", dash.notice)
 
-    def test_speed_typed_in_percent_and_step(self):
+    def test_held_point_and_discard(self):
         dash = self.dash()
         state = {"mode": "custom"}
-        self.keys(dash, state, "f", 258, 258, 258, 258, 258, 258, "5", "0")
-        self.assertEqual(dash.fan_cell, [6, 0])
-        self.assertEqual(dash.fan_pending, {(0, "fan1"): 128})
-        self.keys(dash, state, 27, "+")
-        self.assertEqual(dash.fan_pending, {(0, "fan1"): 13})  # 0 % + 5 % = pwm 13
+        self.keys(dash, state, "f", curses.KEY_DOWN)  # point 1 is already at 0
+        self.assertIn("held", dash.notice)
+        self.keys(dash, state, curses.KEY_UP, "r")
+        self.assertIsNone(dash.fan_edit)
 
-    def test_invalid_jump_and_discard(self):
+    def test_invalid_staged_curve_is_not_written(self):
         dash = self.dash()
         state = {"mode": "custom"}
-        self.keys(dash, state, "f", "9", "9", 10)
-        self.assertEqual(dash.fan_cell, [0, 1])  # point 2 cpu_up now drops below point 1
-        self.assertIn("must not drop", dash.notice)
-        self.assertEqual(m_fan.read_curve(self.hwmon)[0]["cpu_up"], 40)
-        self.keys(dash, state, "r")
-        self.assertEqual((dash.fan_pending, dash.fan_fields), ({}, {}))
-        self.keys(dash, state, "9", "9", "9")  # 999 is out of range for a temperature
-        self.assertEqual(dash.fan_invalid, {(1, "cpu_up")})
+        self.keys(dash, state, "f")
+        dash.fan_edit = edit(CURVE, {(2, "fan1"): 100})  # below the last-point floor
         self.keys(dash, state, 10)
-        self.assertEqual(dash.notice, "Fix the value marked red before applying.")
+        self.assertEqual(dash.fan_sel, 2)
+        self.assertIn("needs at least", dash.notice)
+        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 180)
 
     def test_sudo_path_for_non_root_local(self):
         dash = self.dash()
         dash.backend.remote = False
         dash.backend.refresh = lambda: None
         state = {"mode": "custom"}
-        self.keys(dash, state, "f", "4", "5")
+        self.keys(dash, state, "f", "]", curses.KEY_RIGHT)
         with patch.object(os, "geteuid", return_value=1000), \
                 patch.object(m_ui.Dashboard, "run_sudo_fancurve", return_value=[{"status": "APPLIED"}]) as run:
             self.keys(dash, state, 10)
-        self.assertEqual(run.call_args.args[0][0]["cpu_up"], 45)
+        self.assertEqual(run.call_args.args[0][1]["cpu_up"], 61)
         with patch.object(m_ui, "sudo_run", side_effect=m_common.SudoExpired("x")):
             with self.assertRaisesRegex(m_common.ControlError, "expired"):
                 dash.sudo_call(["_fancurve", "[]"])
@@ -322,7 +437,6 @@ class FanCurveSurfaceTests(unittest.TestCase):
 
     def test_panel_draws_without_module(self):
         dash = self.dash()
-        self.hw.root = self.root / "none"
         dash.fan = {"available": False, "reason": "legion_laptop hwmon not found"}
         dash.draw_fans({"mode": "custom"}, {"fans": [{"rpm": 1800.0}, {"rpm": None}]}, 1, 0, 25, 100)
         text = "\n".join(dash.puts)
@@ -332,17 +446,20 @@ class FanCurveSurfaceTests(unittest.TestCase):
         self.assertIn("enable_platformprofile=0", text)
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
 
-    def test_panel_draws_with_module(self):
+    def test_graph_draws_rpm_curve_with_cursor(self):
+        rpm_root = self.root / "rpm"
+        make_hwmon(rpm_root, NECN_STOCK, "rpm", max_rpm=10000)
         dash = self.dash()
-        dash.fan_load()
-        dash.fan_set_field((1, "fan1"), "50")
-        dash.fan_set_field((2, "cpu_up"), "999")
-        dash.draw_fans({"mode": "custom"}, {"fans": [{"rpm": 1800.0}]}, 1, 0, 25, 100)
+        dash.backend.fancurve = m_hardware.Hardware(rpm_root).fancurve
+        self.keys(dash, {"mode": "custom"}, "f", "]", "]")
+        self.assertTrue(dash.fan["available"])
+        dash.draw_fans({"mode": "custom"}, {"cpu": {"temperature_c": 67.4}, "fans": [{"rpm": 2000.0}]}, 1, 0, 30, 110)
         text = "\n".join(dash.puts)
-        self.assertIn("CPU up", text)
-        self.assertIn("Accel", text)
-        self.assertIn("F1 1800 RPM", dash.box.call_args_list[0].args[4])
-        dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 17, 72)
+        for needle in ("Point 3/10", "CPU 75°C (down 73°C)", "Fan 1 3400 RPM", "Fan 2 3700 RPM", "CPU 67°C",
+                       "70°C", "4000", "◉", "●", "◆", "3700", "Presets"):
+            self.assertIn(needle, text)
+        self.assertIn("Unit: RPM", dash.box.call_args.args[6])
+        dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 17, 72)  # small: no table
         self.assertIn("locked in balanced mode", "\n".join(dash.puts))
 
 
@@ -366,19 +483,23 @@ class CurveStoreTests(unittest.TestCase):
         self.assertEqual(m_store.config_dir(os.getuid()), self.config / "loqctl")
 
     def test_presets_scale_and_clamp_to_minimums(self):
-        quiet = m_store.preset_curve(CURVE, 0.8)
-        self.assertEqual([p["fan1"] for p in quiet], [0, 64, 153])  # last point raised to 60 %
-        cool = m_store.preset_curve(CURVE, 1.2)
-        self.assertEqual([p["fan2"] for p in cool], [0, 96, 216])
-        loud = m_store.preset_curve(edit(CURVE, {(2, "fan1"): 250}), 1.2)
-        self.assertEqual(loud[2]["fan1"], 255)
+        pct = m_fan.Scale("percent")
+        self.assertEqual(m_store.preset_curve(CURVE, 1.0, pct), CURVE)  # firmware preset is exact
+        quiet = m_store.preset_curve(CURVE, 0.8, pct)
+        self.assertEqual([pct.show(p["fan1"]) for p in quiet], [0, 25, 60])  # last point raised to 60 %
+        cool = m_store.preset_curve(CURVE, 1.2, pct)
+        self.assertEqual([pct.show(p["fan2"]) for p in cool], [0, 35, 85])
+        self.assertEqual(pct.show(m_store.preset_curve(edit(CURVE, {(2, "fan1"): 250}), 1.2, pct)[2]["fan1"]), 100)
         hot = edit(CURVE, {(0, "cpu_up"): 85, (1, "cpu_up"): 86, (2, "cpu_up"): 90})
-        self.assertEqual(m_store.preset_curve(hot, 0.5)[1]["fan1"], 102)
-        for curve in (quiet, cool, m_store.preset_curve(CURVE, 1.0)):
-            self.assertEqual(m_fan.validate_curve(curve), [])
-        self.assertEqual(m_fan.validate_curve(m_store.preset_curve(CURVE, 0.2)), [])
-        level = m_store.preset_curve(CURVE, 0.8, "level")
-        self.assertEqual([p["fan1"] for p in level], [0, 76, 153])
+        self.assertEqual(pct.show(m_store.preset_curve(hot, 0.5, pct)[1]["fan1"]), 40)
+        for curve in (quiet, cool, m_store.preset_curve(CURVE, 0.2, pct)):
+            self.assertEqual(m_fan.validate_curve(curve, pct), [])
+        rpm_quiet = m_store.preset_curve(NECN_STOCK, 0.8, RPM)
+        self.assertEqual([RPM.show(p["fan1"]) for p in rpm_quiet][-3:], [3000, 3000, 3000])
+        self.assertEqual(RPM.show(rpm_quiet[1]["fan1"]), 2000)
+        self.assertEqual(m_fan.validate_curve(rpm_quiet, RPM), [])
+        level = m_fan.Scale("level")
+        self.assertEqual([level.show(p["fan1"]) for p in m_store.preset_curve(CURVE, 0.8, level)], [0, 2, 6])
 
     def test_atomic_write_mode_and_round_trip(self):
         path = m_store.save_active(CURVE)
@@ -516,9 +637,9 @@ class FanPanelPresetTests(FanCurveSurfaceTests):
             state = {"mode": "custom"}
             self.keys(dash, state, "f", "p")
             self.assertEqual(dash.fan_preset, 0)  # firmware snapshot equals the live curve
-            self.assertEqual(dash.fan_pending, {})
+            self.assertIsNone(dash.fan_edit)
             self.keys(dash, state, "p")
-            self.assertEqual(dash.fan_pending[(2, "fan1")], 153)
+            self.assertEqual(dash.fan_edit[2]["fan1"], 153)  # quiet: last point held at 60 %
             self.keys(dash, state, 10)
             self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 153)
             self.assertEqual(m_store.read_curve_file(config / "loqctl/active.json")[2]["fan1"], 153)
@@ -530,7 +651,7 @@ class FanPanelPresetTests(FanCurveSurfaceTests):
             self.assertTrue(any(t == "firmware" for t in dash.puts))
             m_store.write_atomic(config / "loqctl/curves/zz.json", edit(CURVE, {(0, "cpu_up"): 99}))
             self.keys(dash, state, "r", "p", "p", "p", "p", "p")
-            self.assertEqual(dash.fan_pending, {})
+            self.assertIsNone(dash.fan_edit)
             self.assertIn("invalid and cannot be staged", dash.notice)
             dash.draw_fans(state, {}, 1, 0, 25, 100)
             self.assertTrue(any(t == "zz (invalid)" for t in dash.puts))
@@ -538,5 +659,5 @@ class FanPanelPresetTests(FanCurveSurfaceTests):
     def test_locked_mode_blocks_presets(self):
         dash = self.dash("balanced")
         self.keys(dash, {"mode": "balanced"}, "f", "p")
-        self.assertEqual(dash.fan_pending, {})
+        self.assertIsNone(dash.fan_edit)
         self.assertIn("locked in balanced mode", dash.notice)

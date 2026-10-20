@@ -111,29 +111,32 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 - Load the module with `enable_platformprofile=0` next to the mainline `lenovo-wmi-gamezone` driver, so gamezone stays the single platform-profile provider (loqctl keeps using it).
 - Curves are editable only while the live platform mode is `custom`, like limits. Other modes show "Fan curves are locked in <mode> mode".
 - The firmware resets the curve when the mode changes and on reboot.
-- The panel shows a chart (fan 1 and fan 2 speed per point) above a table with CPU/GPU/IC up and down temperatures, fan speeds in percent, and read-only accel/decel. "down" is the absolute lower temperature of a step (the `_temp_hyst` file). With the `level` speed unit the editor steps in 10 % levels.
-- `loqctl fan` prints the curve, speed unit and RPM as JSON.
-- Hardware verification pending: the fan curve code is tested with simulated sysfs only, not yet on a real machine.
+- The panel shows a graph of fan speed against the CPU up temperature of each point (a step line for fan 1, markers for fan 2, the selected point highlighted, a cursor at the live CPU temperature), and below it a table of every point: CPU/GPU/IC up/down temperatures and both fan speeds. "down" is the absolute lower temperature of a step (the `_temp_hyst` file). Staged changes show in the warning color.
+- Speeds are shown in the module's unit (`fancurve_speed_unit`): RPM for `rpm` (scaled with `fan1_max`), firmware levels 0-10 for `level`, percent otherwise. loqctl writes the exact pwm value the module maps back to the same speed, so readback matches.
+- One curve drives both fans: moving a point's speed changes fan 1 and fan 2 together, and fan 2 keeps the offset from fan 1 it had when the curve was loaded (the stock LOQ curve runs fan 2 about 300 RPM faster). Moving a point's temperature shifts its CPU and GPU up and down temperatures together; IC temperatures are left as they are.
+- A point never crosses its neighbours: temperatures stay between the previous and next point's up temperature, speeds between the previous and next point's speed.
+- The curve is read in the background when the panel opens and cached until the mode changes or a curve is written. Each file read costs the module a full EC table read (about 0.9 s for the whole curve on a LOQ 15IRX9).
+- `loqctl fan` prints the curve, speed unit, `max_rpm` and RPM as JSON.
+- Verified on a LOQ 15IRX9 (BIOS NECN44WW, LenovoLegionLinux 0.1.3): reading the curve, the `rpm` unit and its scaling, and that the stock curve passes validation. **Writes are unverified on hardware.** On this model the module reads the curve from one EC table and writes another, so a verified apply needs a real test; if readback never matches, loqctl reports the writes as FAILED rather than guessing.
 
 | Key | Action |
 | --- | --- |
-| `←→↑↓` | Move the cell |
-| `0`–`9`, `Backspace` | Type into the cell (struck current value, then the new one; red when invalid) |
-| `+` / `-` | Step 1 °C, 5 % (or one level) |
-| `Esc` | Clear the cell, or go back when nothing is typed |
+| `Tab` / `]` | Select the next point |
+| `Shift+Tab` / `[` | Select the previous point |
+| `←` / `→` | Move the point's temperature by 1 °C (`Shift`: 5 °C) |
+| `↑` / `↓` | Change the point's speed for both fans by 100 RPM, 5 % or 1 level (`Shift`: 500 RPM, 20 % or 2 levels) |
 | `r` | Discard all edits |
-| `Enter` | Apply all edits; jumps to the first invalid cell instead |
-| `h j k l` | Same as the arrow keys |
+| `Enter` | Apply; refuses and selects the first problem point if the curve does not validate |
 | `p` | Stage the next preset (`firmware`, `quiet`, `cool`, then saved curves); nothing is written until `Enter` |
 | `W` | Save the staged (or live) curve as `curves/saved-YYYYmmdd-HHMMSS.json` |
-| `f` | Back |
+| `f` / `Esc` | Back (staged edits are kept) |
 | `q` | Quit |
 
-Presets: `firmware` is the curve read when the panel first opened this session, `quiet` scales its fan speeds by 0.8 and `cool` by 1.2 (capped at 100 %). Presets are raised to the validation minimums so they always validate. Saved curves live in `~/.config/loqctl/curves/<name>.json` (`XDG_CONFIG_HOME` is respected), listed after the presets by name; one that fails validation or has the wrong point count shows a red "(invalid)" and cannot be staged. After every verified apply the dashboard writes the applied points to `~/.config/loqctl/active.json`. All files are written atomically with mode 0600, by your user only (never by root; nothing is saved while the dashboard runs as root).
+Presets: `firmware` is the curve read when the panel first opened this session, `quiet` scales its fan speeds by 0.8 and `cool` by 1.2 (rounded to the speed step and capped at the top speed). Presets are raised to the validation minimums so they always validate. Saved curves live in `~/.config/loqctl/curves/<name>.json` (`XDG_CONFIG_HOME` is respected), listed after the presets by name; one that fails validation or has the wrong point count shows a red "(invalid)" and cannot be staged. After every verified apply the dashboard writes the applied points to `~/.config/loqctl/active.json`. All files are written atomically with mode 0600, by your user only (never by root; nothing is saved while the dashboard runs as root).
 
 Re-apply under `sudo loqctl serve`: the firmware resets the curve on mode change and reboot, so `serve` re-writes `active.json` for the served uid when the live mode becomes `custom` (also when `serve` starts in `custom`) and after a suspend/resume while in `custom`. Resume is detected when `CLOCK_BOOTTIME` gains 10 s or more on `CLOCK_MONOTONIC` between two 5 s firmware polls. The file must be owned by the served uid, must not be group or world writable, must have the same point count as the hardware and must pass the same validation; otherwise `serve` logs one line and carries on. The dashboard itself never re-applies.
 
-Safety: writes go only to an allowlist of the per-point temperature and pwm files (existing files only, never created), never `fanN_target`, `auto_points_size`, `minifancurve`, `lockfancontroller` or `fan_fullspeed`. Every write is verified by reading the whole curve back. A curve is refused before any write unless: all values are integers (temperatures 0-127, pwm 0-255); upper temperatures and fan speeds never drop from one point to the next; each down temperature is below its own up temperature and below the previous point's up temperature; fans run at least 40 % after a point whose CPU or GPU up temperature is 80 °C or more, and at least 60 % at the last point.
+Safety: writes go only to an allowlist of the per-point temperature and pwm files (existing files only, never created), never `fanN_target`, `auto_points_size`, `minifancurve`, `lockfancontroller` or `fan_fullspeed`. Every write is verified by reading the whole curve back. A curve is refused before any write unless: all values are integers (temperatures 0-127, pwm 0-255); upper temperatures and fan speeds never drop from one point to the next; each down temperature is not above its own up temperature (the stock LOQ curve puts down temperatures above the previous point's up temperature, so that is allowed); and the safety floors, a loqctl policy rather than a firmware limit: after a point whose CPU or GPU up temperature is 80 °C or more fans run at least 2000 RPM (`rpm` unit) or 40 % (other units), and the last point runs at least 3000 RPM or 60 %. The module itself only range-checks values.
 
 ## CLI
 
@@ -267,13 +270,21 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 
 - Linux and Lenovo-WMI hardware only. Tested on a LOQ 15IRX9 (Intel) on CachyOS; not tested on other distros or other Lenovo models.
 - AMD CPU paths (`k10temp`, `zenpower`, RAPL on Zen) are tested with simulated sysfs only.
-- Not verified on hardware: fan curve reads and writes (`legion_laptop`), EC temperatures (they depend on the `legion_laptop` hwmon name `legion_hwmon`), the extra attribute keys added to the write allowlist in 0.3.0, and the sudo capdata fetch. All are covered by simulated sysfs and mocked subprocess tests.
+- Not verified on hardware: fan curve writes (`legion_laptop`; reads are verified on a LOQ 15IRX9), the extra attribute keys added to the write allowlist in 0.3.0, and the sudo capdata fetch. All are covered by simulated sysfs and mocked subprocess tests.
 - Fan curve re-apply and suspend/resume detection in `serve` are untested on real hardware.
 - Per-mode limits need the firmware capdata table in debugfs; without it stock modes show N/A.
 - Privilege escalation is `sudo` only (no `doas`/`pkexec`).
 - Keyboard RGB depends on the third-party `legionaura` tool.
 
 ## Changelog
+
+### 0.4.0
+
+- Fan curve editor rework: a graph of speed against temperature with axes, grid, the selected point and a live CPU temperature cursor; Tab/`[` `]` select a point, arrows move it (Shift for bigger steps); one curve drives both fans; points never cross their neighbours.
+- Speeds in the module's real unit: RPM on `rpm` models (the LOQ 15IRX9), levels on `level` models. Writes use the pwm value that reads back unchanged, so verification works on `rpm` and `level` models.
+- Validation matches the firmware: the stock LOQ curve was rejected before (down temperatures above the previous up temperature, and percent floors applied to RPM). Safety floors are now per unit.
+- The curve is read in the background and cached (about 0.9 s per read on EC models); the panel opens at once.
+- The right box border is drawn (the last terminal column was skipped).
 
 ### 0.3.2
 
