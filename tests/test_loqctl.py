@@ -216,6 +216,57 @@ class FirmwareTests(unittest.TestCase):
             with self.assertRaisesRegex(m_common.ControlError, "custom mode"):
                 self.hw.set_value("ppt_pl1_spl", 60)
 
+    def add_profile(self, slot, name, mode="balanced"):
+        profile = self.root / f"class/platform-profile/platform-profile-{slot}"
+        profile.mkdir(parents=True)
+        for key, value in {"name": name, "profile": mode,
+                           "choices": "low-power balanced performance custom"}.items():
+            (profile / key).write_text(value)
+        return profile
+
+    def test_gamezone_profile_preferred_over_other_handlers(self):
+        shutil.rmtree(self.root / "class/platform-profile")
+        self.add_profile(0, "lenovo-legion")
+        gamezone = self.add_profile(1, "lenovo-wmi-gamezone")
+        hw = m_hardware.Hardware(self.root)
+        self.assertEqual(hw.capabilities()["mode_driver"], "lenovo-wmi-gamezone")
+        hw.set_mode("custom")
+        self.assertEqual((gamezone / "profile").read_text().strip(), "custom")
+
+    def test_other_class_handler_used_before_legacy_file(self):
+        shutil.rmtree(self.root / "class/platform-profile")
+        legion = self.add_profile(0, "lenovo-legion")
+        hw = m_hardware.Hardware(self.root)
+        self.assertEqual(hw.capabilities()["mode_driver"], "lenovo-legion")
+        hw.set_mode("custom")
+        self.assertEqual((legion / "profile").read_text().strip(), "custom")
+
+    def test_legacy_profile_never_writes_custom(self):
+        # The kernel's legacy platform_profile lists custom but rejects writing it with EINVAL.
+        shutil.rmtree(self.root / "class/platform-profile")
+        legacy = self.root / "firmware/acpi"
+        legacy.mkdir(parents=True)
+        (legacy / "platform_profile").write_text("balanced")
+        (legacy / "platform_profile_choices").write_text("low-power balanced performance custom")
+        hw = m_hardware.Hardware(self.root)
+        self.assertIsNone(hw.capabilities()["mode_driver"])
+        with self.assertRaisesRegex(m_common.ControlError, "legacy platform_profile"):
+            hw.set_mode("custom")
+        self.assertEqual((legacy / "platform_profile").read_text(), "balanced")
+        hw.set_mode("performance")
+        self.assertEqual((legacy / "platform_profile").read_text().strip(), "performance")
+
+    def test_mode_row_warns_when_gamezone_missing(self):
+        dashboard = self.dashboard()
+        dashboard.selected = 0
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+        dashboard.box = Mock()
+        for driver, expected in (("lenovo-legion", "via lenovo-legion"), (None, "legacy file")):
+            calls = []
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+            dashboard.draw_controls({**self.hw.capabilities(), "mode_driver": driver}, 0, 0, 20, 60)
+            self.assertTrue(any(expected in text and color == 3 for text, color in calls), calls)
+
     def test_draw_dims_locked_rows(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()

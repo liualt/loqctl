@@ -12,18 +12,27 @@ from .capdata import effective_value, read_mode_table
 from .common import FIELDS, ControlError, read, scaled
 from .fancurve import find_legion_hwmon, read_curve, speed_unit, write_curve
 
+GAMEZONE = "lenovo-wmi-gamezone"
+
+
 class Hardware:
     def __init__(self, root=Path("/sys")):
         self.root = Path(root)
         self.lock = threading.RLock()
         bases = sorted(self.root.glob("class/firmware-attributes/lenovo-wmi-other*/attributes"))
         self.base = bases[0] if bases else None
-        profiles = sorted(self.root.glob("class/platform-profile/*"))
-        self.profile = next((p / "profile" for p in profiles
-                             if read(p / "name") == "lenovo-wmi-gamezone"),
-                            self.root / "firmware/acpi/platform_profile")
-        self.choices = self.profile.parent / ("choices" if self.profile.name == "profile"
-                                               else "platform_profile_choices")
+        # Prefer gamezone's class device, then any other handler. The legacy
+        # /sys/firmware/acpi/platform_profile lists "custom" but the kernel rejects writing it
+        # (EINVAL), so it is only a last resort.
+        profiles = [p for p in sorted(self.root.glob("class/platform-profile/*")) if (p / "profile").exists()]
+        chosen = next((p for p in profiles if read(p / "name") == GAMEZONE), profiles[0] if profiles else None)
+        if chosen is not None:
+            self.profile, self.choices = chosen / "profile", chosen / "choices"
+            self.mode_driver = read(chosen / "name")
+        else:
+            self.profile = self.root / "firmware/acpi/platform_profile"
+            self.choices = self.root / "firmware/acpi/platform_profile_choices"
+            self.mode_driver = None
         self._limits = (None, None)  # (table, reason); static per boot
         self._limits_tried = False
 
@@ -78,7 +87,7 @@ class Hardware:
                     attrs[key] = item
             return {"model": read(self.root / "class/dmi/id/product_name", "Lenovo LOQ"),
                     "mode": mode, "modes": (read(self.choices, "") or "").split(),
-                    "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
+                    "mode_driver": self.mode_driver, "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
 
     def _write(self, path, value):
         try:
@@ -99,6 +108,9 @@ class Hardware:
             previous = self.read_mode()
             if not isinstance(mode, str) or mode not in (read(self.choices, "") or "").split():
                 raise ControlError("Unsupported platform mode.")
+            if mode == "custom" and self.mode_driver is None:
+                raise ControlError("Custom cannot be selected through the legacy platform_profile file, "
+                                   f"and no {GAMEZONE} platform profile was found.")
             actual = self._write(self.profile, mode)
             return {"mode": mode, "previous": previous, "current": actual, "verified": True}
 

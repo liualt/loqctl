@@ -250,6 +250,8 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | --- | --- |
 | "No firmware attributes exposed" | Kernel lacks the Lenovo WMI drivers, or your model isn't supported by them |
 | "Select custom mode before changing firmware limits" or "Limits are only editable in custom mode. Select custom first." | Limits are only writable in `custom` mode; select `custom` on the mode row and press Enter |
+| "Mode set via lenovo-legion, not lenovo-wmi-gamezone" on the mode row | `legion_laptop` was loaded without `enable_platformprofile=0` and registered its own platform profile. Add `options legion_laptop enable_platformprofile=0` to `/etc/modprobe.d/legion_laptop.conf` and reboot |
+| "Custom cannot be selected through the legacy platform_profile file" (older versions: "Firmware rejected the write: Invalid argument") | No platform-profile class device was found, and the kernel's legacy `/sys/firmware/acpi/platform_profile` refuses `custom`. Make sure `lenovo-wmi-gamezone` is loaded |
 | "RAPL needs root: run sudo loqctl serve" | CPU power reads are root-only on some kernels. Use the privileged server; do not run the TUI with `sudo -E` |
 | "A loqctl server is already running" | Another `loqctl serve` answers on the socket; stop it first. A stale socket is removed automatically |
 | "sudo not authenticated" or "sudo credentials expired" | The sudo cache expired (or you skipped it at start). Press `s` to authenticate; staged edits are kept |
@@ -272,6 +274,11 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 - Keyboard RGB depends on the third-party `legionaura` tool.
 
 ## Changelog
+
+### 0.3.1
+
+- Fix "Firmware rejected the write: Invalid argument" when selecting custom. The kernel's legacy `platform_profile` file lists `custom` but refuses to set it; loqctl now uses a platform-profile class device (gamezone first) and only falls back to the legacy file for other modes.
+- The mode row warns when the platform mode is handled by a driver other than `lenovo-wmi-gamezone`.
 
 ### 0.3.0
 

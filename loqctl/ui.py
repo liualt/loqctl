@@ -14,6 +14,7 @@ from .capdata import effective_value
 from .colors import hex_to_rgb, hsv_to_rgb, nearest_ansi, rgb_to_hex, rgb_to_hsv
 from .common import (BAR_EMPTY, BAR_FILL, FIELDS, SPARK, ControlError, SudoExpired, _lazy, clamp, fmt,
                      sudo_run)
+from .hardware import GAMEZONE
 from .keyboard import Keyboard
 from .ui_fans import FanPanel
 
@@ -367,7 +368,12 @@ class Dashboard(FanPanel):
         key = rows[self.selected]
         if key == "mode":
             modes = " ".join(state.get("modes") or []) or "none"
-            self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
+            driver = state.get("mode_driver", GAMEZONE)
+            if driver == GAMEZONE:
+                self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
+            else:
+                via = f"{driver}, not {GAMEZONE}" if driver else f"legacy file, {GAMEZONE} not found"
+                self.put(detail_y + 1, x + 2, f"Mode set via {via}"[: width - 4], self.theme.WARN)
             self.put(detail_y + 2, x + 2, f"Available: {modes}"[: width - 4], self.theme.TEXT, dim=True)
         elif self.locked(state):
             item, mode = state["attributes"][key], state.get("mode") or "N/A"
