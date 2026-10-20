@@ -340,7 +340,7 @@ class FanCurveSurfaceTests(unittest.TestCase):
         dash.draw_fans({"mode": "custom"}, {"fans": [{"rpm": 1800.0}]}, 1, 0, 25, 100)
         text = "\n".join(dash.puts)
         self.assertIn("CPU up", text)
-        self.assertIn("accel", text)
+        self.assertIn("Accel", text)
         self.assertIn("F1 1800 RPM", dash.box.call_args_list[0].args[4])
         dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 17, 72)
         self.assertIn("locked in balanced mode", "\n".join(dash.puts))

@@ -13,7 +13,7 @@ from .api import http_client
 from .capdata import effective_value
 from .colors import hex_to_rgb, hsv_to_rgb, nearest_ansi, rgb_to_hex, rgb_to_hsv
 from .common import (BAR_EMPTY, BAR_FILL, FIELDS, SPARK, ControlError, SudoExpired, _lazy, clamp, fmt,
-                     sudo_run)
+                     sudo_run, unit_sep)
 from .hardware import GAMEZONE
 from .keyboard import Keyboard
 from .ui_fans import FanPanel
@@ -311,11 +311,11 @@ class Dashboard(FanPanel):
 
     def draw_controls(self, state, y, x, height, width):
         pending_n = len(self.pending)
-        right = f"{pending_n} staged" if pending_n else "live"
+        right = f"{pending_n} staged" if pending_n else "Live"
         if self.invalid:
             right = (f"{pending_n} staged" if pending_n else "") + f"{', ' if pending_n else ''}{len(self.invalid)} invalid"
-        self.box(y, x, height, width, "firmware", self.theme.ACCENT, right)
-        self.put(y + 1, x + 2, f"{'CONTROL':<22} LIVE", self.theme.TEXT, dim=True)
+        self.box(y, x, height, width, "Firmware", self.theme.ACCENT, right)
+        self.put(y + 1, x + 2, f"{'Control':<22} Live", self.theme.TEXT, dim=True)
         rows = self.rows(state)
         if not rows:
             self.put(y + 3, x + 2, "No firmware attributes exposed.", self.theme.WARN)
@@ -339,7 +339,7 @@ class Dashboard(FanPanel):
                 item = state["attributes"][key]
                 label, current, unit = item["label"], item.get("effective_value"), item["unit"]
             staged = self.pending.get(key)
-            value = "N/A" if current is None else f"{current}{unit}"
+            value = "N/A" if current is None else f"{current}{unit_sep(unit)}{unit}"
             if key != "mode" and self.locked(state):
                 line = f"{marker} {label:<20} {value}"
                 self.put(yy, x + 1, line[: width - 3], self.theme.TEXT, bold=chosen, dim=True)
@@ -425,7 +425,7 @@ class Dashboard(FanPanel):
         throttled = bool((throttle.get("cpu") or {}).get("active"))
         if throttled:
             cpu_right = (cpu_right + " · " if cpu_right else "") + "THROTTLE"
-        self.box(y, x, cpu_h, width, "cpu", self.theme.OK, cpu_right)
+        self.box(y, x, cpu_h, width, "CPU", self.theme.OK, cpu_right)
         if throttled:
             self.put(y, x + width - 11, "THROTTLE", self.theme.BAD, True)
         ix, iw = x + 2, width - 4
@@ -449,7 +449,7 @@ class Dashboard(FanPanel):
                 spark = "".join("·" if c is None else SPARK[min(7, round((c or 0) * 7 / 100))] for c in cores)
                 self.put(y + 8, ix, f"cores {spark}"[:iw], self.theme.OK)
             if cpu_h >= 11:
-                self.put(y + 9, ix, (cpu.get("power_source") or "Sampling…")[:iw], self.theme.TEXT, dim=True)
+                self.put(y + 9, ix, (cpu.get("power_source") or "Sampling")[:iw], self.theme.TEXT, dim=True)
         elif cpu_h >= 8:
             self.put(y + 4, ix, cpu_label[:iw], self.theme.WARN, dim=True)
             self.chart(y + 4, ix + len(cpu_label) + 1, iw - len(cpu_label) - 1, "cpu_w", cpu_ceiling, self.theme.WARN)
@@ -460,9 +460,9 @@ class Dashboard(FanPanel):
             fmt(gpu.get("utilization_pct"), "%"),
             fmt(gpu.get("temperature_c"), "°C"),
             fmt(gpu.get("power_w"), "W", 1),
-        ])) if gpu else "asleep" if gpu_meta.get("suspended") else "offline"
-        self.box(gy, x, gpu_h, width, "gpu", self.theme.GPU, gpu_right)
-        name = gpu.get("name") or gpu_meta.get("error") or "Sampling…"
+        ])) if gpu else "Asleep" if gpu_meta.get("suspended") else "Offline"
+        self.box(gy, x, gpu_h, width, "GPU", self.theme.GPU, gpu_right)
+        name = gpu.get("name") or gpu_meta.get("error") or "Sampling"
         self.put(gy + 1, ix, name[:iw], self.theme.GPU, True)
         if gpu:
             self.bar(gy + 2, ix, iw, gpu.get("utilization_pct"), self.theme.load(gpu.get("utilization_pct")))
@@ -500,17 +500,17 @@ class Dashboard(FanPanel):
         mem_right = ""
         if used is not None and total:
             mem_right = f"{used / 1024:.1f}/{total / 1024:.1f} GiB"
-        self.box(sy, x, sys_h, width, "system", self.theme.INFO, mem_right)
+        self.box(sy, x, sys_h, width, "System", self.theme.INFO, mem_right)
         if used is not None and total:
             self.bar(sy + 1, ix, iw, used / total * 100, self.theme.INFO)
         battery = next(iter(metrics.get("battery") or []), {})
         ac = metrics.get("ac_online")
-        power = "AC" if ac else "BAT" if ac is False else "PWR?"
+        power = "AC" if ac else "Battery" if ac is False else "Power N/A"
         bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}".strip()
         self.put(sy + 2, ix, f"{power}  {bat}"[:iw], self.theme.OK if ac else self.theme.WARN)
         if sys_h >= 6:
             fans = metrics.get("fans") or []
-            fan_txt = "  ".join(f"{f['name']} {fmt(f['rpm'])}" for f in fans) if fans else "fans n/a"
+            fan_txt = "  ".join(f"{f['name']} {fmt(f['rpm'], 'RPM')}" for f in fans) if fans else "Fans N/A"
             self.put(sy + 3, ix, fan_txt[:iw], self.theme.TEXT, dim=True)
         if sys_h >= 7:
             loads = metrics.get("load") or []
@@ -520,7 +520,7 @@ class Dashboard(FanPanel):
                      self.theme.TEXT, dim=True)
 
     def draw_sensors(self, metrics, y, x, height, width):
-        self.box(y, x, height, width, "sensors", self.theme.INFO, "t summary")
+        self.box(y, x, height, width, "Sensors", self.theme.INFO, "t: summary")
         ix, iw = x + 2, width - 4
         na = lambda v, unit="", d=1: fmt(v, unit, d)
         lines = [("Temperatures", self.theme.ACCENT, True)]
@@ -556,10 +556,10 @@ class Dashboard(FanPanel):
 
     def draw_keyboard(self, y, x, height, width):
         kb = self.keyboard
-        status = "live" if self.kb_live else "preview off"
+        status = "Live" if self.kb_live else "Preview off"
         if not kb.available:
-            status = "missing"
-        self.box(y, x, height, width, "keyboard / legionaura", self.theme.GPU, status)
+            status = "Missing"
+        self.box(y, x, height, width, "Keyboard (LegionAura)", self.theme.GPU, status)
         ix, iw = x + 2, width - 4
         if not kb.available:
             self.put(y + 2, ix, "Install LegionAura (AUR: legionaura) for 4-zone RGB control.", self.theme.WARN)
@@ -574,7 +574,7 @@ class Dashboard(FanPanel):
         self.put(y + 1, ix, "effect  " + " ".join(effects), self.theme.ACCENT)
         bright = "low" if kb.brightness == 1 else "high"
         wave = f"  wave {kb.wave_dir}" if kb.effect == "wave" else ""
-        self.put(y + 2, ix, f"bright  {bright}   speed {kb.speed}/4{wave}", self.theme.TEXT, dim=True)
+        self.put(y + 2, ix, f"brightness  {bright}   speed {kb.speed}/4{wave}", self.theme.TEXT, dim=True)
 
         # Zones
         self.put(y + 4, ix, "zones", self.theme.TEXT, dim=True)
@@ -620,7 +620,7 @@ class Dashboard(FanPanel):
         bh = min(21, h - 2)
         bx, by = (w - bw) // 2, max(1, (h - bh) // 2)
         self.fill(by, bx, bh, bw)
-        self.box(by, bx, bh, bw, "help", self.theme.ACCENT)
+        self.box(by, bx, bh, bw, "Help", self.theme.ACCENT)
         lines = [
             "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
             "          0-9 type a value   Backspace delete   Esc clear row",
@@ -651,15 +651,15 @@ class Dashboard(FanPanel):
         bh = min(h - 2, len(self.apply_results) + 11)
         bx, by = (w - bw) // 2, max(0, (h - bh) // 2)
         self.fill(by, bx, bh, bw)
-        self.box(by, bx, bh, bw, "apply results", self.theme.ACCENT)
+        self.box(by, bx, bh, bw, "Apply results", self.theme.ACCENT)
         self.put(by + 1, bx + 2, "Firmware readback immediately after each attempted change.", self.theme.TEXT, dim=True)
-        self.put(by + 3, bx + 2, f"{'CONTROL':<26}{'BEFORE':>12}{'REQUESTED':>12}{'READ BACK':>12}  RESULT",
+        self.put(by + 3, bx + 2, f"{'Control':<26}{'Before':>12}{'Requested':>12}{'Read back':>12}  Result",
                  self.theme.ACCENT, True)
         for i, result in enumerate(self.apply_results):
             key = result["key"]
             label, unit = ("Platform mode", "") if key == "mode" else FIELDS[key]
             def display(value):
-                return "N/A" if value is None else str(value) + unit
+                return "N/A" if value is None else f"{value}{unit_sep(unit)}{unit}"
             line = (f"{label:<26}{display(result['before']):>12}{display(result['requested']):>12}"
                     f"{display(result['current']):>12}  {result['status']}")
             color = self.theme.OK if result["status"] == "APPLIED" else (
@@ -680,8 +680,8 @@ class Dashboard(FanPanel):
         bh = min(h - 2, len(rows) + 6)
         bx, by = (w - bw) // 2, max(0, (h - bh) // 2)
         self.fill(by, bx, bh, bw)
-        self.box(by, bx, bh, bw, "mode limits", self.theme.ACCENT)
-        self.put(by + 1, bx + 2, "CONTROL", self.theme.ACCENT, True)
+        self.box(by, bx, bh, bw, "Mode limits", self.theme.ACCENT)
+        self.put(by + 1, bx + 2, "Control", self.theme.ACCENT, True)
         for col, mode in enumerate(modes):
             self.put(by + 1, bx + 26 + 13 * col, f"{mode:>12}", self.theme.ACCENT, True)
         for i, key in enumerate(rows[: bh - 5]):

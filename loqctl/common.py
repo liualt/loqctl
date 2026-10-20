@@ -126,8 +126,14 @@ def socket_path():
     return f"/run/loqctl-{owner_uid()}/control.sock"
 
 
+def unit_sep(unit):
+    """Space between a number and its unit, except for °C and %."""
+    return "" if unit in ("", "%", "°C") else " "
+
+
 def fmt(value, unit="", decimals=0):
-    return "N/A" if value is None else f"{value:.{decimals}f}{unit}"
+    unit = unit.strip()
+    return "N/A" if value is None else f"{value:.{decimals}f}{unit_sep(unit)}{unit}"
 
 
 def clamp(value, lo, hi):

@@ -26,8 +26,8 @@ SPEEDS = ("fan1", "fan2")
 WRITABLE = TEMPS + SPEEDS
 POINT_FIELDS = tuple(FILE_MAP)
 LABELS = {"cpu_up": "CPU up", "cpu_down": "CPU down", "gpu_up": "GPU up", "gpu_down": "GPU down",
-          "ic_up": "IC up", "ic_down": "IC down", "fan1": "Fan1 %", "fan2": "Fan2 %",
-          "accel": "accel", "decel": "decel"}
+          "ic_up": "IC up", "ic_down": "IC down", "fan1": "Fan 1 %", "fan2": "Fan 2 %",
+          "accel": "Accel", "decel": "Decel"}
 HOT_C, HOT_MIN_PWM, LAST_MIN_PWM = 80, 102, 153  # 40 % and 60 %
 
 

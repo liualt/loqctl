@@ -1380,6 +1380,32 @@ class KbCliTests(unittest.TestCase):
                 self.run_cli(*argv)
 
 
+class AnsiColorTests(unittest.TestCase):
+    def test_theme_uses_ansi_palette_only(self):
+        pairs = []
+        with patch.object(curses, "start_color"), patch.object(curses, "use_default_colors"), \
+                patch.object(curses, "init_pair", side_effect=lambda *a: pairs.append(a)), \
+                patch.object(curses, "init_color", side_effect=AssertionError("init_color redefines RGB")):
+            m_ui.Theme(True)
+        self.assertTrue(pairs)
+        for _, fg, bg in pairs:
+            self.assertTrue(-1 <= fg <= 15 and -1 <= bg <= 15, (fg, bg))
+
+    def test_sources_never_redefine_colors_or_emit_raw_escapes(self):
+        import tokenize
+        for path in sorted((REPO / "loqctl").glob("*.py")):
+            with path.open("rb") as handle:
+                for token in tokenize.tokenize(handle.readline):
+                    if token.type == tokenize.NAME:
+                        self.assertNotIn(token.string, ("init_color", "can_change_color"), path.name)
+                    elif token.type == tokenize.STRING:
+                        for escape in ("\\x1b[", "\\033[", "\\u001b["):
+                            self.assertNotIn(escape, token.string.lower(), f"{path.name}: raw escape")
+                    elif token.type == tokenize.NUMBER and token.line.lstrip().startswith("curses.init_pair"):
+                        # Color numbers above 15 are outside the 16-color ANSI palette.
+                        self.assertLessEqual(int(token.string), 15, token.line)
+
+
 class CompatibilityTests(unittest.TestCase):
     def test_sources_parse_as_python_310(self):
         import ast

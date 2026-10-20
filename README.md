@@ -275,6 +275,11 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 
 ## Changelog
 
+### 0.3.2
+
+- Consistent wording: sentence-case panel titles and column headers, a space between numbers and units (`60 W`, `2100 RPM`, `1200 MHz`; none before `°C` and `%`), `Fan 1 %` / `Fan 2 %`, `Battery` / `Power N/A` instead of `BAT` / `PWR?`.
+- Tests guard the ANSI-only color rule: no `init_color`, no raw escape sequences, color numbers 15 or below.
+
 ### 0.3.1
 
 - Fix "Firmware rejected the write: Invalid argument" when selecting custom. The kernel's legacy `platform_profile` file lists `custom` but refuses to set it; loqctl now uses a platform-profile class device (gamezone first) and only falls back to the legacy file for other modes.

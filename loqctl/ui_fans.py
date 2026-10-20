@@ -277,7 +277,7 @@ class FanPanel:
         lines.append(("arrows move  0-9 type  +/- step  Enter apply  r discard  p preset  W save  Esc clear/back",
                       self.theme.ACCENT))
         x = ix
-        self.put(y, x, "presets", self.theme.TEXT, dim=True)
+        self.put(y, x, "Presets", self.theme.TEXT, dim=True)
         x += 9
         for k, (name, points) in enumerate(self.fan_opts):
             label = f"{name} (invalid)" if points is None else name
@@ -294,7 +294,7 @@ class FanPanel:
         rpm = "  ".join(f"F{n + 1} {f['rpm']:.0f} RPM" if f.get("rpm") is not None else f"F{n + 1} N/A"
                         for n, f in enumerate(fans[:2])) or "RPM N/A"
         if not self.fan.get("available"):
-            self.box(y, x, height, width, "fans / " + rpm, self.theme.GPU, "unavailable")
+            self.box(y, x, height, width, "Fans · " + rpm, self.theme.GPU, "Unavailable")
             lines = textwrap.wrap(UNAVAILABLE + ".", max(20, width - 4))
             for k, line in enumerate(lines):
                 self.put(y + 2 + k, x + 2, line, self.theme.WARN)
@@ -302,7 +302,7 @@ class FanPanel:
             self.put(y + 5 + len(lines), x + 2, "Esc returns to firmware controls.", self.theme.TEXT, dim=True)
             return
         unit = self.fan_unit() or "pwm"
-        self.box(y, x, height, width, "fans / " + rpm, self.theme.GPU, "unit " + unit)
+        self.box(y, x, height, width, "Fans · " + rpm, self.theme.GPU, "Speed unit: " + unit)
         points, rows = self.fan_points(), self.fan_rows()
         target = self.fan_target()
         ix, iw = x + 2, width - 4
@@ -322,7 +322,7 @@ class FanPanel:
                     pct = pwm_to_pct(point[field], self.fan_unit())
                     row = top + (chart_h - 1) - round(pct / 100 * (chart_h - 1))
                     self.put(row, ix + label_w + i * cw + fan * 2, glyph, color, True)
-            self.put(top + chart_h, ix, "● fan1  ◆ fan2", self.theme.TEXT, dim=True)
+            self.put(top + chart_h, ix, "● Fan 1  ◆ Fan 2", self.theme.TEXT, dim=True)
             top += chart_h + 1
         for i in range(len(points)):
             self.put(top, ix + label_w + i * cw, f" #{i + 1}", self.theme.ACCENT, True)
