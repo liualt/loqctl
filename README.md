@@ -108,7 +108,12 @@ Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the
 
 Fan curves are read and written through the [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux) `legion_laptop` kernel module (loqctl does not copy its code; it only uses the hwmon files the module exposes). Without the module the panel says so and shows fan RPM only.
 
-- Load the module with `enable_platformprofile=0` next to the mainline `lenovo-wmi-gamezone` driver, so gamezone stays the single platform-profile provider (loqctl keeps using it).
+- Load the module with `enable_platformprofile=0` next to the mainline `lenovo-wmi-gamezone` driver, so gamezone stays the single platform-profile provider (loqctl keeps using it). Also make gamezone load first, or the module's `legion_wmi` driver claims the gamezone WMI device and every limit reads N/A (see Troubleshooting). `/etc/modprobe.d/legion_laptop.conf`:
+
+  ```
+  options legion_laptop enable_platformprofile=0
+  softdep legion_laptop pre: lenovo_wmi_gamezone
+  ```
 - Curves are editable only while the live platform mode is `custom`, like limits. Other modes show "Fan curves are locked in <mode> mode".
 - The firmware resets the curve when the mode changes and on reboot.
 - The panel shows a graph of fan speed against the CPU up temperature of each point (a step line for fan 1, markers for fan 2, the selected point highlighted, a cursor at the live CPU temperature), and below it a table of every point: CPU/GPU/IC up/down temperatures and both fan speeds. "down" is the absolute lower temperature of a step (the `_temp_hyst` file). Staged changes show in the warning color.
@@ -254,6 +259,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | "No firmware attributes exposed" | Kernel lacks the Lenovo WMI drivers, or your model isn't supported by them |
 | "Select custom mode before changing firmware limits" or "Limits are only editable in custom mode. Select custom first." | Limits are only writable in `custom` mode; select `custom` on the mode row and press Enter |
 | "Mode set via lenovo-legion, not lenovo-wmi-gamezone" on the mode row | `legion_laptop` was loaded without `enable_platformprofile=0` and registered its own platform profile. Add `options legion_laptop enable_platformprofile=0` to `/etc/modprobe.d/legion_laptop.conf` and reboot |
+| "Gamezone WMI device held by legion_wmi, limits can't be read", or every limit N/A with "current value unreadable (Invalid argument)" | `legion_laptop` loaded before `lenovo-wmi-gamezone` and its `legion_wmi` driver claimed the gamezone WMI device (GUID `887B54E3-…`). `lenovo-wmi-other` then cannot learn the mode and rejects every read, and no platform profile exists. Add `softdep legion_laptop pre: lenovo_wmi_gamezone` to `/etc/modprobe.d/legion_laptop.conf` and reboot. Without rebooting: `echo 887B54E3-DDDC-4B2C-8B88-68A26A8835D0-22 \| sudo tee /sys/bus/wmi/drivers/legion_wmi/unbind /sys/bus/wmi/drivers/lenovo_wmi_gamezone/bind` (the `-22` suffix varies; check `ls /sys/bus/wmi/devices`). `legion_laptop` keeps working: it calls the gamezone methods by GUID, not through the binding |
 | "Custom cannot be selected through the legacy platform_profile file" (older versions: "Firmware rejected the write: Invalid argument") | No platform-profile class device was found, and the kernel's legacy `/sys/firmware/acpi/platform_profile` refuses `custom`. Make sure `lenovo-wmi-gamezone` is loaded |
 | "RAPL needs root: run sudo loqctl serve" | CPU power reads are root-only on some kernels. Use the privileged server; do not run the TUI with `sudo -E` |
 | "A loqctl server is already running" | Another `loqctl serve` answers on the socket; stop it first. A stale socket is removed automatically |
@@ -277,6 +283,11 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 - Keyboard RGB depends on the third-party `legionaura` tool.
 
 ## Changelog
+
+### 0.4.1
+
+- Fix limits showing N/A in every mode when `legion_laptop` is loaded: its `legion_wmi` driver claimed the gamezone WMI device before `lenovo-wmi-gamezone`, so `lenovo-wmi-other` rejected every read with EINVAL. loqctl now detects this and names the cause; the README documents the `softdep` fix.
+- An unreadable limit shows the kernel's error in the detail footer instead of a bare N/A.
 
 ### 0.4.0
 

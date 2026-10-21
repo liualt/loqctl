@@ -267,6 +267,41 @@ class FirmwareTests(unittest.TestCase):
             dashboard.draw_controls({**self.hw.capabilities(), "mode_driver": driver}, 0, 0, 20, 60)
             self.assertTrue(any(expected in text and color == 3 for text, color in calls), calls)
 
+    def test_gamezone_held_by_legion_wmi_is_reported(self):
+        # legion_laptop's legion_wmi can claim the gamezone GUID first; then every current_value
+        # read fails with EINVAL and the UI must say why instead of a bare N/A.
+        drivers = self.root / "bus/wmi/drivers"
+        device = self.root / f"bus/wmi/devices/{m_hardware.GAMEZONE_GUID}-22"
+        device.mkdir(parents=True)
+        for name in ("legion_wmi", "lenovo_wmi_gamezone"):
+            (drivers / name).mkdir(parents=True)
+        (device / "driver").symlink_to(drivers / "lenovo_wmi_gamezone")
+        self.assertIsNone(self.hw.capabilities()["gamezone_holder"])
+        (device / "driver").unlink()
+        self.assertEqual(self.hw.capabilities()["gamezone_holder"], "no driver")
+        (device / "driver").symlink_to(drivers / "legion_wmi")
+        real_read = Path.read_text
+
+        def einval(path, *args, **kwargs):
+            if path.name == "current_value":
+                raise OSError(errno.EINVAL, "Invalid argument")
+            return real_read(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", einval):
+            state = self.hw.capabilities()
+        item = state["attributes"]["ppt_pl1_spl"]
+        self.assertEqual((state["gamezone_holder"], item["current_value"], item["read_error"]),
+                         ("legion_wmi", None, "Invalid argument"))
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+        dashboard.box = Mock()
+        for selected, state_driver in ((0, None), (1, state["mode_driver"])):
+            calls = []
+            dashboard.selected = selected
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+            dashboard.draw_controls({**state, "mode_driver": state_driver}, 0, 0, 20, 90)
+            self.assertTrue(any("held by legion_wmi" in text and color == 3 for text, color in calls), calls)
+
     def test_draw_dims_locked_rows(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()

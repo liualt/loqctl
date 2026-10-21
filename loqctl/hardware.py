@@ -14,6 +14,11 @@ from .common import FIELDS, ControlError, read, scaled
 from .fancurve import curve_scale, find_legion_hwmon, read_curve, write_curve
 
 GAMEZONE = "lenovo-wmi-gamezone"
+# The gamezone WMI device. lenovo-wmi-other needs lenovo_wmi_gamezone bound to it to know the
+# current mode; LenovoLegionLinux's legion_wmi driver claims the same GUID when it loads first,
+# and then every current_value read fails with EINVAL.
+GAMEZONE_GUID = "887B54E3-DDDC-4B2C-8B88-68A26A8835D0"
+GAMEZONE_WMI_DRIVER = "lenovo_wmi_gamezone"
 
 
 class Hardware:
@@ -66,17 +71,29 @@ class Hardware:
         path = self.base / key if self.base else None
         if path is None or not path.is_dir():
             return None
-        item = {"label": label, "unit": unit, "description": read(path / "display_name", label)}
+        item = {"label": label, "unit": unit, "description": read(path / "display_name", label), "read_error": None}
         for name in ("current_value", "min_value", "max_value", "default_value", "scalar_increment"):
-            value = read(path / name)
             try:
-                item[name] = int(value)
-            except (ValueError, TypeError):
+                item[name] = int((path / name).read_text().strip())
+            except OSError as exc:
+                item[name] = None
+                if name == "current_value":
+                    item["read_error"] = exc.strerror
+            except ValueError:
                 item[name] = None
         item["available"] = all(item[n] is not None for n in
                                 ("current_value", "min_value", "max_value", "scalar_increment"))
         item["effective_value"] = effective_value(mode, key, item["current_value"], table)
         return item
+
+    def gamezone_holder(self):
+        """Name of the driver holding the gamezone WMI device when it is not lenovo_wmi_gamezone."""
+        for device in sorted(self.root.glob(f"bus/wmi/devices/{GAMEZONE_GUID}*")):
+            driver = device / "driver"
+            name = driver.resolve().name if driver.exists() else "no driver"
+            if name != GAMEZONE_WMI_DRIVER:
+                return name
+        return None
 
     def capabilities(self):
         with self.lock:
@@ -89,7 +106,7 @@ class Hardware:
                     attrs[key] = item
             return {"model": read(self.root / "class/dmi/id/product_name", "Lenovo LOQ"),
                     "mode": mode, "modes": (read(self.choices, "") or "").split(),
-                    "mode_driver": self.mode_driver, "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
+                    "mode_driver": self.mode_driver, "gamezone_holder": self.gamezone_holder(), "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
 
     def _write(self, path, value):
         try:

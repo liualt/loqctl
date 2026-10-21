@@ -26,6 +26,11 @@ def strike(text):
     return "".join(c + "\u0336" for c in str(text))
 
 
+def gamezone_note(state):
+    """Why limits read N/A when another driver holds the gamezone WMI device, else None."""
+    holder = state.get("gamezone_holder")
+    return f"Gamezone WMI device held by {holder}, limits can't be read; see README" if holder else None
+
 class Theme:
     """UI colors from the terminal palette only. Never redefines RGB."""
 
@@ -373,7 +378,8 @@ class Dashboard(FanPanel):
                 self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
             else:
                 via = f"{driver}, not {GAMEZONE}" if driver else f"legacy file, {GAMEZONE} not found"
-                self.put(detail_y + 1, x + 2, f"Mode set via {via}"[: width - 4], self.theme.WARN)
+                note = gamezone_note(state) or f"Mode set via {via}"
+                self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
             self.put(detail_y + 2, x + 2, f"Available: {modes}"[: width - 4], self.theme.TEXT, dim=True)
         elif self.locked(state):
             item, mode = state["attributes"][key], state.get("mode") or "N/A"
@@ -381,8 +387,9 @@ class Dashboard(FanPanel):
                 note = f"{mode} limit from firmware table · custom default {fmt(item['default_value'])}"
             else:
                 reason = state.get("mode_limits_error")
-                note = (reason if reason and not reason.startswith("needs root") else
-                        "Stock-mode limits need root: press s or run sudo loqctl serve")
+                note = gamezone_note(state) or (
+                    reason if reason and not reason.startswith("needs root") else
+                    "Stock-mode limits need root: press s or run sudo loqctl serve")
             self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
             self.put(detail_y + 2, x + 2, f"Limits are locked in {mode} mode; select custom on the mode row."[: width - 4],
                      self.theme.TEXT, dim=True)
@@ -390,7 +397,12 @@ class Dashboard(FanPanel):
             item = state["attributes"][key]
             step = item["scalar_increment"]
             step_txt = "any int" if not step else str(step)
-            self.put(detail_y + 1, x + 2, key, self.theme.ACCENT)
+            if item.get("current_value") is None:
+                error = item.get("read_error") or "missing"
+                note = gamezone_note(state) or f"{key}: current value unreadable ({error})"
+                self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
+            else:
+                self.put(detail_y + 1, x + 2, key, self.theme.ACCENT)
             self.put(detail_y + 2, x + 2,
                      f"{item['min_value']}–{item['max_value']} {item['unit']}  ·  step {step_txt}  ·  default {item['default_value']}"
                      [: width - 4], self.theme.TEXT, dim=True)
