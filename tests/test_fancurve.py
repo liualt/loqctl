@@ -699,6 +699,44 @@ class FanPanelPresetTests(FanCurveSurfaceTests):
         self.assertIsNone(m_store.read_stock("custom"))
         self.assertTrue((self.config / "loqctl/stock/custom.written").exists())
 
+    def test_reset_refuses_stale_stock_and_root(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF, 10)
+        m_store.write_atomic(self.config / "loqctl/stock/custom.json", CURVE[:2])  # point count changed
+        (self.config / "loqctl/active.json").write_text("{}")
+        with patch.object(self.hw, "write_fancurve") as write:
+            self.keys(dash, state, "R")
+            write.assert_not_called()
+            self.assertIn("no longer fits", dash.notice)
+            self.assertTrue((self.config / "loqctl/active.json").exists())
+            with patch.object(os, "geteuid", return_value=0):
+                self.keys(dash, state, "R")
+            write.assert_not_called()
+        self.assertIn("not root", dash.notice)
+        self.assertTrue((self.config / "loqctl/active.json").exists())
+
+    def test_marker_failure_and_active_json_are_reported_not_fatal(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        m_store.save_active(CURVE)  # save_stock refuses while active.json exists
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF)
+        with patch.object(m_panel, "mark_written", side_effect=PermissionError(13, "Permission denied")):
+            self.keys(dash, state, 10)
+        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 153)
+        self.assertIn("stock curve was not recorded", dash.notice)
+        self.assertIn("Could not save the stock marker", dash.notice)
+        self.assertIsNone(m_store.read_stock("custom"))
+
+    def test_reload_dropping_staged_edit_clears_preset_name(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF)
+        dash.fan_preset = "x"
+        dash.fan_result = {"available": True, "mode": "custom", "points": CURVE[:2]}
+        dash.fan_take()
+        self.assertEqual((dash.fan_edit, dash.fan_preset), (None, None))
+
     def test_reset_reports_file_errors(self):
         dash = self.dash()
         state = {"mode": "custom"}
