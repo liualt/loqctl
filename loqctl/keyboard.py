@@ -82,7 +82,6 @@ class Keyboard:
         self.zones = cleaned
 
     def status(self):
-        self.load()
         return {
             "available": self.available,
             "binary": shutil.which(self.binary) or self.binary,
@@ -98,7 +97,10 @@ class Keyboard:
         resolved = shutil.which(self.binary)
         if not resolved:
             raise ControlError("legionaura not found. Install the LegionAura package.")
-        result = subprocess.run([resolved, *args], capture_output=True, text=True, timeout=8, check=False)
+        try:
+            result = subprocess.run([resolved, *args], capture_output=True, text=True, timeout=8, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise ControlError("legionaura did not answer within 8 s.") from exc
         if result.returncode:
             detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
             raise ControlError("legionaura: " + detail)

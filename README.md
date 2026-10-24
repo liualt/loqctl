@@ -120,7 +120,7 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 - Speeds are shown in the module's unit (`fancurve_speed_unit`): RPM for `rpm` (scaled with `fan1_max`), firmware levels 0-10 for `level`, percent otherwise. loqctl writes the exact pwm value the module maps back to the same speed, so readback matches.
 - Temperatures are fixed: up and down temperatures are shown but not editable. Each point has one speed, edited in the curve's unit. Setting it writes the same speed to fan 1 and fan 2, each held between its neighbours' speeds, its safety floor and the top speed.
 - A point's speed never crosses its neighbours: it stays between the previous and next point's speed.
-- The curve is read in the background when the panel opens and cached until the mode changes or a curve is written. Each file read costs the module a full EC table read (about 0.9 s for the whole curve on a LOQ 15IRX9).
+- The curve is read in the background each time the panel opens and after each write, never cached, so a curve changed by a resume or another program shows up on the next open. Each file read costs the module a full EC table read (about 0.9 s for the whole curve on a LOQ 15IRX9).
 - `loqctl fan` prints the curve, speed unit, `max_rpm` and RPM as JSON.
 - Verified on a LOQ 15IRX9 (BIOS NECN44WW, LenovoLegionLinux 0.1.3): reading the curve, the `rpm` unit and its scaling, and that the stock curve passes validation. **Writes are unverified on hardware.** On this model the module reads the curve from one EC table and writes another, so a verified apply needs a real test; if readback never matches, loqctl reports the writes as FAILED rather than guessing.
 
@@ -212,6 +212,8 @@ loqctl kb off
 loqctl kb apply
 ```
 
+`loqctl kb` and `loqctl kb status` print the settings in `~/.config/legionaura/config.json`. The other subcommands print the settings they sent to LegionAura.
+
 ## Local HTTP API
 
 ```sh
@@ -232,7 +234,7 @@ curl --unix-socket /run/loqctl-$(id -u)/control.sock \
 | GET | `/v1/status` | Sampler snapshot: firmware and telemetry (not a fresh read) |
 | GET | `/v1/metrics` | Telemetry from the sampler (about 1 Hz) |
 | GET | `/v1/capabilities` | Modes, bounds, defaults, per-mode limits; read fresh |
-| GET | `/v1/fancurve` | Fan curve, speed unit, RPM (or `available: false`) |
+| GET | `/v1/fancurve` | Fan curve, speed unit, RPM (or `available: false`); read fresh |
 | POST | `/v1/mode` | `{"mode":"custom"}` |
 | POST | `/v1/attributes/NAME` | `{"value":50}` |
 | POST | `/v1/fancurve` | `{"points":[...]}`, custom mode only, per-field results |
