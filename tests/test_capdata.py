@@ -50,11 +50,6 @@ class ParseTests(unittest.TestCase):
                 self.assertEqual(table[mode][key], value, (mode, key))
         self.assertTrue(capdata.valid_table(table))
 
-    def test_valid_table_shape(self):
-        for bad in (None, [], {}, {"balanced": []}, {"balanced": {"nope": 1}}, {"balanced": {"ppt_pl1_spl": "1"}},
-                    {"balanced": {"ppt_pl1_spl": True}}):
-            self.assertFalse(capdata.valid_table(bad), bad)
-
     def test_read_mode_table(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(capdata.read_mode_table(tmp), (None, capdata.NOT_FOUND))
@@ -118,12 +113,6 @@ class HardwareTests(Sim):
         self.assertEqual(caps["attributes"]["ppt_pl1_spl"]["effective_value"], 50)
         self.assertEqual(caps["mode_limits"]["performance"]["ppt_pl1_spl"], 90)
         self.assertIsNone(caps["mode_limits_error"])
-
-    def test_no_table_is_none_not_current_value(self):
-        caps = m_hardware.Hardware(self.root).capabilities()
-        self.assertIsNone(caps["attributes"]["ppt_pl1_spl"]["effective_value"])
-        self.assertIsNone(caps["mode_limits"])
-        self.assertEqual(caps["mode_limits_error"], capdata.NOT_FOUND)
 
     def test_retry_only_as_root(self):
         hw = m_hardware.Hardware(self.root)
@@ -192,7 +181,9 @@ class SudoCacheTests(Sim):
         self.assertIsNotNone(capdata.load_cache(self.root))
         path = self.cache / "loqctl/mode-limits.json"
         data = json.loads(path.read_text())
-        for bad in ({"version": 2}, {"table": {"balanced": {"ppt_pl1_spl": "x"}}}, {"product": "other"}):
+        bad_tables = (None, [], {}, {"balanced": []}, {"balanced": {"nope": 1}},
+                      {"balanced": {"ppt_pl1_spl": "x"}}, {"balanced": {"ppt_pl1_spl": True}})
+        for bad in ({"version": 2}, {"product": "other"}, *({"table": t} for t in bad_tables)):
             path.write_text(json.dumps({**data, **bad}))
             self.assertIsNone(capdata.load_cache(self.root), bad)
         path.write_text("not json")
@@ -255,6 +246,9 @@ class UiTests(Sim):
     def test_stock_row_without_table_is_na(self):
         dash = self.dash()
         state = m_hardware.Hardware(self.root).capabilities()
+        self.assertIsNone(state["attributes"]["ppt_pl1_spl"]["effective_value"])  # not sysfs current 50
+        self.assertIsNone(state["mode_limits"])
+        self.assertEqual(state["mode_limits_error"], capdata.NOT_FOUND)
         state["mode_limits_error"] = "needs root"
         dash.draw_controls(state, 0, 0, 20, 70)
         text = self.text(dash)
