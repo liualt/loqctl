@@ -1216,7 +1216,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(volts["Battery"], 16.415)
         self.assertEqual(volts["BAT1 in0"], 16.415)
         self.assertIsNone(volts["GPU core"])
-        self.assertIsNone(volts["CPU Vcore"])
+        self.assertIsNone(volts["CPU 0 Vcore"])
         self.assertIn({"group": "gpu", "label": "G", "c": 50}, m["temperatures"])
 
     def test_cpu_vcore_msr(self):
@@ -1228,6 +1228,12 @@ class TelemetryTests(unittest.TestCase):
             msr.parent.mkdir(parents=True)
             msr.write_bytes(bytes(0x198) + (0x2000 << 32).to_bytes(8, "little"))
             self.assertEqual(s.cpu_vcore(), 1.0)
+            for field, volts in ((2458, 2458 / 8192), (0x4000, 2.0)):  # lowest raw value >= 0.3 V, 2.0 V
+                msr.write_bytes(bytes(0x198) + (field << 32).to_bytes(8, "little"))
+                self.assertEqual(s.cpu_vcore(), volts)
+            for field in (0, 0x0800, 0x5000, 0xFFFF):  # 0 V, 0.25 V, 2.5 V, 8 V
+                msr.write_bytes(bytes(0x198) + (field << 32).to_bytes(8, "little"))
+                self.assertIsNone(s.cpu_vcore())
             self.put("proc/cpuinfo", "vendor_id : AuthenticAMD\n")
             self.assertIsNone(s.cpu_vcore())
         self.put("proc/cpuinfo", "vendor_id : GenuineIntel\n")
@@ -1297,10 +1303,10 @@ class TelemetryTests(unittest.TestCase):
         dash.draw_sensors({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
                            "power": {"rapl": {"psys": None}, "battery_w": None, "battery_status": None,
                                      "usbc": []},
-                           "voltages": [{"label": "CPU Vcore", "v": None}],
+                           "voltages": [{"label": "CPU 0 Vcore", "v": None}],
                            "throttle": {"cpu": {"core_events": None}, "gpu": None}}, 1, 0, 30, 60)
         text = "\n".join(t for _, _, t in calls)
-        for needle in ("Temperatures", "Core 0", "psys", "CPU Vcore", "Throttle"):
+        for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle"):
             self.assertIn(needle, text)
         self.assertGreaterEqual(text.count("N/A"), 6)
         calls.clear()
