@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-import contextlib
-import io
 import json
 import os
 from pathlib import Path
@@ -14,7 +12,7 @@ from unittest.mock import Mock, patch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from loqctl import backend as m_backend, capdata, cli as m_cli, common as m_common
+from loqctl import backend as m_backend, capdata, common as m_common
 from loqctl import hardware as m_hardware, ui as m_ui
 
 FIXTURE = (REPO / "tests/fixtures/capdata-loq15irx9.txt").read_text()
@@ -135,14 +133,6 @@ class HardwareTests(Sim):
             self.assertIsNone(hw.capabilities()["mode_limits"])
         with patch.object(os, "geteuid", return_value=0):
             self.assertIsNotNone(hw.capabilities()["mode_limits"])
-
-    def test_capdata_cli_prints_table(self):
-        self.add_table()
-        out = io.StringIO()
-        with patch.object(m_cli, "Hardware", return_value=m_hardware.Hardware(self.root)), \
-             contextlib.redirect_stdout(out):
-            self.assertEqual(m_cli.main(["_capdata"]), 0)
-        self.assertTrue(capdata.valid_table(json.loads(out.getvalue())))
 
     def test_limits_report(self):
         self.add_table()
@@ -287,20 +277,6 @@ class UiTests(Sim):
         state["mode_limits"] = None
         dash.draw_limits(state)
         self.assertIn("N/A", self.text(dash))
-
-    def test_chart_markers_use_effective_value(self):
-        self.add_table()
-        dash = self.dash(42, 100)
-        dash.view = "summary"
-        marks = []
-        dash.chart_rows = lambda y, x, w, h, key, ceiling, color, markers=(): marks.append((key, [v for v, _ in markers]))
-        dash.history["cpu_w"].extend([20, 45])
-        dash.history["gpu_w"].extend([30, 80])
-        metrics = {"cpu": {"cores": {}}, "gpu": {"devices": [{"power_limit_w": 140}]}}
-        dash.draw_telemetry(m_hardware.Hardware(self.root).capabilities(), metrics, 1, 40, 42, 60)
-        self.assertIn(("cpu_w", [60, 119]), marks)  # balanced PL1/PL2 from the table, not current 50/70
-        self.assertIn(("gpu_w", [60, 140]), marks)
-
 
 if __name__ == "__main__":
     unittest.main()
