@@ -287,7 +287,8 @@ class Sensors:
                 os.close(fd)
             if len(raw) != 8:
                 return None
-            return ((int.from_bytes(raw, "little") >> 32) & 0xFFFF) / 8192
+            volts = ((int.from_bytes(raw, "little") >> 32) & 0xFFFF) / 8192
+            return volts if 0.3 <= volts <= 2.0 else None  # implausible: N/A, not a guess
         except OSError:
             return None
 
