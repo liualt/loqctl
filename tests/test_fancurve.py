@@ -234,34 +234,23 @@ class FanCurveTests(unittest.TestCase):
 
 
 class MoveTests(unittest.TestCase):
-    offsets = [RPM.show(p["fan2"]) - RPM.show(p["fan1"]) for p in NECN_STOCK]
-
-    def test_temperature_moves_cpu_and_gpu_within_neighbours(self):
-        points, delta = m_panel.move_temp(NECN_STOCK, 1, 1)
-        self.assertEqual(delta, 1)
-        self.assertEqual({k: points[1][k] for k in ("cpu_up", "cpu_down", "gpu_up", "gpu_down", "ic_up")},
-                         {"cpu_up": 72, "cpu_down": 71, "gpu_up": 72, "gpu_down": 71, "ic_up": 63})
-        points, delta = m_panel.move_temp(NECN_STOCK, 1, 10)  # next point is at 75
-        self.assertEqual((delta, points[1]["cpu_up"]), (4, 75))
-        points, delta = m_panel.move_temp(NECN_STOCK, 4, 1)  # 75 between two 75s cannot move
-        self.assertEqual((delta, points), (0, NECN_STOCK))
-        points, delta = m_panel.move_temp(NECN_STOCK, 9, 50)
-        self.assertEqual(points[9]["cpu_up"], 127)
-        self.assertEqual(m_fan.validate_curve(points, RPM), [])
-
-    def test_speed_moves_both_fans_and_keeps_order(self):
-        points, moved = m_panel.move_speed(NECN_STOCK, 1, 100, RPM, self.offsets)
+    def test_speed_sets_both_fans_and_keeps_order(self):
+        points, moved = m_panel.move_speed(NECN_STOCK, 1, 100, RPM)
         self.assertTrue(moved)
-        self.assertEqual((RPM.show(points[1]["fan1"]), RPM.show(points[1]["fan2"])), (2600, 2900))
-        points, _ = m_panel.move_speed(NECN_STOCK, 1, 5000, RPM, self.offsets)
-        self.assertEqual(RPM.show(points[1]["fan1"]), 3400)  # held below point 3
-        points, moved = m_panel.move_speed(NECN_STOCK, 0, -100, RPM, self.offsets)
+        self.assertEqual((RPM.show(points[1]["fan1"]), RPM.show(points[1]["fan2"])), (2600, 2600))
+        self.assertEqual(points[1]["cpu_up"], NECN_STOCK[1]["cpu_up"])  # temperatures never move
+        points, _ = m_panel.move_speed(NECN_STOCK, 1, 5000, RPM)
+        self.assertEqual((RPM.show(points[1]["fan1"]), RPM.show(points[1]["fan2"])), (3400, 3700))  # each fan held below its own next point
+        points, moved = m_panel.move_speed(NECN_STOCK, 0, -100, RPM)
         self.assertFalse(moved)
-        points, _ = m_panel.move_speed(NECN_STOCK, 9, 5000, RPM, self.offsets)
-        self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (8700, 9000))
-        points, _ = m_panel.move_speed(NECN_STOCK, 9, 50000, RPM, self.offsets)
+        points, _ = m_panel.move_speed(NECN_STOCK, 9, 50000, RPM)
         self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (10000, 10000))
         self.assertEqual(m_fan.validate_curve(points, RPM), [])
+
+    def test_speed_stays_above_the_floor(self):
+        low = edit(NECN_STOCK, {(8, "fan1"): 0, (8, "fan2"): 0})
+        points, _ = m_panel.move_speed(low, 9, -50000, RPM)
+        self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (3000, 3000))
 
 
 class FanCurveSurfaceTests(unittest.TestCase):
@@ -393,12 +382,12 @@ class FanCurveSurfaceTests(unittest.TestCase):
         self.assertEqual(dash.fan_sel, 2)
         self.keys(dash, state, "[", curses.KEY_BTAB, curses.KEY_BTAB)
         self.assertEqual(dash.fan_sel, 2)
-        self.keys(dash, state, "[", curses.KEY_RIGHT, curses.KEY_SRIGHT, curses.KEY_UP)  # point 2
-        self.assertEqual((dash.fan_edit[1]["cpu_up"], dash.fan_edit[1]["gpu_down"]), (66, 41))
+        self.keys(dash, state, "[", curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_UP)  # point 2; temperatures are fixed
+        self.assertEqual((dash.fan_edit[1]["cpu_up"], dash.fan_edit[1]["gpu_down"]), (60, 35))
         self.assertEqual((dash.fan_edit[1]["fan1"], dash.fan_edit[1]["fan2"]), (92, 92))  # 31 % + 5 % = 36 %
         self.keys(dash, state, 10)
         point = m_fan.read_curve(self.hwmon)[1]
-        self.assertEqual((point["cpu_up"], point["fan1"], point["fan2"]), (66, 92, 92))
+        self.assertEqual((point["cpu_up"], point["fan1"], point["fan2"]), (60, 92, 92))
         self.assertIsNone(dash.fan_edit)
         self.assertIn("Applied and verified", dash.notice)
 
@@ -425,11 +414,11 @@ class FanCurveSurfaceTests(unittest.TestCase):
         dash.backend.remote = False
         dash.backend.refresh = lambda: None
         state = {"mode": "custom"}
-        self.keys(dash, state, "f", "]", curses.KEY_RIGHT)
+        self.keys(dash, state, "f", "]", curses.KEY_UP)
         with patch.object(os, "geteuid", return_value=1000), \
                 patch.object(m_ui.Dashboard, "run_sudo_fancurve", return_value=[{"status": "APPLIED"}]) as run:
             self.keys(dash, state, 10)
-        self.assertEqual(run.call_args.args[0][1]["cpu_up"], 61)
+        self.assertEqual(run.call_args.args[0][1]["fan1"], 92)
         with patch.object(m_ui, "sudo_run", side_effect=m_common.SudoExpired("x")):
             with self.assertRaisesRegex(m_common.ControlError, "expired"):
                 dash.sudo_call(["_fancurve", "[]"])

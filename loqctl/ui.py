@@ -648,7 +648,7 @@ class Dashboard(FanPanel):
             "          Enter apply via legionaura",
             "",
             "Fans      f open fan curves (edits need custom mode)   Tab/[ ] select point",
-            "          ←→ temperature   ↑↓ speed (both fans)   Shift+arrow bigger step",
+            "          ↑↓ speed (both fans)   Shift+arrow bigger step",
             "          Enter apply   r discard   p preset   W save curve   Esc back",
             "Global    t sensors view   Space pause telemetry   ? help   q quit",
             "Colors use your terminal ANSI palette only (no custom RGB UI).",

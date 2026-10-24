@@ -2,9 +2,8 @@
 # Copyright (C) 2026 loqctl contributors
 """Fan curve panel for the dashboard (mixed into Dashboard).
 
-One curve drives both fans: the graph plots fan 1 speed against the CPU up temperature of
-each point, and fan 2 keeps the offset from fan 1 that the curve had when it was loaded.
-Moving a point's temperature shifts its CPU and GPU up and down temperatures together.
+Temperatures are fixed and only a point's speed is edited. One speed drives both fans, and
+the graph plots fan 1 speed against the CPU up temperature of each point.
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ import threading
 from .api import http_client
 from .common import ControlError, _lazy, clamp
 from .curvestore import preset_options, save_active, save_named
-from .fancurve import WRITABLE, Scale, merge_curve, validate_curve
+from .fancurve import SPEEDS, WRITABLE, Scale, merge_curve, min_speed, validate_curve
 
 curses = _lazy("curses")
 textwrap = _lazy("textwrap")
@@ -24,51 +23,24 @@ textwrap = _lazy("textwrap")
 UNAVAILABLE = ("Fan curves need the LenovoLegionLinux legion_laptop module "
                "(load it with enable_platformprofile=0 next to lenovo-wmi-gamezone)")
 FAN_ERRORS = (ControlError, OSError, ValueError, http_client.HTTPException)
-MOVED_TEMPS = ("cpu", "gpu")
 
 
-def move_temp(points, i, delta):
-    """Shift point i's CPU and GPU up/down temperatures by delta, as far as the neighbours'
-    up temperatures and 0-127 allow. Returns (points, applied delta)."""
-    point, lo, hi = points[i], -127, 127
-    for sensor in MOVED_TEMPS:
-        up, down = point.get(sensor + "_up"), point.get(sensor + "_down")
-        if up is None:
-            continue
-        before = points[i - 1].get(sensor + "_up") if i else None
-        after = points[i + 1].get(sensor + "_up") if i + 1 < len(points) else None
-        lo = max(lo, (before if before is not None else 0) - up, -(down if down is not None else up))
-        hi = min(hi, (after if after is not None else 127) - up)
-    delta = clamp(delta, lo, hi) if lo <= hi else 0
-    if delta:
-        points = copy.deepcopy(points)
-        for sensor in MOVED_TEMPS:
-            for field in (sensor + "_up", sensor + "_down"):
-                if points[i].get(field) is not None:
-                    points[i][field] += delta
-    return points, delta
-
-
-def move_speed(points, i, delta, scale, offsets):
-    """Change point i's fan 1 speed by delta display units, kept between its neighbours and
-    0..top; fan 2 follows with its offset. Returns (points, changed)."""
-    def bounds(field):
+def move_speed(points, i, delta, scale):
+    """Change point i's speed by delta display units and set fan 1 and fan 2 to it, each kept
+    between its neighbours' speeds, its floor and 0..top. Returns (points, changed)."""
+    fields = [f for f in SPEEDS if points[i].get(f) is not None]
+    if not fields:
+        return points, False
+    speed = scale.show(points[i][fields[0]]) + delta
+    floor = scale.show(min_speed(points, i, scale))
+    new = {}
+    for field in fields:
         before = points[i - 1].get(field) if i else None
         after = points[i + 1].get(field) if i + 1 < len(points) else None
-        return (scale.show(before) if before is not None else 0,
-                scale.show(after) if after is not None else scale.top)
-
-    point = points[i]
-    if point.get("fan1") is None:
-        return points, False
-    lo, hi = bounds("fan1")
-    fan1 = clamp(scale.show(point["fan1"]) + delta, lo, hi)
-    new = {"fan1": scale.pwm(fan1)}
-    if point.get("fan2") is not None:
-        lo2, hi2 = bounds("fan2")
-        offset = offsets[i] if i < len(offsets) else 0
-        new["fan2"] = scale.pwm(clamp(fan1 + offset, max(0, lo2), min(scale.top, hi2)))
-    if all(point.get(f) == v for f, v in new.items()):
+        lo = max(floor, scale.show(before) if before is not None else 0)
+        hi = min(scale.top, scale.show(after) if after is not None else scale.top)
+        new[field] = scale.pwm(clamp(speed, lo, max(lo, hi)))
+    if all(points[i].get(f) == v for f, v in new.items()):
         return points, False
     points = copy.deepcopy(points)
     points[i].update(new)
@@ -80,7 +52,6 @@ class FanPanel:
         self.fan = {"available": False, "reason": "not loaded"}
         self.fan_sel = 0  # selected point
         self.fan_edit = None  # staged curve (full points) or None
-        self.fan_offsets = []  # fan 2 minus fan 1 per point, display units, from the loaded curve
         self.fan_base = None  # firmware curve when the panel first opened this session
         self.fan_preset = -1  # index into fan_opts, -1 = none staged
         self.fan_opts = []  # [(name, points or None)]
@@ -113,9 +84,6 @@ class FanPanel:
             return
         self.fan = data
         points = self.fan_points()
-        scale = self.fan_scale()
-        self.fan_offsets = [scale.show(p["fan2"]) - scale.show(p["fan1"])
-                            if p.get("fan1") is not None and p.get("fan2") is not None else 0 for p in points]
         if self.fan_edit is not None and (len(self.fan_edit) != len(points) or self.fan_edit == points):
             self.fan_edit = None
         if self.fan_base is None and points:
@@ -145,13 +113,10 @@ class FanPanel:
         self.fan_request()
 
     # --- editing ---
-    def fan_move(self, kind, direction, big=False):
+    def fan_move(self, direction, big=False):
         target, i = self.fan_target(), self.fan_sel
         scale = self.fan_scale()
-        if kind == "temp":
-            target, moved = move_temp(target, i, direction * (5 if big else 1))
-        else:
-            target, moved = move_speed(target, i, direction * scale.step(big), scale, self.fan_offsets)
+        target, moved = move_speed(target, i, direction * scale.step(big), scale)
         if not moved:
             self.notice = f"Point {i + 1} is held by its neighbours or the limits."
             return
@@ -245,10 +210,8 @@ class FanPanel:
         if locked and self.fan_edit is not None:
             self.fan_edit = None
             self.notice = f"Staged fan edits dropped: mode changed to {state.get('mode')}."
-        shifted = {curses.KEY_SLEFT: (-1, "temp"), curses.KEY_SRIGHT: (1, "temp"),
-                   curses.KEY_SR: (1, "speed"), curses.KEY_SF: (-1, "speed")}
-        plain = {curses.KEY_LEFT: (-1, "temp"), curses.KEY_RIGHT: (1, "temp"),
-                 curses.KEY_UP: (1, "speed"), curses.KEY_DOWN: (-1, "speed")}
+        shifted = {curses.KEY_SR: 1, curses.KEY_SF: -1}
+        plain = {curses.KEY_UP: 1, curses.KEY_DOWN: -1}
         if ch in (9, ord("]")):
             self.fan_sel = (self.fan_sel + 1) % count
         elif ch in (curses.KEY_BTAB, ord("[")):
@@ -258,8 +221,7 @@ class FanPanel:
         elif locked and (ch in plain or ch in shifted or ch in (10, 13, curses.KEY_ENTER, ord("r"), ord("p"))):
             self.notice = f"Fan curves are locked in {state.get('mode')} mode. Select custom first."
         elif ch in plain or ch in shifted:
-            direction, kind = plain.get(ch) or shifted[ch]
-            self.fan_move(kind, direction, big=ch in shifted)
+            self.fan_move(plain.get(ch) or shifted[ch], big=ch in shifted)
         elif ch == ord("r"):
             self.fan_edit, self.fan_preset = None, -1
             self.notice = "Pending fan edits discarded."
