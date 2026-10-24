@@ -301,24 +301,33 @@ class FirmwareTests(unittest.TestCase):
             dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
             dashboard.draw_controls({**state, "mode_driver": state_driver}, 0, 0, 20, 90)
             self.assertTrue(any("held by legion_wmi" in text and color == 3 for text, color in calls), calls)
-        self.assertIn("not bound to any driver", m_ui.gamezone_note({**state, "gamezone_holder": "no driver"}, [item]))
+        self.assertIn("not bound to any driver", m_ui.limit_note({**state, "gamezone_holder": "no driver"}, {}))
 
-    def test_gamezone_note_keeps_other_read_errors(self):
-        # Only EINVAL comes from the gamezone conflict; a permission error must show as itself.
-        state = self.hw.capabilities()
-        state["gamezone_holder"] = "legion_wmi"
-        for item in state["attributes"].values():
-            item.update(current_value=None, read_error="Permission denied")
+    def test_limit_note_precedence(self):
+        # A non-EINVAL read error shows as itself; otherwise a gamezone holder explains the N/A,
+        # even when the reads succeeded or the attributes are absent.
         dashboard = self.dashboard()
         dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
         dashboard.box = Mock()
-        dashboard.selected = 1
-        calls = []
-        dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
-        dashboard.draw_controls(state, 0, 0, 20, 90)
-        texts = [text for text, _ in calls]
-        self.assertTrue(any("unreadable (Permission denied)" in text for text in texts), texts)
-        self.assertFalse(any("Gamezone" in text for text in texts), texts)
+        cases = (("custom", 0, None, None, "held by legion_wmi"),
+                 ("custom", 1, "Permission denied", errno.EACCES, "unreadable (Permission denied)"),
+                 ("custom", 1, "Invalid argument", errno.EINVAL, "held by legion_wmi"),
+                 ("balanced", 1, None, None, "held by legion_wmi"),
+                 ("balanced", 1, "Permission denied", errno.EACCES, "unreadable (Permission denied)"),
+                 ("balanced", 0, None, None, "held by legion_wmi"))
+        for mode, selected, error, code, expected in cases:
+            self.hw.set_mode(mode)
+            state = {**self.hw.capabilities(), "gamezone_holder": "legion_wmi", "mode_driver": None}
+            for item in state["attributes"].values():
+                item.update(effective_value=None, read_error=error, read_errno=code)
+                if error:
+                    item["current_value"] = None
+            calls = []
+            dashboard.selected = selected
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+            dashboard.draw_controls(state, 0, 0, 20, 90)
+            self.assertTrue(any(expected in text and color == 3 for text, color in calls), (mode, selected, calls))
+        self.assertIn("held by legion_wmi", m_ui.limit_note({"gamezone_holder": "legion_wmi"}, {}))
 
     def test_draw_dims_locked_rows(self):
         self.hw.set_mode("balanced")
