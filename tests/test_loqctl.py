@@ -1121,6 +1121,14 @@ class PortabilityTests(unittest.TestCase):
             with self.assertRaisesRegex(m_common.ControlError, "not found"):
                 kb._run(["off"])
 
+    def test_legionaura_timeout_is_control_error(self):
+        kb = m_keyboard.Keyboard(binary="legionaura", config="/nonexistent/loqctl.json")
+        timeout = subprocess.TimeoutExpired(["legionaura", "off"], 8)
+        with patch.object(shutil, "which", return_value="/opt/bin/legionaura"), \
+                patch.object(subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(m_common.ControlError, "did not answer within 8 s"):
+                kb._run(["off"])
+
 
 class TelemetryTests(unittest.TestCase):
     def setUp(self):
