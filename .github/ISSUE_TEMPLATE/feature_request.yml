@@ -1,0 +1,28 @@
+name: Feature request
+description: Something loqctl should show or do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What loqctl would show or do. Name the panel, command or API route.
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: Data source or driver
+      description: For new readings or controls, the sysfs path, driver or tool it would come from, and which models have it.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways to get the same result, including other tools.

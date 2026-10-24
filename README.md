@@ -329,6 +329,7 @@ python3 loqctl.py status        # or: python3 -m loqctl status
 ```
 
 Tests use a temporary simulated sysfs and never touch real laptop settings.
+To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md): changes start as an issue and land through a pull request.
 
 | Module | Role |
 | --- | --- |

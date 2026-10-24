@@ -1,0 +1,67 @@
+name: Bug report
+description: Something loqctl shows or does wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep the title under 60 characters and name the feature and the symptom, for example
+        "Fan panel shows the old curve after a verified apply". Describe the problem, not the fix.
+        Root access or hardware-damage problems go in a private security advisory instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences on what is wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that shows the bug, including any setup.
+      placeholder: |
+        1. Run `sudo loqctl serve`.
+        2. Select custom mode and open the fan panel (`f`).
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual results
+      description: What loqctl did. Paste errors as text.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected results
+      description: What it should have done.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Laptop model, BIOS version, CPU, distro, kernel, loqctl version, and the legion_laptop module version if fans are involved.
+      placeholder: |
+        Model: LOQ 15IRX9
+        BIOS: NECN44WW
+        CPU: (Model name from lscpu)
+        Distro and kernel: CachyOS, 7.3.0
+        loqctl: 0.4.1
+        legion_laptop: 0.1.3
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: loqctl status output
+      description: Output of `python3 loqctl.py status`.
+      render: json
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Code references (`file:line`), what you already ruled out, and anything that still needs real hardware to confirm.

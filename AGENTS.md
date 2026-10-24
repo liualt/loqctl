@@ -39,7 +39,14 @@ on AMD CPUs and other distros.
 - Never add a passwordless sudoers rule for an editable script path.
 
 ## Workflow
-- Work in stages. One commit per stage, tests passing first, with a clear message and description.
+- Follow `CONTRIBUTING.md`. Every change starts from a GitHub issue and lands through a pull request
+  that closes it. Never commit or push directly to `main`, except small docs or housekeeping
+  changes that touch no code or tests (`loqctl/`, `loqctl.py`, `tests/`).
+- One branch and one PR per issue, named `<type>/<issue>-<slug>` (for example `fix/2-null-curve-point`).
+- Work in stages; a stage is one PR. Tests pass before every commit, with a clear message and
+  description. PRs are squash-merged, so the PR title and description become the commit on `main`.
+- Issue bodies use the bug report sections in `CONTRIBUTING.md` (Mozilla bug writing guidelines).
+  Commit subjects and PR titles use Conventional Commits, and PR bodies follow the PR template.
 - Run tests with `python3 -m unittest discover -s tests -v`.
 - Working notes live in the gitignored `todo` file.
 
