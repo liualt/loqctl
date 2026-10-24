@@ -278,26 +278,20 @@ class FanCurveSurfaceTests(unittest.TestCase):
     def set_mode(self, mode):
         self.hw.set_mode(mode)
 
-    def test_hardware_fancurve_cache_and_gate(self):
+    def test_hardware_fancurve_reads_firmware_and_gate(self):
         data = self.hw.fancurve()
         self.assertTrue(data["available"])
         self.assertEqual((data["unit"], data["max_rpm"], data["rpm"][0], data["rpm"][1]),
                          ("percent", 10000, 2100.0, None))
         self.assertEqual(len(data["points"]), 3)
-        with patch.object(m_hardware, "read_curve", side_effect=AssertionError("read again")):
-            data["points"][0]["fan1"] = 99  # callers get a copy
-            self.assertEqual(self.hw.fancurve()["points"][0]["fan1"], 0)
-        with patch.object(m_hardware, "read_curve", wraps=m_fan.read_curve) as read:
-            self.hw.fancurve(fresh=True)
-            self.set_mode("balanced")  # a mode change may reset the curve
-            self.hw.fancurve()
-            self.assertEqual(read.call_count, 2)
+        (self.hwmon / m_fan.FILE_MAP["fan1"].format(n=1)).write_text("33")  # a resume or another program
+        self.assertEqual(self.hw.fancurve()["points"][0]["fan1"], 33)
+        self.set_mode("balanced")
         with self.assertRaisesRegex(m_common.ControlError, "locked in balanced mode"):
             self.hw.write_fancurve(CURVE)
         self.set_mode("custom")
-        self.hw.fancurve()
         self.hw.write_fancurve(edit(CURVE, {(1, "fan1"): 90}))
-        self.assertEqual(self.hw.fancurve()["points"][1]["fan1"], 90)  # write drops the cache
+        self.assertEqual(self.hw.fancurve()["points"][1]["fan1"], 90)
         self.assertFalse(m_hardware.Hardware(self.root / "nowhere").fancurve()["available"])
 
     def test_internal_cli_prints_results(self):
@@ -376,6 +370,17 @@ class FanCurveSurfaceTests(unittest.TestCase):
         started[0]()
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
         self.assertTrue(dash.fan["available"])
+
+    def test_reopen_shows_outside_curve_change(self):
+        dash = self.dash()
+        self.keys(dash, {"mode": "custom"}, "f")
+        dash.fan_take()
+        self.assertEqual(dash.fan_points()[0]["fan1"], 0)
+        dash.panel = "main"
+        (self.hwmon / m_fan.FILE_MAP["fan1"].format(n=1)).write_text("33")
+        self.keys(dash, {"mode": "custom"}, "f")
+        dash.fan_take()
+        self.assertEqual(dash.fan_points()[0]["fan1"], 33)
 
     def test_locked_notice_in_balanced(self):
         dash = self.dash("balanced")
