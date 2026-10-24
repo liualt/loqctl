@@ -206,9 +206,13 @@ def merge_curve(current, target):
     if not isinstance(target, list) or len(target) != len(current):
         raise ControlError(f"Curve must have {len(current)} points.")
     merged = []
-    for have, want in zip(current, target):
+    for i, (have, want) in enumerate(zip(current, target)):
         if not isinstance(want, dict) or any(k not in POINT_FIELDS for k in want):
             raise ControlError("Each point must be an object of known fan curve fields.")
+        # None marks a missing file, so validate_curve skips it; refuse it for a file that exists
+        for f in WRITABLE:
+            if want.get(f, 0) is None and have.get(f) is not None:
+                raise ControlError(f"Point {i + 1} {LABELS[f]} must be an integer.")
         merged.append({f: (want[f] if f in WRITABLE and f in want and v is not None else v)
                        for f, v in have.items()})
     return merged

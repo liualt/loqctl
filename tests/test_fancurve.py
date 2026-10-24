@@ -178,7 +178,8 @@ class FanCurveTests(unittest.TestCase):
 
     def test_invalid_target_refused_with_no_writes(self):
         with patch.object(m_fan, "_write_file") as write:
-            for target in (edit(CURVE, {(1, "cpu_up"): 30, (1, "fan1"): 90}), CURVE[:2], edit(CURVE, {(0, "bogus"): 1})):
+            for target in (edit(CURVE, {(1, "cpu_up"): 30, (1, "fan1"): 90}), CURVE[:2], edit(CURVE, {(0, "bogus"): 1}),
+                           edit(CURVE, {(0, "cpu_up"): None})):
                 with self.assertRaises(m_common.ControlError):
                     m_fan.write_curve(self.hwmon, target, self.pct)
         write.assert_not_called()
