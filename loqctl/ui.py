@@ -396,7 +396,7 @@ class Dashboard(FanPanel):
         else:
             item = state["attributes"][key]
             step = item["scalar_increment"]
-            step_txt = "any int" if not step else str(step)
+            step_txt = "N/A" if step is None else "any int" if not step else str(step)
             if item.get("current_value") is None:
                 error = item.get("read_error") or "missing"
                 note = gamezone_note(state) or f"{key}: current value unreadable ({error})"
