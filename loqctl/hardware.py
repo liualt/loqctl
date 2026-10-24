@@ -66,21 +66,28 @@ class Hardware:
         except (ValueError, TypeError):
             return None
 
+    def _read_static(self, path, label):
+        static = {"description": read(path / "display_name", label)}
+        for name in ("min_value", "max_value", "default_value", "scalar_increment"):
+            try:
+                static[name] = int((path / name).read_text().strip())
+            except (OSError, ValueError):
+                static[name] = None
+        return static
+
     def _read_item(self, key, mode, table):
         label, unit = FIELDS[key]
         path = self.base / key if self.base else None
         if path is None or not path.is_dir():
             return None
-        item = {"label": label, "unit": unit, "description": read(path / "display_name", label), "read_error": None}
-        for name in ("current_value", "min_value", "max_value", "default_value", "scalar_increment"):
-            try:
-                item[name] = int((path / name).read_text().strip())
-            except OSError as exc:
-                item[name] = None
-                if name == "current_value":
-                    item["read_error"] = exc.strerror
-            except ValueError:
-                item[name] = None
+        static = self._read_static(path, label)
+        item = {"label": label, "unit": unit, **static, "read_error": None}
+        try:
+            item["current_value"] = int((path / "current_value").read_text().strip())
+        except OSError as exc:
+            item["current_value"], item["read_error"] = None, exc.strerror
+        except ValueError:
+            item["current_value"] = None
         item["available"] = all(item[n] is not None for n in
                                 ("current_value", "min_value", "max_value", "scalar_increment"))
         item["effective_value"] = effective_value(mode, key, item["current_value"], table)
