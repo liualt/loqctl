@@ -170,17 +170,23 @@ def prepare_socket_path(path):
     raise ControlError(f"A loqctl server is already running on {path}.")
 
 
-def serve(uid):
-    if os.geteuid() != 0:
-        raise ControlError("Start the server with sudo so it can write firmware settings.")
-    pwd.getpwuid(uid)
-    directory = Path(f"/run/loqctl-{uid}")
+def prepare_socket_dir(directory):
+    """Create the root-owned socket directory, world-traversable whatever the umask."""
     try:
         directory.mkdir(mode=0o711)
     except FileExistsError:
         info = directory.lstat()
         if directory.is_symlink() or not directory.is_dir() or info.st_uid != 0 or info.st_mode & 0o022:
             raise ControlError("Socket directory must be owned by root and not writable by other users.")
+    os.chmod(directory, 0o711)
+
+
+def serve(uid):
+    if os.geteuid() != 0:
+        raise ControlError("Start the server with sudo so it can write firmware settings.")
+    pwd.getpwuid(uid)
+    directory = Path(f"/run/loqctl-{uid}")
+    prepare_socket_dir(directory)
     path = directory / "control.sock"
     prepare_socket_path(path)
     warning = serve_uid_warning(uid, os.environ)

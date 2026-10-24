@@ -544,6 +544,13 @@ class CurveStoreTests(unittest.TestCase):
             self.assertNotIn(str(path.parent), str(caught.exception))
             self.assertIn(bad.name, str(caught.exception))
 
+    def test_fifo_rejected_without_blocking(self):
+        path = m_store.save_active(CURVE)
+        path.unlink()
+        os.mkfifo(path)
+        with self.assertRaises(m_common.ControlError):
+            m_store.read_curve_file(path, os.getuid())
+
 
 class ReapplyTests(unittest.TestCase):
     def setUp(self):

@@ -63,13 +63,15 @@ def read_curve_file(path, uid=None):
     since the server logs them."""
     name = os.path.basename(path)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        # O_NONBLOCK so a FIFO cannot hang the open; cleared below once it is known to be a regular file.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
         raise ControlError(f"Cannot open {name}: {exc.strerror}") from exc
     with os.fdopen(fd) as handle:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE:
             raise ControlError(f"{name} is not a regular curve file.")
+        os.set_blocking(handle.fileno(), True)
         if uid is not None and (info.st_uid != uid or info.st_mode & 0o022):
             raise ControlError(f"{name} must be owned by uid {uid} and not group/world-writable.")
         try:

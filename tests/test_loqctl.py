@@ -315,6 +315,30 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(row[1:], (7, True))
         self.assertTrue(any("locked in balanced mode" in c[0] for c in calls))
 
+    def test_limit_detail_shows_na_for_unreadable_limits(self):
+        self.hw.set_mode("custom")
+        cases = (
+            (("min_value", "max_value", "default_value"), "N/A–N/A", "step 1", "default N/A"),
+            (("max_value",), "5–N/A", "step 1", "default 60"),
+            (("scalar_increment",), "5–100", "step N/A", "default 60"),
+        )
+        for unreadable, *expected in cases:
+            self.add_attr("ppt_pl1_spl", 60, 5, 100, 1, 60)
+            for name in unreadable:
+                (self.attr.parent / "ppt_pl1_spl" / name).write_text("garbage")
+            state = self.hw.capabilities()
+            dashboard = self.dashboard()
+            dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+            calls = []
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+            dashboard.box = Mock()
+            dashboard.selected = dashboard.rows(state).index("ppt_pl1_spl")
+            dashboard.draw_controls(state, 0, 0, 20, 90)
+            detail = next(text for text, _ in calls if "step" in text or "default" in text)
+            for part in expected:
+                self.assertIn(part, detail, unreadable)
+            self.assertNotIn("None", detail, unreadable)
+
     def dashboard(self):
         dashboard = object.__new__(m_ui.Dashboard)
         dashboard.help = False
@@ -863,6 +887,28 @@ class ServerSamplerTests(unittest.TestCase):
         server.listen(1)
         self.assertTrue(m_api.socket_alive(live))
 
+    def test_socket_dir_is_traversable_under_any_umask(self):
+        old = os.umask(0o077)
+        self.addCleanup(os.umask, old)
+        fresh = self.root / "fresh"
+        m_api.prepare_socket_dir(fresh)
+        self.assertEqual(fresh.stat().st_mode & 0o777, 0o711)
+        fresh.chmod(0o700)
+        with patch.object(Path, "lstat", return_value=Mock(st_uid=0, st_mode=0o40700)):
+            m_api.prepare_socket_dir(fresh)
+        self.assertEqual(fresh.stat().st_mode & 0o777, 0o711)
+
+    def test_backend_notice_when_socket_dir_unreachable(self):
+        directory = self.root / "run"
+        directory.mkdir()
+        directory.chmod(0o600)
+        self.addCleanup(directory.chmod, 0o700)
+        with patch.object(m_backend.os, "access", return_value=False):
+            backend = m_backend.Backend(directory / "control.sock")
+        self.assertFalse(backend.remote)
+        self.assertIn("no access to its directory", backend.notice)
+        self.assertEqual(m_backend.Backend(self.root / "none" / "control.sock").notice, "")
+
     def test_backend_ignores_stale_socket(self):
         path = self.stale_socket()
         backend = m_backend.Backend(path)
@@ -1194,7 +1240,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(volts["Battery"], 16.415)
         self.assertEqual(volts["BAT1 in0"], 16.415)
         self.assertIsNone(volts["GPU core"])
-        self.assertIsNone(volts["CPU Vcore"])
+        self.assertIsNone(volts["CPU 0 Vcore"])
         self.assertIn({"group": "gpu", "label": "G", "c": 50}, m["temperatures"])
 
     def test_cpu_vcore_msr(self):
@@ -1206,6 +1252,12 @@ class TelemetryTests(unittest.TestCase):
             msr.parent.mkdir(parents=True)
             msr.write_bytes(bytes(0x198) + (0x2000 << 32).to_bytes(8, "little"))
             self.assertEqual(s.cpu_vcore(), 1.0)
+            for field, volts in ((2458, 2458 / 8192), (0x4000, 2.0)):  # lowest raw value >= 0.3 V, 2.0 V
+                msr.write_bytes(bytes(0x198) + (field << 32).to_bytes(8, "little"))
+                self.assertEqual(s.cpu_vcore(), volts)
+            for field in (0, 0x0800, 0x5000, 0xFFFF):  # 0 V, 0.25 V, 2.5 V, 8 V
+                msr.write_bytes(bytes(0x198) + (field << 32).to_bytes(8, "little"))
+                self.assertIsNone(s.cpu_vcore())
             self.put("proc/cpuinfo", "vendor_id : AuthenticAMD\n")
             self.assertIsNone(s.cpu_vcore())
         self.put("proc/cpuinfo", "vendor_id : GenuineIntel\n")
@@ -1275,10 +1327,10 @@ class TelemetryTests(unittest.TestCase):
         dash.draw_sensors({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
                            "power": {"rapl": {"psys": None}, "battery_w": None, "battery_status": None,
                                      "usbc": []},
-                           "voltages": [{"label": "CPU Vcore", "v": None}],
+                           "voltages": [{"label": "CPU 0 Vcore", "v": None}],
                            "throttle": {"cpu": {"core_events": None}, "gpu": None}}, 1, 0, 30, 60)
         text = "\n".join(t for _, _, t in calls)
-        for needle in ("Temperatures", "Core 0", "psys", "CPU Vcore", "Throttle"):
+        for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle"):
             self.assertIn(needle, text)
         self.assertGreaterEqual(text.count("N/A"), 6)
         calls.clear()

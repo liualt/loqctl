@@ -287,7 +287,8 @@ class Sensors:
                 os.close(fd)
             if len(raw) != 8:
                 return None
-            return ((int.from_bytes(raw, "little") >> 32) & 0xFFFF) / 8192
+            volts = ((int.from_bytes(raw, "little") >> 32) & 0xFFFF) / 8192
+            return volts if 0.3 <= volts <= 2.0 else None  # implausible: N/A, not a guess
         except OSError:
             return None
 
@@ -359,7 +360,7 @@ class Sensors:
                 num = p.name[2:].split("_")[0]
                 label = read(p.with_name(f"in{num}_label")) or f"in{num}"
                 voltages.append({"label": f"{name} {label}", "v": value})
-        voltages.append({"label": "CPU Vcore", "v": self.cpu_vcore()})
+        voltages.append({"label": "CPU 0 Vcore", "v": self.cpu_vcore()})
         return {"battery_w": battery_w, "battery_status": battery_status, "usbc": usbc,
                 "temperatures": temperatures, "voltages": voltages, "cpu_throttle": self.cpu_throttle()}
 
