@@ -1616,6 +1616,8 @@ class CompatibilityTests(unittest.TestCase):
                     names = {node.module} | {f"{node.module}.{alias.name}" for alias in node.names}
                 elif isinstance(node, ast.Name):
                     names = {node.id}
+                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                    names = {f"{node.value.id}.{node.attr}"}
                 else:
                     continue
                 self.assertFalse(names & banned, f"{path.name} uses 3.11+ {names & banned}")
