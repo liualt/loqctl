@@ -207,7 +207,11 @@ class FanPanel:
             self.notice = f"Saved curve {name} is invalid and cannot be staged."
             return
         current = self.fan_points()
-        merged = merge_curve(current, points)
+        try:
+            merged = merge_curve(current, points)
+        except ControlError as exc:
+            self.notice = f"Preset {name} cannot be staged: {exc}"
+            return
         self.fan_edit = None if merged == current else merged
         changes = sum(p.get(f) != c.get(f) for p, c in zip(merged, current) for f in WRITABLE)
         self.notice = f"Preset {name} staged ({changes} changes). Press Enter to apply."

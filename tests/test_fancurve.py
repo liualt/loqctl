@@ -670,6 +670,15 @@ class FanPanelPresetTests(FanCurveSurfaceTests):
             dash.draw_fans(state, {}, 1, 0, 25, 100)
             self.assertTrue(any(t == "zz (invalid)" for t in dash.puts))
 
+    def test_preset_with_null_point_sets_notice(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f")
+        with patch.object(m_panel, "preset_options", return_value=[("bad", edit(CURVE, {(0, "cpu_up"): None}))]):
+            self.keys(dash, state, "p")
+        self.assertIsNone(dash.fan_edit)
+        self.assertIn("Preset bad cannot be staged: Point 1", dash.notice)
+
     def test_locked_mode_blocks_presets(self):
         dash = self.dash("balanced")
         self.keys(dash, {"mode": "balanced"}, "f", "p")
