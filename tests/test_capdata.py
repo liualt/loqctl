@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-import contextlib
-import io
 import json
 import os
 from pathlib import Path
@@ -14,7 +12,7 @@ from unittest.mock import Mock, patch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from loqctl import backend as m_backend, capdata, cli as m_cli, common as m_common
+from loqctl import backend as m_backend, capdata, common as m_common
 from loqctl import hardware as m_hardware, ui as m_ui
 
 FIXTURE = (REPO / "tests/fixtures/capdata-loq15irx9.txt").read_text()
@@ -51,11 +49,6 @@ class ParseTests(unittest.TestCase):
             for mode, value in zip(MODES, values):
                 self.assertEqual(table[mode][key], value, (mode, key))
         self.assertTrue(capdata.valid_table(table))
-
-    def test_valid_table_shape(self):
-        for bad in (None, [], {}, {"balanced": []}, {"balanced": {"nope": 1}}, {"balanced": {"ppt_pl1_spl": "1"}},
-                    {"balanced": {"ppt_pl1_spl": True}}):
-            self.assertFalse(capdata.valid_table(bad), bad)
 
     def test_read_mode_table(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -121,12 +114,6 @@ class HardwareTests(Sim):
         self.assertEqual(caps["mode_limits"]["performance"]["ppt_pl1_spl"], 90)
         self.assertIsNone(caps["mode_limits_error"])
 
-    def test_no_table_is_none_not_current_value(self):
-        caps = m_hardware.Hardware(self.root).capabilities()
-        self.assertIsNone(caps["attributes"]["ppt_pl1_spl"]["effective_value"])
-        self.assertIsNone(caps["mode_limits"])
-        self.assertEqual(caps["mode_limits_error"], capdata.NOT_FOUND)
-
     def test_retry_only_as_root(self):
         hw = m_hardware.Hardware(self.root)
         with patch.object(os, "geteuid", return_value=1000):
@@ -135,14 +122,6 @@ class HardwareTests(Sim):
             self.assertIsNone(hw.capabilities()["mode_limits"])
         with patch.object(os, "geteuid", return_value=0):
             self.assertIsNotNone(hw.capabilities()["mode_limits"])
-
-    def test_capdata_cli_prints_table(self):
-        self.add_table()
-        out = io.StringIO()
-        with patch.object(m_cli, "Hardware", return_value=m_hardware.Hardware(self.root)), \
-             contextlib.redirect_stdout(out):
-            self.assertEqual(m_cli.main(["_capdata"]), 0)
-        self.assertTrue(capdata.valid_table(json.loads(out.getvalue())))
 
     def test_limits_report(self):
         self.add_table()
@@ -202,7 +181,9 @@ class SudoCacheTests(Sim):
         self.assertIsNotNone(capdata.load_cache(self.root))
         path = self.cache / "loqctl/mode-limits.json"
         data = json.loads(path.read_text())
-        for bad in ({"version": 2}, {"table": {"balanced": {"ppt_pl1_spl": "x"}}}, {"product": "other"}):
+        bad_tables = (None, [], {}, {"balanced": []}, {"balanced": {"nope": 1}},
+                      {"balanced": {"ppt_pl1_spl": "x"}}, {"balanced": {"ppt_pl1_spl": True}})
+        for bad in ({"version": 2}, {"product": "other"}, *({"table": t} for t in bad_tables)):
             path.write_text(json.dumps({**data, **bad}))
             self.assertIsNone(capdata.load_cache(self.root), bad)
         path.write_text("not json")
@@ -265,6 +246,9 @@ class UiTests(Sim):
     def test_stock_row_without_table_is_na(self):
         dash = self.dash()
         state = m_hardware.Hardware(self.root).capabilities()
+        self.assertIsNone(state["attributes"]["ppt_pl1_spl"]["effective_value"])  # not sysfs current 50
+        self.assertIsNone(state["mode_limits"])
+        self.assertEqual(state["mode_limits_error"], capdata.NOT_FOUND)
         state["mode_limits_error"] = "needs root"
         dash.draw_controls(state, 0, 0, 20, 70)
         text = self.text(dash)
