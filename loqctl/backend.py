@@ -20,6 +20,8 @@ class Backend:
         self.remote = socket_alive(self.path)
         if not self.remote and os.path.lexists(self.path):
             self.notice = f"Ignored stale API socket {self.path}; using local access."
+        elif not self.remote and os.path.isdir(directory := os.path.dirname(self.path)) and not os.access(directory, os.X_OK):
+            self.notice = f"Cannot reach {self.path}: no access to its directory; using local access."
         self.hardware = Hardware()
         self.sampler = None
         self.latest = {}

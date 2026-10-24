@@ -874,6 +874,17 @@ class ServerSamplerTests(unittest.TestCase):
             m_api.prepare_socket_dir(fresh)
         self.assertEqual(fresh.stat().st_mode & 0o777, 0o711)
 
+    def test_backend_notice_when_socket_dir_unreachable(self):
+        directory = self.root / "run"
+        directory.mkdir()
+        directory.chmod(0o600)
+        self.addCleanup(directory.chmod, 0o700)
+        with patch.object(m_backend.os, "access", return_value=False):
+            backend = m_backend.Backend(directory / "control.sock")
+        self.assertFalse(backend.remote)
+        self.assertIn("no access to its directory", backend.notice)
+        self.assertEqual(m_backend.Backend(self.root / "none" / "control.sock").notice, "")
+
     def test_backend_ignores_stale_socket(self):
         path = self.stale_socket()
         backend = m_backend.Backend(path)
