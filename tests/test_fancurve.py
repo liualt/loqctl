@@ -184,6 +184,16 @@ class FanCurveTests(unittest.TestCase):
                     m_fan.write_curve(self.hwmon, target, self.pct)
         write.assert_not_called()
 
+    def test_null_ignored_for_missing_or_unreadable_file(self):
+        (self.hwmon / "pwm3_auto_point2_temp").unlink()
+        (self.hwmon / "pwm1_auto_point1_temp").write_text("junk\n")
+        with patch.object(m_fan, "_write_file") as write:
+            target = edit(CURVE, {(1, "ic_up"): None, (0, "cpu_up"): None})
+            self.assertEqual(m_fan.write_curve(self.hwmon, target, self.pct), [])
+            with self.assertRaisesRegex(m_common.ControlError, "Cannot read point 1"):
+                m_fan.write_curve(self.hwmon, edit(CURVE, {(0, "cpu_up"): 50}), self.pct)
+        write.assert_not_called()
+
     def test_symlink_and_foreign_path_rejected(self):
         outside = self.root / "outside"
         outside.write_text("1")
