@@ -1482,6 +1482,22 @@ class KbCliTests(unittest.TestCase):
         self.assertIsNone(args)
         self.assertEqual(result["zones"], ["ffffff"] * 4)
 
+    def test_output_reports_settings_sent_not_config_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps({"effect": "breath", "zones": ["00ff00"] * 4}))
+
+            class KB(m_keyboard.Keyboard):
+                def __init__(self):
+                    super().__init__(binary="legionaura", config=config)
+
+                def _run(self, args):
+                    return "OK"
+            with patch.object(m_keyboard, "Keyboard", KB), patch.object(shutil, "which", return_value=None):
+                result = m_keyboard.kb_cli(["static", "ff0000"])
+        self.assertEqual(result["effect"], "static")
+        self.assertEqual(result["zones"], ["ff0000"] * 4)
+
     def test_bad_arguments_never_run(self):
         for argv in (("static",), ("static", "--brightness", "1"), ("breath", "zzzzzz"),
                      ("wave", "up"), ("hue", "fast"), ("brightness",), ("bogus",)):
