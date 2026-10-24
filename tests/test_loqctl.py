@@ -1619,12 +1619,19 @@ class AnsiColorTests(unittest.TestCase):
 class CompatibilityTests(unittest.TestCase):
     def test_sources_parse_as_python_310(self):
         import ast
-        banned = ("tomllib", "ExceptionGroup", "typing.Self", "datetime.UTC", "itertools.batched")
+        banned = {"tomllib", "ExceptionGroup", "itertools.batched", "typing.Self", "datetime.UTC"}
         for path in [REPO / "loqctl.py", *sorted((REPO / "loqctl").glob("*.py"))]:
-            source = path.read_text()
-            ast.parse(source, str(path), feature_version=(3, 10))
-            for name in banned:
-                self.assertNotIn(name, source, f"{path.name} uses 3.11+ {name}")
+            tree = ast.parse(path.read_text(), str(path), feature_version=(3, 10))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = {alias.name for alias in node.names}
+                elif isinstance(node, ast.ImportFrom):
+                    names = {node.module} | {f"{node.module}.{alias.name}" for alias in node.names}
+                elif isinstance(node, ast.Name):
+                    names = {node.id}
+                else:
+                    continue
+                self.assertFalse(names & banned, f"{path.name} uses 3.11+ {names & banned}")
 
 
 if __name__ == "__main__":
