@@ -7,6 +7,22 @@ firmware power/thermal limits and fan curves that cause them, with safe, verifie
 It is not a process monitor; btop already does that. Meant to be installed by other people, including
 on AMD CPUs and other distros.
 
+## Hard rules (protect the hardware and the license)
+- Never write `fanN_target` (it can latch the EC in manual mode until a full power cycle).
+- loqctl makes no raw EC, /dev/port, /dev/mem or ACPI-call writes itself; fan curves go through
+  the `legion_laptop` hwmon files.
+- Never run firmware writes in tests; use simulated sysfs and mocked subprocesses.
+- Never reuse GPL-2.0-only code (incompatible with GPL-3.0).
+
+## Preferences (break one only when the benefit clearly outweighs the cost; say why in the commit)
+- Standard library only; Linux only; Python 3.10+. License GPL-3.0-or-later; credit reused code in
+  the file header and NOTICE.
+- Firmware writes stay on explicit allowlists, bounds-checked and read-back verified.
+- Limits editable only in `custom` mode; other modes shown read-only.
+- Missing readings show as N/A, not a guessed or zero value. UI colors use the ANSI palette.
+- Avoid passwordless sudoers rules for an editable script path.
+- Redundant tests may be deleted to keep the suite lean; list each cut and why.
+
 ## Constraints
 - Python standard library only. No third-party dependencies.
 - Linux only. Minimum Python 3.10.
@@ -18,7 +34,6 @@ on AMD CPUs and other distros.
   Fan curves go through the LenovoLegionLinux `legion_laptop` kernel module's hwmon files.
 - Limits are only editable in `custom` mode. Other modes are firmware-managed and shown read-only.
 - Never write `fanN_target` (it can latch the EC in manual mode until a full power cycle).
-- Readings the system does not expose show as N/A, never as a guessed or zero value.
 - UI colors use the terminal's ANSI palette only.
 - Never run firmware writes in tests; use simulated sysfs and mocked subprocesses.
 - Never add a passwordless sudoers rule for an editable script path.
@@ -27,3 +42,7 @@ on AMD CPUs and other distros.
 - Work in stages. One commit per stage, tests passing first, with a clear message and description.
 - Run tests with `python3 -m unittest discover -s tests -v`.
 - Working notes live in the gitignored `todo` file.
+
+## Code review
+- For any code review (including `/code-review` and `/review`), read `REVIEW.md` at the repo root
+  before reviewing, and follow it for severity, checks, exclusions and output.
