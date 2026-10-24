@@ -520,16 +520,20 @@ class FirmwareTests(unittest.TestCase):
         dashboard.s = Mock()
         return dashboard
 
-    def test_sudo_error_is_preserved_for_report(self):
-        dashboard = self.local_dashboard()
-        dashboard.pending = {"ppt_pl1_spl": 60}
-        result = subprocess.CompletedProcess([], 1, "", "sudo: authentication failed")
-        with patch.object(os, "geteuid", return_value=1000), \
-             patch.object(subprocess, "run", return_value=result):
-            with self.assertRaisesRegex(m_common.ControlError, "authentication failed"):
-                dashboard.apply(self.hw.capabilities())
-        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
-        self.assertFalse(dashboard.sudo_expired)
+    def test_sudo_failure_keeps_edits_and_flags_expiry(self):
+        cases = (("sudo: authentication failed", "authentication failed", False),
+                 ("sudo: a password is required", "Press s", True))
+        for stderr, message, expired in cases:
+            with self.subTest(stderr=stderr):
+                dashboard = self.local_dashboard()
+                dashboard.pending = {"ppt_pl1_spl": 60}
+                result = subprocess.CompletedProcess([], 1, "", stderr)
+                with patch.object(os, "geteuid", return_value=1000), \
+                     patch.object(subprocess, "run", return_value=result):
+                    with self.assertRaisesRegex(m_common.ControlError, message):
+                        dashboard.apply(self.hw.capabilities())
+                self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+                self.assertEqual(dashboard.sudo_expired, expired)
 
     def sudo_results(self, *statuses):
         keys = ["ppt_pl1_spl", "cpu_temp"]
@@ -562,17 +566,6 @@ class FirmwareTests(unittest.TestCase):
             with self.assertRaisesRegex(m_common.ControlError, "after 1 writes"):
                 dashboard.apply(self.hw.capabilities())
         self.assertEqual(dashboard.pending, {"cpu_temp": 90})
-
-    def test_sudo_expiry_sets_banner_and_keeps_edits(self):
-        dashboard = self.local_dashboard()
-        dashboard.pending = {"ppt_pl1_spl": 60}
-        out = subprocess.CompletedProcess([], 1, "", "sudo: a password is required")
-        with patch.object(os, "geteuid", return_value=1000), \
-             patch.object(subprocess, "run", return_value=out):
-            with self.assertRaisesRegex(m_common.ControlError, "Press s"):
-                dashboard.apply(self.hw.capabilities())
-        self.assertTrue(dashboard.sudo_expired)
-        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
 
     def test_s_key_reauthenticates(self):
         state = self.hw.capabilities()
