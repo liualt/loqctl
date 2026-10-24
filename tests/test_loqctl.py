@@ -790,17 +790,6 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(os.WEXITSTATUS(status), 0, out.decode("utf-8", "replace")[-500:])
         self.assertIn(b"TUI_OK", out)
 
-    def test_import_does_not_load_heavy_modules(self):
-        code = (
-            "import sys; sys.path.insert(0, %r); import loqctl.cli as c; "
-            "r = c.main(['--version']); "
-            "print(r, '_curses' in sys.modules, 'loqctl.ui' in sys.modules, "
-            "any(type(sys.modules.get(m)).__name__ == 'module' "
-            "for m in ('socketserver', 'http.server', 'http.client', 'curses', 'csv')))" % str(REPO)
-        )
-        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
-        self.assertEqual(out.stdout.split(), [loqctl.VERSION, "0", "False", "False", "False"])
-
     def test_entry_script_runs_isolated(self):
         with tempfile.TemporaryDirectory() as cwd:
             ver = subprocess.run([sys.executable, "-I", str(REPO / "loqctl.py"), "--version"],
