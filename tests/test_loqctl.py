@@ -863,6 +863,28 @@ class ServerSamplerTests(unittest.TestCase):
         server.listen(1)
         self.assertTrue(m_api.socket_alive(live))
 
+    def test_socket_dir_is_traversable_under_any_umask(self):
+        old = os.umask(0o077)
+        self.addCleanup(os.umask, old)
+        fresh = self.root / "fresh"
+        m_api.prepare_socket_dir(fresh)
+        self.assertEqual(fresh.stat().st_mode & 0o777, 0o711)
+        fresh.chmod(0o700)
+        with patch.object(Path, "lstat", return_value=Mock(st_uid=0, st_mode=0o40700)):
+            m_api.prepare_socket_dir(fresh)
+        self.assertEqual(fresh.stat().st_mode & 0o777, 0o711)
+
+    def test_backend_notice_when_socket_dir_unreachable(self):
+        directory = self.root / "run"
+        directory.mkdir()
+        directory.chmod(0o600)
+        self.addCleanup(directory.chmod, 0o700)
+        with patch.object(m_backend.os, "access", return_value=False):
+            backend = m_backend.Backend(directory / "control.sock")
+        self.assertFalse(backend.remote)
+        self.assertIn("no access to its directory", backend.notice)
+        self.assertEqual(m_backend.Backend(self.root / "none" / "control.sock").notice, "")
+
     def test_backend_ignores_stale_socket(self):
         path = self.stale_socket()
         backend = m_backend.Backend(path)
