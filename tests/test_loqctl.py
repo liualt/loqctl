@@ -290,8 +290,8 @@ class FirmwareTests(unittest.TestCase):
         with patch.object(Path, "read_text", einval):
             state = self.hw.capabilities()
         item = state["attributes"]["ppt_pl1_spl"]
-        self.assertEqual((state["gamezone_holder"], item["current_value"], item["read_error"]),
-                         ("legion_wmi", None, "Invalid argument"))
+        self.assertEqual((state["gamezone_holder"], item["current_value"], item["read_errno"]),
+                         ("legion_wmi", None, errno.EINVAL))
         dashboard = self.dashboard()
         dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
         dashboard.box = Mock()
