@@ -82,7 +82,6 @@ class Keyboard:
         self.zones = cleaned
 
     def status(self):
-        self.load()
         return {
             "available": self.available,
             "binary": shutil.which(self.binary) or self.binary,
