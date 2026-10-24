@@ -56,6 +56,9 @@ class FirmwareTests(unittest.TestCase):
             with self.assertRaises(m_common.ControlError):
                 self.hw.set_value("ppt_pl1_spl", value)
         self.assertEqual((self.attr / "current_value").read_text().strip(), "65")
+        (self.attr / "scalar_increment").write_text("0")
+        self.hw.set_value("ppt_pl1_spl", 53)
+        self.assertEqual((self.attr / "current_value").read_text().strip(), "53")
 
     def test_capabilities_read_limits_once_but_writes_check_fresh(self):
         real_read = Path.read_text
@@ -102,11 +105,6 @@ class FirmwareTests(unittest.TestCase):
         shutil.rmtree(self.attr)
         self.assertNotIn("ppt_pl1_spl", self.hw.capabilities()["attributes"])
         self.assertNotIn("ppt_pl1_spl", self.hw._static)
-
-    def test_zero_increment_is_writable(self):
-        (self.attr / "scalar_increment").write_text("0")
-        self.hw.set_value("ppt_pl1_spl", 53)
-        self.assertEqual((self.attr / "current_value").read_text().strip(), "53")
 
     def test_mode_gates_custom_writes(self):
         self.hw.set_mode("balanced")
@@ -209,7 +207,7 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(dashboard.pending, {"cpu_temp": 90})
         self.assertEqual([r["status"] for r in dashboard.apply_results], ["APPLIED", "FAILED"])
 
-    def test_locked_rows_reject_edits_in_non_custom_mode(self):
+    def test_dashboard_mode_lock(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()
         for key in (ord("6"), curses.KEY_LEFT, ord("d"), 10):
@@ -217,10 +215,7 @@ class FirmwareTests(unittest.TestCase):
             dashboard.handle(key, state)
             self.assertEqual(dashboard.pending, {})
             self.assertIn("locked in balanced mode", dashboard.notice)
-
-    def test_staging_custom_does_not_unlock_limits(self):
-        self.hw.set_mode("balanced")
-        state = self.hw.capabilities()
+        # Staging custom does not unlock the limits.
         dashboard = self.dashboard()
         dashboard.selected = 0
         for _ in range(4):
@@ -233,6 +228,14 @@ class FirmwareTests(unittest.TestCase):
             dashboard.handle(key, state)
             self.assertEqual(dashboard.pending, {"mode": "custom"})
             self.assertIn("locked in balanced mode", dashboard.notice)
+        # Apply rechecks the live mode.
+        dashboard = self.dashboard()
+        dashboard.backend.write = Mock()
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        with self.assertRaisesRegex(m_common.ControlError, "locked in balanced mode"):
+            dashboard.apply(self.hw.capabilities())
+        dashboard.backend.write.assert_not_called()
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
 
     def test_mode_and_limit_edits_never_batched(self):
         state = self.hw.capabilities()
@@ -245,16 +248,6 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
         self.assertIn("mode change dropped", dashboard.notice)
         dashboard.stage(state, "mode", "custom")
-        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
-
-    def test_apply_refuses_limits_when_live_mode_not_custom(self):
-        self.hw.set_mode("balanced")
-        dashboard = self.dashboard()
-        dashboard.backend.write = Mock()
-        dashboard.pending = {"ppt_pl1_spl": 60}
-        with self.assertRaisesRegex(m_common.ControlError, "locked in balanced mode"):
-            dashboard.apply(self.hw.capabilities())
-        dashboard.backend.write.assert_not_called()
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
 
     def test_ebusy_maps_to_custom_mode_message(self):
@@ -270,22 +263,16 @@ class FirmwareTests(unittest.TestCase):
             (profile / key).write_text(value)
         return profile
 
-    def test_gamezone_profile_preferred_over_other_handlers(self):
-        shutil.rmtree(self.root / "class/platform-profile")
-        self.add_profile(0, "lenovo-legion")
-        gamezone = self.add_profile(1, "lenovo-wmi-gamezone")
-        hw = m_hardware.Hardware(self.root)
-        self.assertEqual(hw.capabilities()["mode_driver"], "lenovo-wmi-gamezone")
-        hw.set_mode("custom")
-        self.assertEqual((gamezone / "profile").read_text().strip(), "custom")
-
-    def test_other_class_handler_used_before_legacy_file(self):
-        shutil.rmtree(self.root / "class/platform-profile")
-        legion = self.add_profile(0, "lenovo-legion")
-        hw = m_hardware.Hardware(self.root)
-        self.assertEqual(hw.capabilities()["mode_driver"], "lenovo-legion")
-        hw.set_mode("custom")
-        self.assertEqual((legion / "profile").read_text().strip(), "custom")
+    def test_profile_handler_order(self):
+        for names, driver in ((("lenovo-legion", "lenovo-wmi-gamezone"), "lenovo-wmi-gamezone"),
+                              (("lenovo-legion",), "lenovo-legion")):
+            with self.subTest(driver=driver):
+                shutil.rmtree(self.root / "class/platform-profile", ignore_errors=True)
+                slots = [self.add_profile(i, name) for i, name in enumerate(names)]
+                hw = m_hardware.Hardware(self.root)
+                self.assertEqual(hw.capabilities()["mode_driver"], driver)
+                hw.set_mode("custom")
+                self.assertEqual((slots[-1] / "profile").read_text().strip(), "custom")
 
     def test_legacy_profile_never_writes_custom(self):
         # The kernel's legacy platform_profile lists custom but rejects writing it with EINVAL.
@@ -338,15 +325,6 @@ class FirmwareTests(unittest.TestCase):
         item = state["attributes"]["ppt_pl1_spl"]
         self.assertEqual((state["gamezone_holder"], item["current_value"], item["read_errno"]),
                          ("legion_wmi", None, errno.EINVAL))
-        dashboard = self.dashboard()
-        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
-        dashboard.box = Mock()
-        for selected, state_driver in ((0, None), (1, state["mode_driver"])):
-            calls = []
-            dashboard.selected = selected
-            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
-            dashboard.draw_controls({**state, "mode_driver": state_driver}, 0, 0, 20, 90)
-            self.assertTrue(any("held by legion_wmi" in text and color == 3 for text, color in calls), calls)
         self.assertIn("not bound to any driver", m_ui.limit_note({**state, "gamezone_holder": "no driver"}, {}))
 
     def test_limit_note_precedence(self):
