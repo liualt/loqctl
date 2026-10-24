@@ -14,7 +14,8 @@ import threading
 
 from .api import http_client
 from .common import ControlError, _lazy, clamp
-from .curvestore import clear_active, curve_options, read_stock, save_active, save_named, save_stock
+from .curvestore import (clear_active, curve_options, mark_written, read_stock, save_active, save_named,
+                         save_stock)
 from .fancurve import SPEEDS, WRITABLE, Scale, merge_curve, min_speed, validate_curve
 
 curses = _lazy("curses")
@@ -85,11 +86,6 @@ class FanPanel:
         points = self.fan_points()
         if self.fan_edit is not None and (len(self.fan_edit) != len(points) or self.fan_edit == points):
             self.fan_edit = None
-        if points and os.geteuid() != 0:
-            try:
-                save_stock(data.get("mode"), points)
-            except OSError:
-                pass
         self.fan_sel = clamp(self.fan_sel, 0, max(0, len(points) - 1))
         self.fan_refresh_options()
         if self.panel == "fans":
@@ -154,11 +150,12 @@ class FanPanel:
             self.notice = errors[0][2]
             return
         points = [{f: p[f] for f in WRITABLE if p.get(f) is not None} for p in self.fan_edit]
-        if os.geteuid() != 0 and read_stock(state.get("mode")) is None:
-            self.fan_request(fresh=True, wait=True)  # record the stock curve before the first write
+        recorded = self.fan_record_stock(state.get("mode"))
         done = self.fan_write(points)
         self.fan_edit = None
         self.notice = f"Applied and verified {done} fan curve change(s)."
+        if recorded is False:
+            self.notice += " The stock curve was not recorded."
         if os.geteuid() == 0:
             self.notice += " Not saved as active.json while running as root."
             return
@@ -167,18 +164,42 @@ class FanPanel:
         except OSError as exc:
             self.notice += f" Could not save active.json: {exc.strerror}"
 
+    def fan_record_stock(self, mode):
+        """Before loqctl's first write in `mode`, record the live curve as stock from a fresh read.
+        Returns False when that failed, else True. Marks the mode as written either way."""
+        if os.geteuid() == 0:
+            return True
+        try:
+            data = self.backend.fancurve(True)
+            ok = bool(data.get("available") and data.get("points") and data.get("mode") == mode)
+            if ok:
+                save_stock(mode, data["points"])
+            mark_written(mode)
+            return ok or read_stock(mode) is not None
+        except (*FAN_ERRORS, KeyError):
+            try:
+                mark_written(mode)
+            except OSError:
+                pass
+            return False
+
     def fan_reset(self, state):
         """Write the recorded stock curve of the current mode and stop re-applying a custom one."""
         mode = state.get("mode")
         stock = read_stock(mode)
         self.fan_edit = self.fan_preset = None
-        if stock is None:
+        try:
+            mark_written(mode)
+            if stock is None:
+                clear_active()
+                self.notice = (f"The stock curve for {mode} mode was never recorded, so nothing was written. "
+                               "The firmware restores it on the next mode change or power cycle.")
+                return
+            done = self.fan_write([{f: p[f] for f in WRITABLE if p.get(f) is not None} for p in stock])
             clear_active()
-            self.notice = (f"The stock curve for {mode} mode was never recorded, so nothing was written. "
-                           "The firmware restores it on the next mode change or power cycle.")
+        except OSError as exc:
+            self.notice = f"Reset failed: {exc.strerror or exc}"
             return
-        done = self.fan_write([{f: p[f] for f in WRITABLE if p.get(f) is not None} for p in stock])
-        clear_active()
         self.notice = f"Reset to the stock curve: applied and verified {done} fan curve change(s)."
 
     def fan_refresh_options(self):

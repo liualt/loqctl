@@ -71,10 +71,23 @@ def read_stock(mode):
         return None
 
 
+def marker_path(mode):
+    return stock_path(mode).with_suffix(".written")
+
+
+def mark_written(mode):
+    """Note that loqctl has written a curve in `mode`, so the live curve is no longer known stock."""
+    if mode:
+        path = marker_path(mode)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.touch(mode=0o600)
+
+
 def save_stock(mode, points):
-    """Record `points` as the stock curve of `mode` unless one exists or active.json says the
-    curve may already be custom. Returns True when it wrote."""
-    if not mode or stock_path(mode).exists() or (config_dir() / "active.json").exists():
+    """Record `points` as the stock curve of `mode` unless one exists, loqctl already wrote in
+    that mode, or active.json exists. Returns True when it wrote."""
+    if (not mode or stock_path(mode).exists() or marker_path(mode).exists()
+            or (config_dir() / "active.json").exists()):
         return False
     write_atomic(stock_path(mode), points)
     return True
@@ -132,7 +145,9 @@ def curve_options(mode, current, scale=None):
     """[(name, points or None)]: the stock curve of `mode` when recorded, then the saved curves."""
     stock = read_stock(mode)
     first = [] if stock is None else [(STOCK, None if check_curve(current, stock, scale) else stock)]
-    return first + saved_curves(current, scale)
+    # a hand-placed curves/stock.json must not share the built-in entry's name
+    saved = [(f"{name} (saved)" if name == STOCK else name, points) for name, points in saved_curves(current, scale)]
+    return first + saved
 
 
 class Reapplier:

@@ -485,6 +485,10 @@ class CurveStoreTests(unittest.TestCase):
         self.assertFalse(m_store.save_stock("balanced", CURVE))  # the live curve may be custom
         self.assertIsNone(m_store.read_stock("balanced"))
         self.assertFalse(m_store.save_stock(None, CURVE))
+        m_store.clear_active()
+        m_store.mark_written("balanced")
+        self.assertFalse(m_store.save_stock("balanced", CURVE))  # loqctl already wrote in this mode
+        m_store.save_active(CURVE)
         self.assertEqual(m_store.stock_path("../x y").parent, self.config / "loqctl/stock")
         m_store.clear_active()
         m_store.clear_active()  # already gone
@@ -516,6 +520,8 @@ class CurveStoreTests(unittest.TestCase):
         m_store.save_stock("custom", CURVE)
         self.assertEqual([n for n, _ in m_store.curve_options("custom", current)][:2], ["stock", "a-bad"])
         self.assertEqual([n for n, _ in m_store.curve_options("balanced", current)][:1], ["a-bad"])
+        m_store.write_atomic(self.config / "loqctl/curves/stock.json", CURVE)
+        self.assertEqual([n for n, _ in m_store.curve_options("custom", current)].count("stock"), 1)
 
     def test_untrusted_files_rejected(self):
         path = m_store.save_active(CURVE)
@@ -626,13 +632,15 @@ class FanPanelPresetTests(FanCurveSurfaceTests):
         state = {"mode": "custom"}
         self.keys(dash, state, "f")
         dash.fan_take()
-        self.assertEqual(m_store.read_stock("custom")[2]["fan1"], 180)  # recorded on the first read
+        self.assertIsNone(m_store.read_stock("custom"))  # reading never records it
         self.keys(dash, state, "]", "]", curses.KEY_SF)
         self.assertEqual(dash.fan_edit[2]["fan1"], 153)  # held at the 60 % last-point floor
         self.keys(dash, state, 10)
         self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 153)
         self.assertEqual(m_store.read_curve_file(self.config / "loqctl/active.json")[2]["fan1"], 153)
-        self.assertEqual(m_store.read_stock("custom")[2]["fan1"], 180)  # the apply did not overwrite it
+        self.assertEqual(m_store.read_stock("custom")[2]["fan1"], 180)  # recorded just before the first write
+        self.keys(dash, state, curses.KEY_UP, 10)
+        self.assertEqual(m_store.read_stock("custom")[2]["fan1"], 180)  # later applies do not overwrite it
         self.keys(dash, state, "W")
         self.assertTrue(dash.notice.startswith("Saved "))
         self.assertEqual(len(list((self.config / "loqctl/curves").glob("saved-*.json"))), 1)
@@ -666,12 +674,38 @@ class FanPanelPresetTests(FanCurveSurfaceTests):
         state = {"mode": "custom"}
         self.keys(dash, state, "f", "]", "]", curses.KEY_SF, 10)
         (self.config / "loqctl/stock/custom.json").unlink()
+        (self.config / "loqctl/stock/custom.written").unlink()
         with patch.object(self.hw, "write_fancurve") as write:
             self.keys(dash, state, "R")
         write.assert_not_called()
         self.assertFalse((self.config / "loqctl/active.json").exists())
         self.assertIn("never recorded", dash.notice)
         self.assertNotIn("Reset to", dash.notice)
+        self.keys(dash, state, "f")
+        dash.fan_take()
+        self.assertIsNone(m_store.read_stock("custom"))  # the custom curve is never taken for stock
+        self.assertTrue((self.config / "loqctl/stock/custom.written").exists())
+
+    def test_apply_with_failed_pre_write_read_still_applies(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF)
+        real = self.hw.fancurve
+        dash.backend.fancurve = Mock(return_value={"available": False, "reason": "gone"})
+        self.keys(dash, state, 10)
+        dash.backend.fancurve = real
+        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 153)
+        self.assertIn("stock curve was not recorded", dash.notice)
+        self.assertIsNone(m_store.read_stock("custom"))
+        self.assertTrue((self.config / "loqctl/stock/custom.written").exists())
+
+    def test_reset_reports_file_errors(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF, 10)
+        with patch.object(m_panel, "clear_active", side_effect=PermissionError(13, "Permission denied")):
+            self.keys(dash, state, "R")
+        self.assertIn("Reset failed: Permission denied", dash.notice)
 
     def test_locked_mode_blocks_presets(self):
         dash = self.dash("balanced")
