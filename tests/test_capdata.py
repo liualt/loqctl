@@ -272,5 +272,19 @@ class UiTests(Sim):
         dash.draw_limits(state)
         self.assertIn("N/A", self.text(dash))
 
+    def test_chart_markers_use_effective_value(self):
+        self.add_table()
+        dash = self.dash(42, 100)
+        dash.view = "summary"
+        marks = []
+        dash.chart_rows = lambda y, x, w, h, key, ceiling, color, markers=(): marks.append((key, [v for v, _ in markers]))
+        dash.history["cpu_w"].extend([20, 45])
+        dash.history["gpu_w"].extend([30, 80])
+        metrics = {"cpu": {"cores": {}}, "gpu": {"devices": [{"power_limit_w": 140}]}}
+        dash.draw_telemetry(m_hardware.Hardware(self.root).capabilities(), metrics, 1, 40, 42, 60)
+        self.assertIn(("cpu_w", [60, 119]), marks)  # balanced PL1/PL2 from the table, not current 50/70
+        self.assertIn(("gpu_w", [60, 140]), marks)
+
+
 if __name__ == "__main__":
     unittest.main()
