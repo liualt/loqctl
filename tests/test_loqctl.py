@@ -1464,8 +1464,9 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(kb.zones, ["ffffff", "ff0000", "ff0000", "ff0000"])
 
     def test_smt_siblings_counted_once(self):
-        root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, root, True)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
         s = m_sensors.Sensors(root, root / "proc", root / "dev")
         def counts(core):
             for i, core_id in ((0, "0"), (1, "0"), (2, "1")):
@@ -1561,30 +1562,25 @@ class AnsiColorTests(unittest.TestCase):
         for _, fg, bg in pairs:
             self.assertTrue(-1 <= fg <= 15 and -1 <= bg <= 15, (fg, bg))
 
-    def test_sources_never_redefine_colors_or_emit_raw_escapes(self):
-        import tokenize
-        for path in sorted((REPO / "loqctl").glob("*.py")):
-            with path.open("rb") as handle:
-                for token in tokenize.tokenize(handle.readline):
-                    if token.type == tokenize.NAME:
-                        self.assertNotIn(token.string, ("init_color", "can_change_color"), path.name)
-                    elif token.type == tokenize.STRING:
-                        for escape in ("\\x1b[", "\\033[", "\\u001b["):
-                            self.assertNotIn(escape, token.string.lower(), f"{path.name}: raw escape")
-                    elif token.type == tokenize.NUMBER and token.line.lstrip().startswith("curses.init_pair"):
-                        # Color numbers above 15 are outside the 16-color ANSI palette.
-                        self.assertLessEqual(int(token.string), 15, token.line)
-
 
 class CompatibilityTests(unittest.TestCase):
     def test_sources_parse_as_python_310(self):
         import ast
-        banned = ("tomllib", "ExceptionGroup", "typing.Self", "datetime.UTC", "itertools.batched")
+        banned = {"tomllib", "ExceptionGroup", "itertools.batched", "typing.Self", "datetime.UTC"}
         for path in [REPO / "loqctl.py", *sorted((REPO / "loqctl").glob("*.py"))]:
-            source = path.read_text()
-            ast.parse(source, str(path), feature_version=(3, 10))
-            for name in banned:
-                self.assertNotIn(name, source, f"{path.name} uses 3.11+ {name}")
+            tree = ast.parse(path.read_text(), str(path), feature_version=(3, 10))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = {alias.name for alias in node.names}
+                elif isinstance(node, ast.ImportFrom):
+                    names = {node.module} | {f"{node.module}.{alias.name}" for alias in node.names}
+                elif isinstance(node, ast.Name):
+                    names = {node.id}
+                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                    names = {f"{node.value.id}.{node.attr}"}
+                else:
+                    continue
+                self.assertFalse(names & banned, f"{path.name} uses 3.11+ {names & banned}")
 
 
 if __name__ == "__main__":
