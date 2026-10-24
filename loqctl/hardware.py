@@ -40,6 +40,8 @@ class Hardware:
             self.mode_driver = None
         self._limits = (None, None)  # (table, reason); static per boot
         self._limits_tried = False
+        self._static = {}  # key -> display name and limits; dropped when the mode changes
+        self._static_mode = None
 
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
@@ -64,22 +66,37 @@ class Hardware:
         except (ValueError, TypeError):
             return None
 
-    def _read_item(self, key, mode, table):
+    def _read_static(self, path, label):
+        """Display name and limits, and whether all five files read cleanly."""
+        description = read(path / "display_name")
+        static = {"description": description or label}
+        for name in ("min_value", "max_value", "default_value", "scalar_increment"):
+            try:
+                static[name] = int((path / name).read_text().strip())
+            except (OSError, ValueError):
+                static[name] = None
+        return static, description is not None and None not in static.values()
+
+    def _read_item(self, key, mode, table, fresh=False):
+        """One attribute; display name and limits are cached once read in full, unless `fresh`."""
         label, unit = FIELDS[key]
         path = self.base / key if self.base else None
         if path is None or not path.is_dir():
+            self._static.pop(key, None)
             return None
-        item = {"label": label, "unit": unit, "description": read(path / "display_name", label), "read_error": None,
-                "read_errno": None}
-        for name in ("current_value", "min_value", "max_value", "default_value", "scalar_increment"):
-            try:
-                item[name] = int((path / name).read_text().strip())
-            except OSError as exc:
-                item[name] = None
-                if name == "current_value":
-                    item["read_error"], item["read_errno"] = exc.strerror, exc.errno
-            except ValueError:
-                item[name] = None
+        static = None if fresh else self._static.get(key)
+        if static is None:
+            static, complete = self._read_static(path, label)
+            if complete:
+                self._static[key] = static
+        item = {"label": label, "unit": unit, **static, "read_error": None, "read_errno": None}
+        try:
+            item["current_value"] = int((path / "current_value").read_text().strip())
+        except OSError as exc:
+            item["current_value"] = None
+            item["read_error"], item["read_errno"] = exc.strerror, exc.errno
+        except ValueError:
+            item["current_value"] = None
         item["available"] = all(item[n] is not None for n in
                                 ("current_value", "min_value", "max_value", "scalar_increment"))
         item["effective_value"] = effective_value(mode, key, item["current_value"], table)
@@ -98,6 +115,8 @@ class Hardware:
         with self.lock:
             attrs = {}
             mode = self.read_mode()
+            if mode != self._static_mode:
+                self._static, self._static_mode = {}, mode
             table, reason = self.mode_limits()
             for key in FIELDS:
                 item = self._read_item(key, mode, table)
@@ -129,12 +148,13 @@ class Hardware:
             if mode == "custom" and self.mode_driver is None:
                 raise ControlError("Custom cannot be selected through the legacy platform_profile file, "
                                    f"and no {GAMEZONE} platform profile was found.")
+            self._static = {}
             actual = self._write(self.profile, mode)
             return {"mode": mode, "previous": previous, "current": actual, "verified": True}
 
     def set_value(self, key, value):
         with self.lock:
-            item = self._read_item(key, None, None) if key in FIELDS else None
+            item = self._read_item(key, None, None, fresh=True) if key in FIELDS else None
             if item is None:
                 raise ControlError("Unknown or unavailable control.")
             if self.read_mode() != "custom":

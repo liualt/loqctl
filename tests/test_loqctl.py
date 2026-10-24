@@ -57,6 +57,52 @@ class FirmwareTests(unittest.TestCase):
                 self.hw.set_value("ppt_pl1_spl", value)
         self.assertEqual((self.attr / "current_value").read_text().strip(), "65")
 
+    def test_capabilities_read_limits_once_but_writes_check_fresh(self):
+        real_read = Path.read_text
+        reads = []
+        (self.attr / "display_name").write_text("Sustained power")
+
+        def counting(path, *args, **kwargs):
+            reads.append(path.name)
+            return real_read(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", counting):
+            self.hw.capabilities()
+            reads.clear()
+            item = self.hw.capabilities()["attributes"]["ppt_pl1_spl"]
+        self.assertNotIn("max_value", reads)
+        self.assertEqual((item["current_value"], item["max_value"]), (50, 100))
+        (self.attr / "max_value").write_text("60")
+        with self.assertRaises(m_common.ControlError):
+            self.hw.set_value("ppt_pl1_spl", 70)
+        self.assertEqual(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["max_value"], 60)
+
+    def test_incomplete_limits_are_read_again(self):
+        (self.attr / "max_value").unlink()
+        (self.attr / "default_value").unlink()
+        self.assertFalse(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["available"])
+        (self.attr / "max_value").write_text("100")
+        self.assertIsNone(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["default_value"])
+        (self.attr / "default_value").write_text("60")
+        (self.attr / "display_name").write_text("Sustained power")
+        item = self.hw.capabilities()["attributes"]["ppt_pl1_spl"]
+        self.assertEqual((item["available"], item["default_value"], item["description"]),
+                         (True, 60, "Sustained power"))
+
+    def test_mode_change_rereads_limits(self):
+        (self.attr / "display_name").write_text("Sustained power")
+        self.hw.capabilities()
+        self.assertIn("ppt_pl1_spl", self.hw._static)
+        (self.attr / "max_value").write_text("80")
+        self.hw.set_mode("balanced")
+        self.assertEqual(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["max_value"], 80)
+        (self.attr / "max_value").write_text("90")
+        (self.root / "class/platform-profile/platform-profile-0/profile").write_text("performance")
+        self.assertEqual(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["max_value"], 90)
+        shutil.rmtree(self.attr)
+        self.assertNotIn("ppt_pl1_spl", self.hw.capabilities()["attributes"])
+        self.assertNotIn("ppt_pl1_spl", self.hw._static)
+
     def test_zero_increment_is_writable(self):
         (self.attr / "scalar_increment").write_text("0")
         self.hw.set_value("ppt_pl1_spl", 53)
