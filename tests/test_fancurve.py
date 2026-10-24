@@ -574,7 +574,8 @@ class ReapplyTests(unittest.TestCase):
         self.assertEqual(self.fan1(), 80)
         self.tick("custom")
         self.assertEqual(self.fan1(), 90)
-        self.assertIn("re-applied", self.log[-1])
+        self.assertIn("re-applied active.json", self.log[-1])
+        self.assertNotIn(str(self.config), self.log[-1])
         (self.hwmon / "pwm1_auto_point2_pwm").write_text("80")
         self.tick("custom")  # no change of mode: no write
         self.assertEqual(self.fan1(), 80)
@@ -608,6 +609,9 @@ class ReapplyTests(unittest.TestCase):
         self.assertEqual(self.fan1(), 80)
         self.assertIn("skipped", self.log[-1])
         path.chmod(0o600)
+        with patch.object(m_store.os.path, "lexists", side_effect=OSError(13, "Permission denied", str(path))):
+            self.reapply.apply("custom mode")
+        self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: PermissionError")
         other = m_store.Reapplier(self.hw, os.getuid() + 1, self.log.append)
         with patch.object(m_store, "config_dir", return_value=path.parent):
             other({"mode": "custom"})
@@ -617,7 +621,7 @@ class ReapplyTests(unittest.TestCase):
         self.tick("balanced")
         self.tick("custom")
         self.assertEqual(self.fan1(), 80)
-        self.assertEqual(len(self.log), 3)
+        self.assertEqual(len(self.log), 4)
         m_store.save_active(CURVE[:2])  # wrong size
         self.tick("balanced")
         self.tick("custom")
