@@ -301,6 +301,7 @@ class FirmwareTests(unittest.TestCase):
             dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
             dashboard.draw_controls({**state, "mode_driver": state_driver}, 0, 0, 20, 90)
             self.assertTrue(any("held by legion_wmi" in text and color == 3 for text, color in calls), calls)
+        self.assertIn("not bound to any driver", m_ui.gamezone_note({**state, "gamezone_holder": "no driver"}, [item]))
 
     def test_gamezone_note_keeps_other_read_errors(self):
         # Only EINVAL comes from the gamezone conflict; a permission error must show as itself.

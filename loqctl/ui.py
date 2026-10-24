@@ -34,7 +34,8 @@ def gamezone_note(state, items):
     holder = state.get("gamezone_holder")
     if not holder or not any(i.get("read_error") == os.strerror(errno.EINVAL) for i in items):
         return None
-    return f"Gamezone WMI device held by {holder}, limits can't be read; see README"
+    where = "not bound to any driver" if holder == "no driver" else f"held by {holder}"
+    return f"Gamezone WMI device {where}, limits can't be read; see README"
 
 class Theme:
     """UI colors from the terminal palette only. Never redefines RGB."""
