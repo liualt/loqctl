@@ -302,6 +302,23 @@ class FirmwareTests(unittest.TestCase):
             dashboard.draw_controls({**state, "mode_driver": state_driver}, 0, 0, 20, 90)
             self.assertTrue(any("held by legion_wmi" in text and color == 3 for text, color in calls), calls)
 
+    def test_gamezone_note_keeps_other_read_errors(self):
+        # Only EINVAL comes from the gamezone conflict; a permission error must show as itself.
+        state = self.hw.capabilities()
+        state["gamezone_holder"] = "legion_wmi"
+        for item in state["attributes"].values():
+            item.update(current_value=None, read_error="Permission denied")
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+        dashboard.box = Mock()
+        dashboard.selected = 1
+        calls = []
+        dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+        dashboard.draw_controls(state, 0, 0, 20, 90)
+        texts = [text for text, _ in calls]
+        self.assertTrue(any("unreadable (Permission denied)" in text for text in texts), texts)
+        self.assertFalse(any("Gamezone" in text for text in texts), texts)
+
     def test_draw_dims_locked_rows(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()
