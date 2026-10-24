@@ -264,7 +264,7 @@ class MoveTests(unittest.TestCase):
         self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (3000, 3000))
 
 
-class FanCurveSurfaceTests(unittest.TestCase):
+class FanPanelFixture:
     dashboard = base.FirmwareTests.dashboard
 
     def setUp(self):
@@ -282,6 +282,32 @@ class FanCurveSurfaceTests(unittest.TestCase):
     def set_mode(self, mode):
         self.hw.set_mode(mode)
 
+    def dash(self, mode="custom"):
+        dash = self.dashboard()
+        dash.notice = ""
+        dash.panel = "main"
+        dash.show_limits = dash.show_results = dash.help = False
+        dash.view = "summary"
+        dash.running = True
+        dash.keyboard = Mock()
+        dash.backend.fancurve = self.hw.fancurve
+        dash.backend.write_fancurve = self.hw.write_fancurve
+        dash.theme = m_ui.Theme(False)
+        dash.s = Mock()
+        dash.s.getmaxyx.return_value = (30, 110)
+        dash.puts = []
+        dash.put = lambda y, x, text, *a, **k: dash.puts.append(str(text))
+        dash.box = Mock()
+        dash.fan_init()
+        self.set_mode(mode)
+        return dash
+
+    def keys(self, dash, state, *keys):
+        for key in keys:
+            dash.handle(ord(key) if isinstance(key, str) else key, state)
+
+
+class FanCurveSurfaceTests(FanPanelFixture, unittest.TestCase):
     def test_hardware_fancurve_reads_firmware_and_gate(self):
         data = self.hw.fancurve()
         self.assertTrue(data["available"])
@@ -338,30 +364,6 @@ class FanCurveSurfaceTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             worker.join()
-
-    def dash(self, mode="custom"):
-        dash = self.dashboard()
-        dash.notice = ""
-        dash.panel = "main"
-        dash.show_limits = dash.show_results = dash.help = False
-        dash.view = "summary"
-        dash.running = True
-        dash.keyboard = Mock()
-        dash.backend.fancurve = self.hw.fancurve
-        dash.backend.write_fancurve = self.hw.write_fancurve
-        dash.theme = m_ui.Theme(False)
-        dash.s = Mock()
-        dash.s.getmaxyx.return_value = (30, 110)
-        dash.puts = []
-        dash.put = lambda y, x, text, *a, **k: dash.puts.append(str(text))
-        dash.box = Mock()
-        dash.fan_init()
-        self.set_mode(mode)
-        return dash
-
-    def keys(self, dash, state, *keys):
-        for key in keys:
-            dash.handle(ord(key) if isinstance(key, str) else key, state)
 
     def test_open_loads_in_background(self):
         dash = self.dash()
@@ -671,7 +673,7 @@ class ReapplyTests(unittest.TestCase):
         self.assertEqual(sampler.latest["mode"], "custom")
 
 
-class FanPanelPresetTests(FanCurveSurfaceTests):
+class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
     def test_stock_cycle_stage_save_and_reset_keys(self):
         dash = self.dash()
         state = {"mode": "custom"}
