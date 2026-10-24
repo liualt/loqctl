@@ -1194,7 +1194,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(volts["Battery"], 16.415)
         self.assertEqual(volts["BAT1 in0"], 16.415)
         self.assertIsNone(volts["GPU core"])
-        self.assertIsNone(volts["CPU Vcore"])
+        self.assertIsNone(volts["CPU 0 Vcore"])
         self.assertIn({"group": "gpu", "label": "G", "c": 50}, m["temperatures"])
 
     def test_cpu_vcore_msr(self):
@@ -1278,10 +1278,10 @@ class TelemetryTests(unittest.TestCase):
         dash.draw_sensors({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
                            "power": {"rapl": {"psys": None}, "battery_w": None, "battery_status": None,
                                      "usbc": []},
-                           "voltages": [{"label": "CPU Vcore", "v": None}],
+                           "voltages": [{"label": "CPU 0 Vcore", "v": None}],
                            "throttle": {"cpu": {"core_events": None}, "gpu": None}}, 1, 0, 30, 60)
         text = "\n".join(t for _, _, t in calls)
-        for needle in ("Temperatures", "Core 0", "psys", "CPU Vcore", "Throttle"):
+        for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle"):
             self.assertIn(needle, text)
         self.assertGreaterEqual(text.count("N/A"), 6)
         calls.clear()

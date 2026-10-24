@@ -360,7 +360,7 @@ class Sensors:
                 num = p.name[2:].split("_")[0]
                 label = read(p.with_name(f"in{num}_label")) or f"in{num}"
                 voltages.append({"label": f"{name} {label}", "v": value})
-        voltages.append({"label": "CPU Vcore", "v": self.cpu_vcore()})
+        voltages.append({"label": "CPU 0 Vcore", "v": self.cpu_vcore()})
         return {"battery_w": battery_w, "battery_status": battery_status, "usbc": usbc,
                 "temperatures": temperatures, "voltages": voltages, "cpu_throttle": self.cpu_throttle()}
 
