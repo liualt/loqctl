@@ -42,7 +42,8 @@ class Hardware:
         self._limits = (None, None)  # (table, reason); static per boot
         self._limits_tried = False
         self._curve = None  # ((hwmon, mode), points, Scale)
-        self._static = {}  # key -> display name and limits; static per boot
+        self._static = {}  # key -> display name and limits; dropped when the mode changes
+        self._static_mode = None
 
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
@@ -68,24 +69,27 @@ class Hardware:
             return None
 
     def _read_static(self, path, label):
-        static = {"description": read(path / "display_name", label)}
+        """Display name and limits, and whether all five files read cleanly."""
+        description = read(path / "display_name")
+        static = {"description": description or label}
         for name in ("min_value", "max_value", "default_value", "scalar_increment"):
             try:
                 static[name] = int((path / name).read_text().strip())
             except (OSError, ValueError):
                 static[name] = None
-        return static
+        return static, description is not None and None not in static.values()
 
     def _read_item(self, key, mode, table, fresh=False):
         """One attribute; display name and limits are cached once read in full, unless `fresh`."""
         label, unit = FIELDS[key]
         path = self.base / key if self.base else None
         if path is None or not path.is_dir():
+            self._static.pop(key, None)
             return None
         static = None if fresh else self._static.get(key)
         if static is None:
-            static = self._read_static(path, label)
-            if all(static[n] is not None for n in ("min_value", "max_value", "scalar_increment")):
+            static, complete = self._read_static(path, label)
+            if complete:
                 self._static[key] = static
         item = {"label": label, "unit": unit, **static, "read_error": None}
         try:
@@ -112,6 +116,8 @@ class Hardware:
         with self.lock:
             attrs = {}
             mode = self.read_mode()
+            if mode != self._static_mode:
+                self._static, self._static_mode = {}, mode
             table, reason = self.mode_limits()
             for key in FIELDS:
                 item = self._read_item(key, mode, table)
@@ -143,6 +149,7 @@ class Hardware:
             if mode == "custom" and self.mode_driver is None:
                 raise ControlError("Custom cannot be selected through the legacy platform_profile file, "
                                    f"and no {GAMEZONE} platform profile was found.")
+            self._static = {}
             actual = self._write(self.profile, mode)
             return {"mode": mode, "previous": previous, "current": actual, "verified": True}
 
