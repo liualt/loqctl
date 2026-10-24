@@ -521,9 +521,12 @@ class CurveStoreTests(unittest.TestCase):
         m_store.write_atomic(self.config / "loqctl/curves/b-good.json", edit(CURVE, {(1, "fan1"): 90}))
         m_store.write_atomic(self.config / "loqctl/curves/a-bad.json", edit(CURVE, {(1, "cpu_up"): 30}))
         (self.config / "loqctl/curves/c-junk.json").write_text("{")
+        null = {"version": 1, "points": m_store.writable_points(CURVE)}
+        null["points"][0]["cpu_up"] = None
+        (self.config / "loqctl/curves/d-null.json").write_text(json.dumps(null))
         saved = m_store.saved_curves(current)
-        self.assertEqual([n for n, _ in saved], ["a-bad", "b-good", "c-junk"])
-        self.assertEqual([p is None for _, p in saved], [True, False, True])
+        self.assertEqual([n for n, _ in saved], ["a-bad", "b-good", "c-junk", "d-null"])
+        self.assertEqual([p is None for _, p in saved], [True, False, True, True])
         names = [n for n, _ in m_store.preset_options(current, current)]
         self.assertEqual(names[:3], ["firmware", "quiet", "cool"])
 
