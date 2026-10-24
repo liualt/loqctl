@@ -57,6 +57,31 @@ class FirmwareTests(unittest.TestCase):
                 self.hw.set_value("ppt_pl1_spl", value)
         self.assertEqual((self.attr / "current_value").read_text().strip(), "65")
 
+    def test_capabilities_read_limits_once_but_writes_check_fresh(self):
+        real_read = Path.read_text
+        reads = []
+
+        def counting(path, *args, **kwargs):
+            reads.append(path.name)
+            return real_read(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", counting):
+            self.hw.capabilities()
+            reads.clear()
+            item = self.hw.capabilities()["attributes"]["ppt_pl1_spl"]
+        self.assertNotIn("max_value", reads)
+        self.assertEqual((item["current_value"], item["max_value"]), (50, 100))
+        (self.attr / "max_value").write_text("60")
+        with self.assertRaises(m_common.ControlError):
+            self.hw.set_value("ppt_pl1_spl", 70)
+        self.assertEqual(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["max_value"], 60)
+
+    def test_incomplete_limits_are_read_again(self):
+        (self.attr / "max_value").unlink()
+        self.assertFalse(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["available"])
+        (self.attr / "max_value").write_text("100")
+        self.assertTrue(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["available"])
+
     def test_zero_increment_is_writable(self):
         (self.attr / "scalar_increment").write_text("0")
         self.hw.set_value("ppt_pl1_spl", 53)

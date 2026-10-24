@@ -42,6 +42,7 @@ class Hardware:
         self._limits = (None, None)  # (table, reason); static per boot
         self._limits_tried = False
         self._curve = None  # ((hwmon, mode), points, Scale)
+        self._static = {}  # key -> display name and limits; static per boot
 
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
@@ -75,12 +76,17 @@ class Hardware:
                 static[name] = None
         return static
 
-    def _read_item(self, key, mode, table):
+    def _read_item(self, key, mode, table, fresh=False):
+        """One attribute; display name and limits are cached once read in full, unless `fresh`."""
         label, unit = FIELDS[key]
         path = self.base / key if self.base else None
         if path is None or not path.is_dir():
             return None
-        static = self._read_static(path, label)
+        static = None if fresh else self._static.get(key)
+        if static is None:
+            static = self._read_static(path, label)
+            if all(static[n] is not None for n in ("min_value", "max_value", "scalar_increment")):
+                self._static[key] = static
         item = {"label": label, "unit": unit, **static, "read_error": None}
         try:
             item["current_value"] = int((path / "current_value").read_text().strip())
@@ -142,7 +148,7 @@ class Hardware:
 
     def set_value(self, key, value):
         with self.lock:
-            item = self._read_item(key, None, None) if key in FIELDS else None
+            item = self._read_item(key, None, None, fresh=True) if key in FIELDS else None
             if item is None:
                 raise ControlError("Unknown or unavailable control.")
             if self.read_mode() != "custom":
