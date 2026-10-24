@@ -3,7 +3,6 @@
 """Firmware sysfs reads and verified writes."""
 from __future__ import annotations
 
-import copy
 import errno
 import os
 from pathlib import Path
@@ -41,7 +40,6 @@ class Hardware:
             self.mode_driver = None
         self._limits = (None, None)  # (table, reason); static per boot
         self._limits_tried = False
-        self._curve = None  # ((hwmon, mode), points, Scale)
 
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
@@ -157,25 +155,21 @@ class Hardware:
                     "current": int(actual), "verified": True}
 
 
-    def fancurve(self, fresh=False):
+    def fancurve(self):
         """Fan curve and RPM from the legion_laptop hwmon, or {"available": False, "reason": ...}.
 
-        A full curve read takes about a second on EC models, so points are cached until the
-        mode changes, a curve is written, or `fresh` is set.
+        Read from firmware on every call and never cached: a resume, another program or the sudo
+        helper may change the curve behind our back. A full read takes about a second on EC models.
         """
         with self.lock:
             hwmon = find_legion_hwmon(self.root)
             if hwmon is None:
                 return {"available": False, "reason": "legion_laptop hwmon not found"}
-            mode = self.read_mode()
-            cached = self._curve
-            if fresh or cached is None or cached[0] != (str(hwmon), mode):
-                cached = self._curve = ((str(hwmon), mode), read_curve(hwmon), curve_scale(hwmon))
-            _, points, scale = cached
+            points, scale = read_curve(hwmon), curve_scale(hwmon)
             if not points:
                 return {"available": False, "reason": "legion_hwmon exposes no fan curve points"}
             return {"available": True, "hwmon": str(hwmon), "unit": scale.unit, "max_rpm": scale.max_rpm,
-                    "points": copy.deepcopy(points), "rpm": [scaled(hwmon / f"fan{n}_input") for n in (1, 2)]}
+                    "points": points, "rpm": [scaled(hwmon / f"fan{n}_input") for n in (1, 2)]}
 
     def write_fancurve(self, points):
         with self.lock:
@@ -185,7 +179,6 @@ class Hardware:
             hwmon = find_legion_hwmon(self.root)
             if hwmon is None:
                 raise ControlError("legion_laptop hwmon not found.")
-            self._curve = None
             return write_curve(hwmon, points, curve_scale(hwmon))
 
 
