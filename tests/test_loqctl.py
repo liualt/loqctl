@@ -56,6 +56,9 @@ class FirmwareTests(unittest.TestCase):
             with self.assertRaises(m_common.ControlError):
                 self.hw.set_value("ppt_pl1_spl", value)
         self.assertEqual((self.attr / "current_value").read_text().strip(), "65")
+        (self.attr / "scalar_increment").write_text("0")
+        self.hw.set_value("ppt_pl1_spl", 53)
+        self.assertEqual((self.attr / "current_value").read_text().strip(), "53")
 
     def test_capabilities_read_limits_once_but_writes_check_fresh(self):
         real_read = Path.read_text
@@ -102,11 +105,6 @@ class FirmwareTests(unittest.TestCase):
         shutil.rmtree(self.attr)
         self.assertNotIn("ppt_pl1_spl", self.hw.capabilities()["attributes"])
         self.assertNotIn("ppt_pl1_spl", self.hw._static)
-
-    def test_zero_increment_is_writable(self):
-        (self.attr / "scalar_increment").write_text("0")
-        self.hw.set_value("ppt_pl1_spl", 53)
-        self.assertEqual((self.attr / "current_value").read_text().strip(), "53")
 
     def test_mode_gates_custom_writes(self):
         self.hw.set_mode("balanced")
@@ -209,7 +207,7 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(dashboard.pending, {"cpu_temp": 90})
         self.assertEqual([r["status"] for r in dashboard.apply_results], ["APPLIED", "FAILED"])
 
-    def test_locked_rows_reject_edits_in_non_custom_mode(self):
+    def test_dashboard_mode_lock(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()
         for key in (ord("6"), curses.KEY_LEFT, ord("d"), 10):
@@ -217,10 +215,7 @@ class FirmwareTests(unittest.TestCase):
             dashboard.handle(key, state)
             self.assertEqual(dashboard.pending, {})
             self.assertIn("locked in balanced mode", dashboard.notice)
-
-    def test_staging_custom_does_not_unlock_limits(self):
-        self.hw.set_mode("balanced")
-        state = self.hw.capabilities()
+        # Staging custom does not unlock the limits.
         dashboard = self.dashboard()
         dashboard.selected = 0
         for _ in range(4):
@@ -233,6 +228,14 @@ class FirmwareTests(unittest.TestCase):
             dashboard.handle(key, state)
             self.assertEqual(dashboard.pending, {"mode": "custom"})
             self.assertIn("locked in balanced mode", dashboard.notice)
+        # Apply rechecks the live mode.
+        dashboard = self.dashboard()
+        dashboard.backend.write = Mock()
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        with self.assertRaisesRegex(m_common.ControlError, "locked in balanced mode"):
+            dashboard.apply(self.hw.capabilities())
+        dashboard.backend.write.assert_not_called()
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
 
     def test_mode_and_limit_edits_never_batched(self):
         state = self.hw.capabilities()
@@ -245,16 +248,6 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
         self.assertIn("mode change dropped", dashboard.notice)
         dashboard.stage(state, "mode", "custom")
-        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
-
-    def test_apply_refuses_limits_when_live_mode_not_custom(self):
-        self.hw.set_mode("balanced")
-        dashboard = self.dashboard()
-        dashboard.backend.write = Mock()
-        dashboard.pending = {"ppt_pl1_spl": 60}
-        with self.assertRaisesRegex(m_common.ControlError, "locked in balanced mode"):
-            dashboard.apply(self.hw.capabilities())
-        dashboard.backend.write.assert_not_called()
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
 
     def test_ebusy_maps_to_custom_mode_message(self):
