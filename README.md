@@ -11,7 +11,7 @@ A btop-style hardware monitor and control tool for Lenovo LOQ (and Legion) lapto
 | OS | Linux only (uses `/sys`, `/proc`, `SO_PEERCRED`, `curses`) |
 | Python | 3.10+ (standard library only, no `pip install` needed; see `requirements.txt`) |
 | Kernel | Lenovo WMI drivers `lenovo-wmi-gamezone` and `lenovo-wmi-other`. You need `/sys/class/firmware-attributes/lenovo-wmi-other*/` to exist. Linux 6.17 or newer is required for these drivers; check your own kernel with the command below. |
-| Privileges | `sudo` for writing firmware settings. Reading works without it, except CPU power (RAPL) on kernels that make it root-only and CPU Vcore (always root). |
+| Privileges | `sudo` for writing firmware settings. Reading works without it, except CPU power (RAPL) on kernels that make it root-only and CPU 0 Vcore (always root). |
 | Terminal | At least 72×20 (96×24 recommended), UTF-8 locale |
 | Optional | `libnvidia-ml` (NVML) or `nvidia-smi` on `PATH` for GPU data; `legionaura` on `PATH` for keyboard RGB; the LenovoLegionLinux `legion_laptop` kernel module for fan curves |
 
@@ -195,7 +195,7 @@ Every source appears only when the system exposes it; anything else shows `N/A` 
 
 - Power: all RAPL domains (package, core, uncore, psys, dram), battery watts and status, USB-C source watts/volts/amps. PL1/PL2 and cTGP are drawn as markers on the CPU and GPU power charts.
 - Temperatures: CPU cores (coretemp, k10temp, zenpower), ACPI, NVMe, RAM (spd5118, jc42), Wi-Fi, GPU (NVML or amdgpu) and the EC when the `legion_laptop` module provides it.
-- Voltages: battery and hwmon `in*` inputs. CPU Vcore needs root (run `loqctl serve` as root) on Intel with the `msr` module loaded; it is N/A on AMD. GPU voltage is not available from NVML.
+- Voltages: battery and hwmon `in*` inputs. CPU 0 Vcore (read from CPU 0 only; N/A outside 0.3 to 2.0 V) needs root (run `loqctl serve` as root) on Intel with the `msr` module loaded; it is N/A on AMD. GPU voltage is not available from NVML.
 - Throttling: Intel thermal-throttle event counts and NVML clocks-event reasons.
 
 ### Keyboard CLI

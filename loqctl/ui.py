@@ -396,7 +396,7 @@ class Dashboard(FanPanel):
         else:
             item = state["attributes"][key]
             step = item["scalar_increment"]
-            step_txt = "any int" if not step else str(step)
+            step_txt = "N/A" if step is None else "any int" if not step else str(step)
             if item.get("current_value") is None:
                 error = item.get("read_error") or "missing"
                 note = gamezone_note(state) or f"{key}: current value unreadable ({error})"
@@ -404,7 +404,7 @@ class Dashboard(FanPanel):
             else:
                 self.put(detail_y + 1, x + 2, key, self.theme.ACCENT)
             self.put(detail_y + 2, x + 2,
-                     f"{item['min_value']}–{item['max_value']} {item['unit']}  ·  step {step_txt}  ·  default {item['default_value']}"
+                     f"{fmt(item['min_value'])}–{fmt(item['max_value'])} {item['unit']}  ·  step {step_txt}  ·  default {fmt(item['default_value'])}"
                      [: width - 4], self.theme.TEXT, dim=True)
 
     def draw_telemetry(self, state, metrics, y, x, height, width):
