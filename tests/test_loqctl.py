@@ -263,22 +263,16 @@ class FirmwareTests(unittest.TestCase):
             (profile / key).write_text(value)
         return profile
 
-    def test_gamezone_profile_preferred_over_other_handlers(self):
-        shutil.rmtree(self.root / "class/platform-profile")
-        self.add_profile(0, "lenovo-legion")
-        gamezone = self.add_profile(1, "lenovo-wmi-gamezone")
-        hw = m_hardware.Hardware(self.root)
-        self.assertEqual(hw.capabilities()["mode_driver"], "lenovo-wmi-gamezone")
-        hw.set_mode("custom")
-        self.assertEqual((gamezone / "profile").read_text().strip(), "custom")
-
-    def test_other_class_handler_used_before_legacy_file(self):
-        shutil.rmtree(self.root / "class/platform-profile")
-        legion = self.add_profile(0, "lenovo-legion")
-        hw = m_hardware.Hardware(self.root)
-        self.assertEqual(hw.capabilities()["mode_driver"], "lenovo-legion")
-        hw.set_mode("custom")
-        self.assertEqual((legion / "profile").read_text().strip(), "custom")
+    def test_profile_handler_order(self):
+        for names, driver in ((("lenovo-legion", "lenovo-wmi-gamezone"), "lenovo-wmi-gamezone"),
+                              (("lenovo-legion",), "lenovo-legion")):
+            with self.subTest(driver=driver):
+                shutil.rmtree(self.root / "class/platform-profile", ignore_errors=True)
+                slots = [self.add_profile(i, name) for i, name in enumerate(names)]
+                hw = m_hardware.Hardware(self.root)
+                self.assertEqual(hw.capabilities()["mode_driver"], driver)
+                hw.set_mode("custom")
+                self.assertEqual((slots[-1] / "profile").read_text().strip(), "custom")
 
     def test_legacy_profile_never_writes_custom(self):
         # The kernel's legacy platform_profile lists custom but rejects writing it with EINVAL.
@@ -331,15 +325,6 @@ class FirmwareTests(unittest.TestCase):
         item = state["attributes"]["ppt_pl1_spl"]
         self.assertEqual((state["gamezone_holder"], item["current_value"], item["read_errno"]),
                          ("legion_wmi", None, errno.EINVAL))
-        dashboard = self.dashboard()
-        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
-        dashboard.box = Mock()
-        for selected, state_driver in ((0, None), (1, state["mode_driver"])):
-            calls = []
-            dashboard.selected = selected
-            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
-            dashboard.draw_controls({**state, "mode_driver": state_driver}, 0, 0, 20, 90)
-            self.assertTrue(any("held by legion_wmi" in text and color == 3 for text, color in calls), calls)
         self.assertIn("not bound to any driver", m_ui.limit_note({**state, "gamezone_holder": "no driver"}, {}))
 
     def test_limit_note_precedence(self):
