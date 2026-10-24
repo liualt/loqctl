@@ -14,7 +14,7 @@ import threading
 
 from .api import http_client
 from .common import ControlError, _lazy, clamp
-from .curvestore import preset_options, save_active, save_named
+from .curvestore import clear_active, curve_options, read_stock, save_active, save_named, save_stock
 from .fancurve import SPEEDS, WRITABLE, Scale, merge_curve, min_speed, validate_curve
 
 curses = _lazy("curses")
@@ -52,8 +52,7 @@ class FanPanel:
         self.fan = {"available": False, "reason": "not loaded"}
         self.fan_sel = 0  # selected point
         self.fan_edit = None  # staged curve (full points) or None
-        self.fan_base = None  # firmware curve when the panel first opened this session
-        self.fan_preset = -1  # index into fan_opts, -1 = none staged
+        self.fan_preset = None  # name of the staged option in fan_opts, None = none staged
         self.fan_opts = []  # [(name, points or None)]
         self.fan_loading = False
         self.fan_result = None  # set by the loader thread, taken by the UI thread
@@ -86,8 +85,11 @@ class FanPanel:
         points = self.fan_points()
         if self.fan_edit is not None and (len(self.fan_edit) != len(points) or self.fan_edit == points):
             self.fan_edit = None
-        if self.fan_base is None and points:
-            self.fan_base = copy.deepcopy(points)
+        if points and os.geteuid() != 0:
+            try:
+                save_stock(data.get("mode"), points)
+            except OSError:
+                pass
         self.fan_sel = clamp(self.fan_sel, 0, max(0, len(points) - 1))
         self.fan_refresh_options()
         if self.panel == "fans":
@@ -121,8 +123,24 @@ class FanPanel:
             self.notice = f"Point {i + 1} is held by its neighbours or the limits."
             return
         self.fan_edit = None if target == self.fan_points() else target
-        self.fan_preset = -1
+        self.fan_preset = None
         self.notice = "Edit staged. Press Enter to apply."
+
+    def fan_write(self, points):
+        """Write `points` as the right user and refresh; returns the number of verified writes."""
+        try:
+            if self.backend.remote or os.geteuid() == 0:
+                results = self.backend.write_fancurve(points)
+            else:
+                results = self.run_sudo_fancurve(points)
+        finally:
+            self.backend.refresh()
+            self.fan_request(fresh=True, wait=True)
+        failed = next((r for r in results if r["status"] != "APPLIED"), None)
+        done = sum(r["status"] == "APPLIED" for r in results)
+        if failed:
+            raise ControlError(f"Fan curve apply stopped after {done} writes: {failed.get('error') or failed['status']}")
+        return done
 
     def fan_apply(self, state):
         if self.fan_locked(state):
@@ -136,18 +154,9 @@ class FanPanel:
             self.notice = errors[0][2]
             return
         points = [{f: p[f] for f in WRITABLE if p.get(f) is not None} for p in self.fan_edit]
-        try:
-            if self.backend.remote or os.geteuid() == 0:
-                results = self.backend.write_fancurve(points)
-            else:
-                results = self.run_sudo_fancurve(points)
-        finally:
-            self.backend.refresh()
-            self.fan_request(fresh=True, wait=True)
-        failed = next((r for r in results if r["status"] != "APPLIED"), None)
-        done = sum(r["status"] == "APPLIED" for r in results)
-        if failed:
-            raise ControlError(f"Fan curve apply stopped after {done} writes: {failed.get('error') or failed['status']}")
+        if os.geteuid() != 0 and read_stock(state.get("mode")) is None:
+            self.fan_request(fresh=True, wait=True)  # record the stock curve before the first write
+        done = self.fan_write(points)
         self.fan_edit = None
         self.notice = f"Applied and verified {done} fan curve change(s)."
         if os.geteuid() == 0:
@@ -158,24 +167,41 @@ class FanPanel:
         except OSError as exc:
             self.notice += f" Could not save active.json: {exc.strerror}"
 
+    def fan_reset(self, state):
+        """Write the recorded stock curve of the current mode and stop re-applying a custom one."""
+        mode = state.get("mode")
+        stock = read_stock(mode)
+        self.fan_edit = self.fan_preset = None
+        if stock is None:
+            clear_active()
+            self.notice = (f"The stock curve for {mode} mode was never recorded, so nothing was written. "
+                           "The firmware restores it on the next mode change or power cycle.")
+            return
+        done = self.fan_write([{f: p[f] for f in WRITABLE if p.get(f) is not None} for p in stock])
+        clear_active()
+        self.notice = f"Reset to the stock curve: applied and verified {done} fan curve change(s)."
+
     def fan_refresh_options(self):
         if self.fan.get("available"):
-            self.fan_opts = preset_options(self.fan_base or self.fan_points(), self.fan_points(), self.fan_scale())
+            self.fan_opts = curve_options(self.fan.get("mode"), self.fan_points(), self.fan_scale())
 
     def fan_stage_preset(self):
         self.fan_refresh_options()
         if not self.fan_opts:
+            self.notice = "No stock or saved curves yet."
             return
-        self.fan_preset = (self.fan_preset + 1) % len(self.fan_opts)
-        name, points = self.fan_opts[self.fan_preset]
+        names = [name for name, _ in self.fan_opts]
+        at = names.index(self.fan_preset) if self.fan_preset in names else -1
+        self.fan_preset = names[(at + 1) % len(names)]
+        name, points = self.fan_opts[(at + 1) % len(names)]
         if points is None:
-            self.notice = f"Saved curve {name} is invalid and cannot be staged."
+            self.notice = f"Curve {name} is invalid and cannot be staged."
             return
         current = self.fan_points()
         merged = merge_curve(current, points)
         self.fan_edit = None if merged == current else merged
         changes = sum(p.get(f) != c.get(f) for p, c in zip(merged, current) for f in WRITABLE)
-        self.notice = f"Preset {name} staged ({changes} changes). Press Enter to apply."
+        self.notice = f"Curve {name} staged ({changes} changes). Press Enter to apply."
 
     def fan_save(self):
         if os.geteuid() == 0:
@@ -208,7 +234,7 @@ class FanPanel:
             return
         locked = self.fan_locked(state)
         if locked and self.fan_edit is not None:
-            self.fan_edit = None
+            self.fan_edit = self.fan_preset = None
             self.notice = f"Staged fan edits dropped: mode changed to {state.get('mode')}."
         shifted = {curses.KEY_SR: 1, curses.KEY_SF: -1}
         plain = {curses.KEY_UP: 1, curses.KEY_DOWN: -1}
@@ -218,13 +244,15 @@ class FanPanel:
             self.fan_sel = (self.fan_sel - 1) % count
         elif ch == ord("W"):
             self.fan_save()
-        elif locked and (ch in plain or ch in shifted or ch in (10, 13, curses.KEY_ENTER, ord("r"), ord("p"))):
+        elif locked and (ch in plain or ch in shifted or ch in (10, 13, curses.KEY_ENTER, ord("r"), ord("R"), ord("p"))):
             self.notice = f"Fan curves are locked in {state.get('mode')} mode. Select custom first."
         elif ch in plain or ch in shifted:
             self.fan_move(plain.get(ch) or shifted[ch], big=ch in shifted)
         elif ch == ord("r"):
-            self.fan_edit, self.fan_preset = None, -1
+            self.fan_edit = self.fan_preset = None
             self.notice = "Pending fan edits discarded."
+        elif ch == ord("R"):
+            self.fan_reset(state)
         elif ch == ord("p"):
             self.fan_stage_preset()
         elif ch in (10, 13, curses.KEY_ENTER):
@@ -369,14 +397,14 @@ class FanPanel:
         if self.fan_edit is not None and errors:
             lines.append((errors[0][2], self.theme.BAD))
         cx = x
-        self.put(y, cx, "Presets", self.theme.TEXT, dim=True)
+        self.put(y, cx, "Curves", self.theme.TEXT, dim=True)
         cx += 9
-        for k, (name, points) in enumerate(self.fan_opts):
+        for name, points in self.fan_opts:
             label = f"{name} (invalid)" if points is None else name
             if cx + len(label) >= x + w:
                 break
-            color = self.theme.BAD if points is None else self.theme.WARN if k == self.fan_preset else self.theme.TEXT
-            self.put(y, cx, label, color, bold=k == self.fan_preset, dim=color == self.theme.TEXT)
+            color = self.theme.BAD if points is None else self.theme.WARN if name == self.fan_preset else self.theme.TEXT
+            self.put(y, cx, label, color, bold=name == self.fan_preset, dim=color == self.theme.TEXT)
             cx += len(label) + 2
         for k, (text, color) in enumerate(lines[-2:]):
             self.put(y + 1 + k, x, text[:w], color)

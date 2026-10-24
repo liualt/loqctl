@@ -173,7 +173,7 @@ class Hardware:
             _, points, scale = cached
             if not points:
                 return {"available": False, "reason": "legion_hwmon exposes no fan curve points"}
-            return {"available": True, "hwmon": str(hwmon), "unit": scale.unit, "max_rpm": scale.max_rpm,
+            return {"available": True, "mode": mode, "hwmon": str(hwmon), "unit": scale.unit, "max_rpm": scale.max_rpm,
                     "points": copy.deepcopy(points), "rpm": [scaled(hwmon / f"fan{n}_input") for n in (1, 2)]}
 
     def write_fancurve(self, points):

@@ -1,21 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 loqctl contributors
-"""Saved fan curves, presets and the root-side re-apply of the last applied curve."""
+"""Saved fan curves, the recorded stock curve per mode and the root-side re-apply of the last applied curve."""
 from __future__ import annotations
 
-import copy
 import json
 import os
 from pathlib import Path
 import pwd
+import re
 import stat
 import time
 
 from .common import ControlError
-from .fancurve import SPEEDS, WRITABLE, Scale, merge_curve, min_speed, validate_curve
+from .fancurve import WRITABLE, merge_curve, validate_curve
 
 MAX_FILE = 65536
-PRESETS = (("firmware", 1.0), ("quiet", 0.8), ("cool", 1.2))
+STOCK = "stock"
 
 
 def config_dir(uid=None):
@@ -51,6 +51,33 @@ def write_atomic(path, points):
 
 def save_active(points):
     return write_atomic(config_dir() / "active.json", points)
+
+
+def clear_active():
+    (config_dir() / "active.json").unlink(missing_ok=True)
+
+
+def stock_path(mode):
+    return config_dir() / "stock" / (re.sub(r"[^a-z0-9-]", "_", mode) + ".json")
+
+
+def read_stock(mode):
+    """The curve recorded as stock for `mode`, or None when none was recorded or it is unreadable."""
+    if not mode:
+        return None
+    try:
+        return read_curve_file(stock_path(mode))
+    except ControlError:
+        return None
+
+
+def save_stock(mode, points):
+    """Record `points` as the stock curve of `mode` unless one exists or active.json says the
+    curve may already be custom. Returns True when it wrote."""
+    if not mode or stock_path(mode).exists() or (config_dir() / "active.json").exists():
+        return False
+    write_atomic(stock_path(mode), points)
+    return True
 
 
 def save_named(points):
@@ -101,25 +128,11 @@ def saved_curves(current, scale=None):
     return found
 
 
-def preset_curve(base, factor, scale=None):
-    """Base curve with fan speeds scaled in display units (capped at the top speed), stored
-    as canonical pwm values, then raised to the minimums."""
-    scale = scale or Scale()
-    points = copy.deepcopy(base)
-    for p in points:
-        for f in SPEEDS:
-            if p.get(f) is not None and factor != 1:
-                value = min(scale.top, round(scale.show(p[f]) * factor / scale.step()) * scale.step())
-                p[f] = scale.pwm(value)
-    for i, p in enumerate(points):
-        for f in SPEEDS:
-            if p.get(f) is not None:
-                p[f] = max(p[f], min_speed(points, i, scale))
-    return points
-
-
-def preset_options(base, current, scale=None):
-    return [(name, preset_curve(base, factor, scale)) for name, factor in PRESETS] + saved_curves(current, scale)
+def curve_options(mode, current, scale=None):
+    """[(name, points or None)]: the stock curve of `mode` when recorded, then the saved curves."""
+    stock = read_stock(mode)
+    first = [] if stock is None else [(STOCK, None if check_curve(current, stock, scale) else stock)]
+    return first + saved_curves(current, scale)
 
 
 class Reapplier:
