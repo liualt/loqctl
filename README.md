@@ -11,7 +11,7 @@ A btop-style hardware monitor and control tool for Lenovo LOQ (and Legion) lapto
 | OS | Linux only (uses `/sys`, `/proc`, `SO_PEERCRED`, `curses`) |
 | Python | 3.10+ (standard library only, no `pip install` needed; see `requirements.txt`) |
 | Kernel | Lenovo WMI drivers `lenovo-wmi-gamezone` and `lenovo-wmi-other`. You need `/sys/class/firmware-attributes/lenovo-wmi-other*/` to exist. Linux 6.17 or newer is required for these drivers; check your own kernel with the command below. |
-| Privileges | `sudo` for writing firmware settings. Reading works without it, except CPU power (RAPL) on kernels that make it root-only and CPU Vcore (always root). |
+| Privileges | `sudo` for writing firmware settings. Reading works without it, except CPU power (RAPL) on kernels that make it root-only and CPU 0 Vcore (always root). |
 | Terminal | At least 72×20 (96×24 recommended), UTF-8 locale |
 | Optional | `libnvidia-ml` (NVML) or `nvidia-smi` on `PATH` for GPU data; `legionaura` on `PATH` for keyboard RGB; the LenovoLegionLinux `legion_laptop` kernel module for fan curves |
 

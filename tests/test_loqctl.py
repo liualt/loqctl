@@ -1206,6 +1206,9 @@ class TelemetryTests(unittest.TestCase):
             msr.parent.mkdir(parents=True)
             msr.write_bytes(bytes(0x198) + (0x2000 << 32).to_bytes(8, "little"))
             self.assertEqual(s.cpu_vcore(), 1.0)
+            for field, volts in ((2458, 2458 / 8192), (0x4000, 2.0)):  # lowest raw value >= 0.3 V, 2.0 V
+                msr.write_bytes(bytes(0x198) + (field << 32).to_bytes(8, "little"))
+                self.assertEqual(s.cpu_vcore(), volts)
             for field in (0, 0x0800, 0x5000, 0xFFFF):  # 0 V, 0.25 V, 2.5 V, 8 V
                 msr.write_bytes(bytes(0x198) + (field << 32).to_bytes(8, "little"))
                 self.assertIsNone(s.cpu_vcore())
