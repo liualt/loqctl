@@ -537,6 +537,18 @@ class CurveStoreTests(unittest.TestCase):
         link.symlink_to(path)
         with self.assertRaises(m_common.ControlError):
             m_store.read_curve_file(link)
+        path.write_text("{}")
+        junk = path.with_name("junk.json")
+        junk.write_text("{")
+        fifo = path.with_name("fifo.json")
+        os.mkfifo(fifo)
+        cases = [(path, None), (path, os.getuid() + 1), (junk, None), (fifo, None), (link, None),
+                 (path.with_name("missing.json"), None)]
+        for bad, uid in cases:
+            with self.assertRaises(m_common.ControlError) as caught:
+                m_store.read_curve_file(bad, uid)
+            self.assertNotIn(str(path.parent), str(caught.exception))
+            self.assertIn(bad.name, str(caught.exception))
 
     def test_fifo_rejected_without_blocking(self):
         path = m_store.save_active(CURVE)
@@ -575,7 +587,8 @@ class ReapplyTests(unittest.TestCase):
         self.assertEqual(self.fan1(), 80)
         self.tick("custom")
         self.assertEqual(self.fan1(), 90)
-        self.assertIn("re-applied", self.log[-1])
+        self.assertIn("re-applied active.json", self.log[-1])
+        self.assertNotIn(str(self.config), self.log[-1])
         (self.hwmon / "pwm1_auto_point2_pwm").write_text("80")
         self.tick("custom")  # no change of mode: no write
         self.assertEqual(self.fan1(), 80)
@@ -609,6 +622,12 @@ class ReapplyTests(unittest.TestCase):
         self.assertEqual(self.fan1(), 80)
         self.assertIn("skipped", self.log[-1])
         path.chmod(0o600)
+        with patch.object(m_store.os.path, "lexists", side_effect=OSError(13, "Permission denied", str(path))):
+            self.reapply.apply("custom mode")
+        self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: Permission denied")
+        with patch.object(self.hw, "write_fancurve", side_effect=ValueError(str(path))):
+            self.reapply.apply("custom mode")
+        self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: ValueError")
         other = m_store.Reapplier(self.hw, os.getuid() + 1, self.log.append)
         with patch.object(m_store, "config_dir", return_value=path.parent):
             other({"mode": "custom"})
@@ -618,7 +637,7 @@ class ReapplyTests(unittest.TestCase):
         self.tick("balanced")
         self.tick("custom")
         self.assertEqual(self.fan1(), 80)
-        self.assertEqual(len(self.log), 3)
+        self.assertEqual(len(self.log), 5)
         m_store.save_active(CURVE[:2])  # wrong size
         self.tick("balanced")
         self.tick("custom")
