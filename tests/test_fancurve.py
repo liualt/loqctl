@@ -538,9 +538,15 @@ class CurveStoreTests(unittest.TestCase):
         with self.assertRaises(m_common.ControlError):
             m_store.read_curve_file(link)
         path.write_text("{}")
-        for bad in (path, link, path.with_name("missing.json")):
+        junk = path.with_name("junk.json")
+        junk.write_text("{")
+        fifo = path.with_name("fifo.json")
+        os.mkfifo(fifo)
+        cases = [(path, None), (path, os.getuid() + 1), (junk, None), (fifo, None), (link, None),
+                 (path.with_name("missing.json"), None)]
+        for bad, uid in cases:
             with self.assertRaises(m_common.ControlError) as caught:
-                m_store.read_curve_file(bad)
+                m_store.read_curve_file(bad, uid)
             self.assertNotIn(str(path.parent), str(caught.exception))
             self.assertIn(bad.name, str(caught.exception))
 
@@ -618,7 +624,10 @@ class ReapplyTests(unittest.TestCase):
         path.chmod(0o600)
         with patch.object(m_store.os.path, "lexists", side_effect=OSError(13, "Permission denied", str(path))):
             self.reapply.apply("custom mode")
-        self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: PermissionError")
+        self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: Permission denied")
+        with patch.object(self.hw, "write_fancurve", side_effect=ValueError(str(path))):
+            self.reapply.apply("custom mode")
+        self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: ValueError")
         other = m_store.Reapplier(self.hw, os.getuid() + 1, self.log.append)
         with patch.object(m_store, "config_dir", return_value=path.parent):
             other({"mode": "custom"})
@@ -628,7 +637,7 @@ class ReapplyTests(unittest.TestCase):
         self.tick("balanced")
         self.tick("custom")
         self.assertEqual(self.fan1(), 80)
-        self.assertEqual(len(self.log), 4)
+        self.assertEqual(len(self.log), 5)
         m_store.save_active(CURVE[:2])  # wrong size
         self.tick("balanced")
         self.tick("custom")

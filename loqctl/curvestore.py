@@ -154,8 +154,9 @@ class Reapplier:
             if failed:
                 self.log(f"fancurve: re-apply after {reason} stopped: {failed.get('error') or failed['status']}")
             else:
-                self.log(f"fancurve: re-applied active.json after {reason} ({len(results)} changes)")
+                self.log(f"fancurve: re-applied {path.name} after {reason} ({len(results)} changes)")
         except ControlError as exc:
             self.log(f"fancurve: skipped re-apply after {reason}: {exc}")
-        except Exception as exc:  # other exception text can carry the user's paths
-            self.log(f"fancurve: skipped re-apply after {reason}: {type(exc).__name__}")
+        except Exception as exc:  # str(exc) can carry the user's paths; strerror and the type name do not
+            detail = exc.strerror if isinstance(exc, OSError) and exc.strerror else type(exc).__name__
+            self.log(f"fancurve: skipped re-apply after {reason}: {detail}")
