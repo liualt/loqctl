@@ -537,6 +537,12 @@ class CurveStoreTests(unittest.TestCase):
         link.symlink_to(path)
         with self.assertRaises(m_common.ControlError):
             m_store.read_curve_file(link)
+        path.write_text("{}")
+        for bad in (path, link, path.with_name("missing.json")):
+            with self.assertRaises(m_common.ControlError) as caught:
+                m_store.read_curve_file(bad)
+            self.assertNotIn(str(path.parent), str(caught.exception))
+            self.assertIn(bad.name, str(caught.exception))
 
 
 class ReapplyTests(unittest.TestCase):
