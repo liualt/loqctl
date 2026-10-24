@@ -118,8 +118,8 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 - The firmware resets the curve when the mode changes and on reboot.
 - The panel shows a graph of fan speed against the CPU up temperature of each point (a step line for fan 1, markers for fan 2, the selected point highlighted, a cursor at the live CPU temperature), and below it a table of every point: CPU/GPU/IC up/down temperatures and both fan speeds. "down" is the absolute lower temperature of a step (the `_temp_hyst` file). Staged changes show in the warning color.
 - Speeds are shown in the module's unit (`fancurve_speed_unit`): RPM for `rpm` (scaled with `fan1_max`), firmware levels 0-10 for `level`, percent otherwise. loqctl writes the exact pwm value the module maps back to the same speed, so readback matches.
-- One curve drives both fans: moving a point's speed changes fan 1 and fan 2 together, and fan 2 keeps the offset from fan 1 it had when the curve was loaded (the stock LOQ curve runs fan 2 about 300 RPM faster). Moving a point's temperature shifts its CPU and GPU up and down temperatures together; IC temperatures are left as they are.
-- A point never crosses its neighbours: temperatures stay between the previous and next point's up temperature, speeds between the previous and next point's speed.
+- Temperatures are fixed: up and down temperatures are shown but not editable. Each point has one speed, edited in the curve's unit. Setting it writes the same speed to fan 1 and fan 2, each held between its neighbours' speeds, its safety floor and the top speed.
+- A point's speed never crosses its neighbours: it stays between the previous and next point's speed.
 - The curve is read in the background each time the panel opens and after each write, never cached, so a curve changed by a resume or another program shows up on the next open. Each file read costs the module a full EC table read (about 0.9 s for the whole curve on a LOQ 15IRX9).
 - `loqctl fan` prints the curve, speed unit, `max_rpm` and RPM as JSON.
 - Verified on a LOQ 15IRX9 (BIOS NECN44WW, LenovoLegionLinux 0.1.3): reading the curve, the `rpm` unit and its scaling, and that the stock curve passes validation. **Writes are unverified on hardware.** On this model the module reads the curve from one EC table and writes another, so a verified apply needs a real test; if readback never matches, loqctl reports the writes as FAILED rather than guessing.
@@ -128,16 +128,16 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 | --- | --- |
 | `Tab` / `]` | Select the next point |
 | `Shift+Tab` / `[` | Select the previous point |
-| `←` / `→` | Move the point's temperature by 1 °C (`Shift`: 5 °C) |
 | `↑` / `↓` | Change the point's speed for both fans by 100 RPM, 5 % or 1 level (`Shift`: 500 RPM, 20 % or 2 levels) |
 | `r` | Discard all edits |
 | `Enter` | Apply; refuses and selects the first problem point if the curve does not validate |
-| `p` | Stage the next preset (`firmware`, `quiet`, `cool`, then saved curves); nothing is written until `Enter` |
+| `p` | Stage the next curve (`stock`, then saved curves); nothing is written until `Enter` |
+| `R` | Reset: write the recorded stock curve for the current mode and delete `active.json` (custom mode only) |
 | `W` | Save the staged (or live) curve as `curves/saved-YYYYmmdd-HHMMSS.json` |
 | `f` / `Esc` | Back (staged edits are kept) |
 | `q` | Quit |
 
-Presets: `firmware` is the curve read when the panel first opened this session, `quiet` scales its fan speeds by 0.8 and `cool` by 1.2 (rounded to the speed step and capped at the top speed). Presets are raised to the validation minimums so they always validate. Saved curves live in `~/.config/loqctl/curves/<name>.json` (`XDG_CONFIG_HOME` is respected), listed after the presets by name; one that fails validation or has the wrong point count shows a red "(invalid)" and cannot be staged. After every verified apply the dashboard writes the applied points to `~/.config/loqctl/active.json`. All files are written atomically with mode 0600, by your user only (never by root; nothing is saved while the dashboard runs as root).
+Curves: `stock` is the live curve loqctl read just before its first write in a mode, saved once per mode to `~/.config/loqctl/stock/<mode>.json`. The firmware cannot read the stock curve back once a custom one is written, so this is the only copy. A `<mode>.written` marker next to it records that loqctl has written in that mode (every apply and every `R` sets it), and the stock curve is never recorded again after that. This cannot be verified: a curve written by another tool (or by root, or `loqctl _fancurve`) before loqctl's first apply in a mode is recorded as stock. If the read before the first write fails, the apply still happens and says the stock curve was not recorded. `R` writes the stock curve back (verified like any apply) and deletes `active.json`, so `serve` stops re-applying a custom curve. With no recorded stock curve, `R` only deletes `active.json` and says the firmware restores the stock curve on the next mode change or power cycle. File errors during `R` are shown in the notice. Saved curves live in `~/.config/loqctl/curves/<name>.json` (`XDG_CONFIG_HOME` is respected), listed after `stock` by name (a saved curve named `stock` shows as `stock (saved)`); one that fails validation or has the wrong point count shows a red "(invalid)" and cannot be staged. The staged curve is tracked by name. After every verified apply the dashboard writes the applied points to `~/.config/loqctl/active.json`. All files are written atomically with mode 0600, by your user only (never by root; nothing is saved while the dashboard runs as root).
 
 Re-apply under `sudo loqctl serve`: the firmware resets the curve on mode change and reboot, so `serve` re-writes `active.json` for the served uid when the live mode becomes `custom` (also when `serve` starts in `custom`) and after a suspend/resume while in `custom`. Resume is detected when `CLOCK_BOOTTIME` gains 10 s or more on `CLOCK_MONOTONIC` between two 5 s firmware polls. The file must be owned by the served uid, must not be group or world writable, must have the same point count as the hardware and must pass the same validation; otherwise `serve` logs one line and carries on. The dashboard itself never re-applies.
 
@@ -312,7 +312,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 ### 0.3.0
 
 - Per-mode firmware limits from the capdata table, cached per product and BIOS; `m` overlay and `loqctl limits`.
-- Fan curve editor (`f`) over `legion_laptop` hwmon: validated, verified writes, presets, saved curves, `loqctl fan`, `/v1/fancurve`, re-apply in `serve`.
+- Fan curve editor (`f`) over `legion_laptop` hwmon: validated, verified writes, stock reset, saved curves, `loqctl fan`, `/v1/fancurve`, re-apply in `serve`.
 - Batched `sudo -n` applies with pre-auth and re-auth on expiry; one apply results view (`v`).
 - Telemetry: RAPL domains, temperatures, voltages, throttling, limit markers on the power charts, sensors view (`t`).
 - Portability: PATH lookups, NVML via `ctypes`, no GPU wake-up while suspended, AMD CPU paths, write allowlist.
@@ -345,7 +345,7 @@ To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md): changes start as an issu
 | `loqctl/keyboard.py` | LegionAura keyboard control |
 | `loqctl/fancurve.py` | Fan curve reads, validation and verified writes (legion_laptop hwmon) |
 | `loqctl/ui_fans.py` | Fan curve panel of the dashboard |
-| `loqctl/curvestore.py` | Fan curve presets, saved curves, `active.json` and the serve re-apply |
+| `loqctl/curvestore.py` | Stock and saved fan curves, `active.json` and the serve re-apply |
 | `loqctl/ui.py`, `loqctl/colors.py` | Curses dashboard and ANSI color helpers |
 
 Why Python and the standard library: [ADR-001](docs/adr/001-language.md).

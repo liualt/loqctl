@@ -165,10 +165,11 @@ class Hardware:
             hwmon = find_legion_hwmon(self.root)
             if hwmon is None:
                 return {"available": False, "reason": "legion_laptop hwmon not found"}
+            mode = self.read_mode()
             points, scale = read_curve(hwmon), curve_scale(hwmon)
             if not points:
                 return {"available": False, "reason": "legion_hwmon exposes no fan curve points"}
-            return {"available": True, "hwmon": str(hwmon), "unit": scale.unit, "max_rpm": scale.max_rpm,
+            return {"available": True, "mode": mode, "hwmon": str(hwmon), "unit": scale.unit, "max_rpm": scale.max_rpm,
                     "points": points, "rpm": [scaled(hwmon / f"fan{n}_input") for n in (1, 2)]}
 
     def write_fancurve(self, points):

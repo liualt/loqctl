@@ -245,34 +245,23 @@ class FanCurveTests(unittest.TestCase):
 
 
 class MoveTests(unittest.TestCase):
-    offsets = [RPM.show(p["fan2"]) - RPM.show(p["fan1"]) for p in NECN_STOCK]
-
-    def test_temperature_moves_cpu_and_gpu_within_neighbours(self):
-        points, delta = m_panel.move_temp(NECN_STOCK, 1, 1)
-        self.assertEqual(delta, 1)
-        self.assertEqual({k: points[1][k] for k in ("cpu_up", "cpu_down", "gpu_up", "gpu_down", "ic_up")},
-                         {"cpu_up": 72, "cpu_down": 71, "gpu_up": 72, "gpu_down": 71, "ic_up": 63})
-        points, delta = m_panel.move_temp(NECN_STOCK, 1, 10)  # next point is at 75
-        self.assertEqual((delta, points[1]["cpu_up"]), (4, 75))
-        points, delta = m_panel.move_temp(NECN_STOCK, 4, 1)  # 75 between two 75s cannot move
-        self.assertEqual((delta, points), (0, NECN_STOCK))
-        points, delta = m_panel.move_temp(NECN_STOCK, 9, 50)
-        self.assertEqual(points[9]["cpu_up"], 127)
-        self.assertEqual(m_fan.validate_curve(points, RPM), [])
-
-    def test_speed_moves_both_fans_and_keeps_order(self):
-        points, moved = m_panel.move_speed(NECN_STOCK, 1, 100, RPM, self.offsets)
+    def test_speed_sets_both_fans_and_keeps_order(self):
+        points, moved = m_panel.move_speed(NECN_STOCK, 1, 100, RPM)
         self.assertTrue(moved)
-        self.assertEqual((RPM.show(points[1]["fan1"]), RPM.show(points[1]["fan2"])), (2600, 2900))
-        points, _ = m_panel.move_speed(NECN_STOCK, 1, 5000, RPM, self.offsets)
-        self.assertEqual(RPM.show(points[1]["fan1"]), 3400)  # held below point 3
-        points, moved = m_panel.move_speed(NECN_STOCK, 0, -100, RPM, self.offsets)
+        self.assertEqual((RPM.show(points[1]["fan1"]), RPM.show(points[1]["fan2"])), (2600, 2600))
+        self.assertEqual(points[1]["cpu_up"], NECN_STOCK[1]["cpu_up"])  # temperatures never move
+        points, _ = m_panel.move_speed(NECN_STOCK, 1, 5000, RPM)
+        self.assertEqual((RPM.show(points[1]["fan1"]), RPM.show(points[1]["fan2"])), (3400, 3700))  # each fan held below its own next point
+        points, moved = m_panel.move_speed(NECN_STOCK, 0, -100, RPM)
         self.assertFalse(moved)
-        points, _ = m_panel.move_speed(NECN_STOCK, 9, 5000, RPM, self.offsets)
-        self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (8700, 9000))
-        points, _ = m_panel.move_speed(NECN_STOCK, 9, 50000, RPM, self.offsets)
+        points, _ = m_panel.move_speed(NECN_STOCK, 9, 50000, RPM)
         self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (10000, 10000))
         self.assertEqual(m_fan.validate_curve(points, RPM), [])
+
+    def test_speed_stays_above_the_floor(self):
+        low = edit(NECN_STOCK, {(8, "fan1"): 0, (8, "fan2"): 0})
+        points, _ = m_panel.move_speed(low, 9, -50000, RPM)
+        self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (3000, 3000))
 
 
 class FanCurveSurfaceTests(unittest.TestCase):
@@ -282,6 +271,10 @@ class FanCurveSurfaceTests(unittest.TestCase):
         base.FirmwareTests.setUp(self)
         self.addCleanup(self.temp.cleanup)
         self.hwmon = make_hwmon(self.root)
+        self.config = self.root / "config"
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
+        env.start()
+        self.addCleanup(env.stop)
         thread = patch.object(m_panel, "threading", SimpleNamespace(Thread=ImmediateThread))
         thread.start()
         self.addCleanup(thread.stop)
@@ -295,6 +288,7 @@ class FanCurveSurfaceTests(unittest.TestCase):
         self.assertEqual((data["unit"], data["max_rpm"], data["rpm"][0], data["rpm"][1]),
                          ("percent", 10000, 2100.0, None))
         self.assertEqual(len(data["points"]), 3)
+        self.assertEqual(data["mode"], "custom")
         (self.hwmon / m_fan.FILE_MAP["fan1"].format(n=1)).write_text("33")  # a resume or another program
         self.assertEqual(self.hw.fancurve()["points"][0]["fan1"], 33)
         self.set_mode("balanced")
@@ -409,12 +403,12 @@ class FanCurveSurfaceTests(unittest.TestCase):
         self.assertEqual(dash.fan_sel, 2)
         self.keys(dash, state, "[", curses.KEY_BTAB, curses.KEY_BTAB)
         self.assertEqual(dash.fan_sel, 2)
-        self.keys(dash, state, "[", curses.KEY_RIGHT, curses.KEY_SRIGHT, curses.KEY_UP)  # point 2
-        self.assertEqual((dash.fan_edit[1]["cpu_up"], dash.fan_edit[1]["gpu_down"]), (66, 41))
+        self.keys(dash, state, "[", curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_UP)  # point 2; temperatures are fixed
+        self.assertEqual((dash.fan_edit[1]["cpu_up"], dash.fan_edit[1]["gpu_down"]), (60, 35))
         self.assertEqual((dash.fan_edit[1]["fan1"], dash.fan_edit[1]["fan2"]), (92, 92))  # 31 % + 5 % = 36 %
         self.keys(dash, state, 10)
         point = m_fan.read_curve(self.hwmon)[1]
-        self.assertEqual((point["cpu_up"], point["fan1"], point["fan2"]), (66, 92, 92))
+        self.assertEqual((point["cpu_up"], point["fan1"], point["fan2"]), (60, 92, 92))
         self.assertIsNone(dash.fan_edit)
         self.assertIn("Applied and verified", dash.notice)
 
@@ -441,11 +435,11 @@ class FanCurveSurfaceTests(unittest.TestCase):
         dash.backend.remote = False
         dash.backend.refresh = lambda: None
         state = {"mode": "custom"}
-        self.keys(dash, state, "f", "]", curses.KEY_RIGHT)
+        self.keys(dash, state, "f", "]", curses.KEY_UP)
         with patch.object(os, "geteuid", return_value=1000), \
                 patch.object(m_ui.Dashboard, "run_sudo_fancurve", return_value=[{"status": "APPLIED"}]) as run:
             self.keys(dash, state, 10)
-        self.assertEqual(run.call_args.args[0][1]["cpu_up"], 61)
+        self.assertEqual(run.call_args.args[0][1]["fan1"], 92)
         with patch.object(m_ui, "sudo_run", side_effect=m_common.SudoExpired("x")):
             with self.assertRaisesRegex(m_common.ControlError, "expired"):
                 dash.sudo_call(["_fancurve", "[]"])
@@ -472,7 +466,7 @@ class FanCurveSurfaceTests(unittest.TestCase):
         dash.draw_fans({"mode": "custom"}, {"cpu": {"temperature_c": 67.4}, "fans": [{"rpm": 2000.0}]}, 1, 0, 30, 110)
         text = "\n".join(dash.puts)
         for needle in ("Point 3/10", "CPU 75°C (down 73°C)", "Fan 1 3400 RPM", "Fan 2 3700 RPM", "CPU 67°C",
-                       "70°C", "4000", "◉", "●", "◆", "3700", "Presets"):
+                       "70°C", "4000", "◉", "●", "◆", "3700", "Curves"):
             self.assertIn(needle, text)
         self.assertIn("Unit: RPM", dash.box.call_args.args[6])
         dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 17, 72)  # small: no table
@@ -498,24 +492,23 @@ class CurveStoreTests(unittest.TestCase):
             self.assertEqual(m_store.config_dir(os.getuid() + 1), Path("/home/other/.config/loqctl"))
         self.assertEqual(m_store.config_dir(os.getuid()), self.config / "loqctl")
 
-    def test_presets_scale_and_clamp_to_minimums(self):
-        pct = m_fan.Scale("percent")
-        self.assertEqual(m_store.preset_curve(CURVE, 1.0, pct), CURVE)  # firmware preset is exact
-        quiet = m_store.preset_curve(CURVE, 0.8, pct)
-        self.assertEqual([pct.show(p["fan1"]) for p in quiet], [0, 25, 60])  # last point raised to 60 %
-        cool = m_store.preset_curve(CURVE, 1.2, pct)
-        self.assertEqual([pct.show(p["fan2"]) for p in cool], [0, 35, 85])
-        self.assertEqual(pct.show(m_store.preset_curve(edit(CURVE, {(2, "fan1"): 250}), 1.2, pct)[2]["fan1"]), 100)
-        hot = edit(CURVE, {(0, "cpu_up"): 85, (1, "cpu_up"): 86, (2, "cpu_up"): 90})
-        self.assertEqual(pct.show(m_store.preset_curve(hot, 0.5, pct)[1]["fan1"]), 40)
-        for curve in (quiet, cool, m_store.preset_curve(CURVE, 0.2, pct)):
-            self.assertEqual(m_fan.validate_curve(curve, pct), [])
-        rpm_quiet = m_store.preset_curve(NECN_STOCK, 0.8, RPM)
-        self.assertEqual([RPM.show(p["fan1"]) for p in rpm_quiet][-3:], [3000, 3000, 3000])
-        self.assertEqual(RPM.show(rpm_quiet[1]["fan1"]), 2000)
-        self.assertEqual(m_fan.validate_curve(rpm_quiet, RPM), [])
-        level = m_fan.Scale("level")
-        self.assertEqual([level.show(p["fan1"]) for p in m_store.preset_curve(CURVE, 0.8, level)], [0, 2, 6])
+    def test_stock_is_recorded_once_per_mode_and_never_over_active(self):
+        self.assertTrue(m_store.save_stock("custom", CURVE))
+        self.assertFalse(m_store.save_stock("custom", edit(CURVE, {(1, "fan1"): 90})))  # first read wins
+        self.assertEqual(m_store.read_stock("custom")[1]["fan1"], 80)
+        self.assertIsNone(m_store.read_stock("balanced"))
+        m_store.save_active(CURVE)
+        self.assertFalse(m_store.save_stock("balanced", CURVE))  # the live curve may be custom
+        self.assertIsNone(m_store.read_stock("balanced"))
+        self.assertFalse(m_store.save_stock(None, CURVE))
+        m_store.clear_active()
+        m_store.mark_written("balanced")
+        self.assertFalse(m_store.save_stock("balanced", CURVE))  # loqctl already wrote in this mode
+        m_store.save_active(CURVE)
+        self.assertEqual(m_store.stock_path("../x y").parent, self.config / "loqctl/stock")
+        m_store.clear_active()
+        m_store.clear_active()  # already gone
+        self.assertFalse((self.config / "loqctl/active.json").exists())
 
     def test_atomic_write_mode_and_round_trip(self):
         path = m_store.save_active(CURVE)
@@ -542,8 +535,12 @@ class CurveStoreTests(unittest.TestCase):
         saved = m_store.saved_curves(current)
         self.assertEqual([n for n, _ in saved], ["a-bad", "b-good", "c-junk", "d-null"])
         self.assertEqual([p is None for _, p in saved], [True, False, True, True])
-        names = [n for n, _ in m_store.preset_options(current, current)]
-        self.assertEqual(names[:3], ["firmware", "quiet", "cool"])
+        self.assertEqual([n for n, _ in m_store.curve_options("custom", current)], ["a-bad", "b-good", "c-junk", "d-null"])
+        m_store.save_stock("custom", CURVE)
+        self.assertEqual([n for n, _ in m_store.curve_options("custom", current)][:2], ["stock", "a-bad"])
+        self.assertEqual([n for n, _ in m_store.curve_options("balanced", current)][:1], ["a-bad"])
+        m_store.write_atomic(self.config / "loqctl/curves/stock.json", CURVE)
+        self.assertEqual([n for n, _ in m_store.curve_options("custom", current)].count("stock"), 1)
 
     def test_untrusted_files_rejected(self):
         path = m_store.save_active(CURVE)
@@ -675,43 +672,137 @@ class ReapplyTests(unittest.TestCase):
 
 
 class FanPanelPresetTests(FanCurveSurfaceTests):
-    def test_preset_cycle_stage_and_save_keys(self):
-        config = self.root / "config"
-        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config)}):
-            dash = self.dash()
-            state = {"mode": "custom"}
-            self.keys(dash, state, "f", "p")
-            self.assertEqual(dash.fan_preset, 0)  # firmware snapshot equals the live curve
-            self.assertIsNone(dash.fan_edit)
-            self.keys(dash, state, "p")
-            self.assertEqual(dash.fan_edit[2]["fan1"], 153)  # quiet: last point held at 60 %
+    def test_stock_cycle_stage_save_and_reset_keys(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f")
+        dash.fan_take()
+        self.assertIsNone(m_store.read_stock("custom"))  # reading never records it
+        self.keys(dash, state, "]", "]", curses.KEY_SF)
+        self.assertEqual(dash.fan_edit[2]["fan1"], 153)  # held at the 60 % last-point floor
+        self.keys(dash, state, 10)
+        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 153)
+        self.assertEqual(m_store.read_curve_file(self.config / "loqctl/active.json")[2]["fan1"], 153)
+        self.assertEqual(m_store.read_stock("custom")[2]["fan1"], 180)  # recorded just before the first write
+        self.keys(dash, state, curses.KEY_UP, 10)
+        self.assertEqual(m_store.read_stock("custom")[2]["fan1"], 180)  # later applies do not overwrite it
+        self.keys(dash, state, "W")
+        self.assertTrue(dash.notice.startswith("Saved "))
+        self.assertEqual(len(list((self.config / "loqctl/curves").glob("saved-*.json"))), 1)
+        self.keys(dash, state, "p")
+        self.assertEqual(dash.fan_preset, "stock")
+        self.assertEqual(dash.fan_edit[2]["fan1"], 180)
+        dash.draw_fans(state, {}, 1, 0, 25, 100)
+        self.assertTrue(any(t == "stock" for t in dash.puts))
+        m_store.write_atomic(self.config / "loqctl/curves/aa.json", edit(CURVE, {(1, "fan1"): 90}))
+        self.keys(dash, state, "p")  # a new saved curve sorts before the staged one; the name still decides
+        self.assertEqual(dash.fan_preset, dash.fan_opts[1][0])
+        m_store.write_atomic(self.config / "loqctl/curves/zz.json", edit(CURVE, {(0, "cpu_up"): 99}))
+        self.keys(dash, state, "r", "p", "p", "p", "p")
+        self.assertIsNone(dash.fan_edit)
+        self.assertIn("invalid and cannot be staged", dash.notice)
+        dash.draw_fans(state, {}, 1, 0, 25, 100)
+        self.assertTrue(any(t == "zz (invalid)" for t in dash.puts))
+
+    def test_reset_writes_stock_and_stops_reapply(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF, 10)
+        self.assertTrue((self.config / "loqctl/active.json").exists())
+        self.keys(dash, state, "R")
+        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 180)
+        self.assertFalse((self.config / "loqctl/active.json").exists())
+        self.assertIn("Reset to the stock curve", dash.notice)
+
+    def test_reset_without_recorded_stock_writes_nothing(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF, 10)
+        (self.config / "loqctl/stock/custom.json").unlink()
+        (self.config / "loqctl/stock/custom.written").unlink()
+        with patch.object(self.hw, "write_fancurve") as write:
+            self.keys(dash, state, "R")
+        write.assert_not_called()
+        self.assertFalse((self.config / "loqctl/active.json").exists())
+        self.assertIn("never recorded", dash.notice)
+        self.assertNotIn("Reset to", dash.notice)
+        self.keys(dash, state, "f")
+        dash.fan_take()
+        self.assertIsNone(m_store.read_stock("custom"))  # the custom curve is never taken for stock
+        self.assertTrue((self.config / "loqctl/stock/custom.written").exists())
+
+    def test_apply_with_failed_pre_write_read_still_applies(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF)
+        real = self.hw.fancurve
+        dash.backend.fancurve = Mock(return_value={"available": False, "reason": "gone"})
+        self.keys(dash, state, 10)
+        dash.backend.fancurve = real
+        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 153)
+        self.assertIn("stock curve was not recorded", dash.notice)
+        self.assertIsNone(m_store.read_stock("custom"))
+        self.assertTrue((self.config / "loqctl/stock/custom.written").exists())
+
+    def test_reset_refuses_stale_stock_and_root(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF, 10)
+        m_store.write_atomic(self.config / "loqctl/stock/custom.json", CURVE[:2])  # point count changed
+        (self.config / "loqctl/active.json").write_text("{}")
+        with patch.object(self.hw, "write_fancurve") as write:
+            self.keys(dash, state, "R")
+            write.assert_not_called()
+            self.assertIn("no longer fits", dash.notice)
+            self.assertTrue((self.config / "loqctl/active.json").exists())
+            with patch.object(os, "geteuid", return_value=0):
+                self.keys(dash, state, "R")
+            write.assert_not_called()
+        self.assertIn("not root", dash.notice)
+        self.assertTrue((self.config / "loqctl/active.json").exists())
+
+    def test_marker_failure_and_active_json_are_reported_not_fatal(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        m_store.save_active(CURVE)  # save_stock refuses while active.json exists
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF)
+        with patch.object(m_panel, "mark_written", side_effect=PermissionError(13, "Permission denied")):
             self.keys(dash, state, 10)
-            self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 153)
-            self.assertEqual(m_store.read_curve_file(config / "loqctl/active.json")[2]["fan1"], 153)
-            self.assertEqual(dash.fan_base[2]["fan1"], 180)  # snapshot from the first open
-            self.keys(dash, state, "W")
-            self.assertTrue(dash.notice.startswith("Saved "))
-            self.assertEqual(len(list((config / "loqctl/curves").glob("saved-*.json"))), 1)
-            dash.draw_fans(state, {}, 1, 0, 25, 100)
-            self.assertTrue(any(t == "firmware" for t in dash.puts))
-            m_store.write_atomic(config / "loqctl/curves/zz.json", edit(CURVE, {(0, "cpu_up"): 99}))
-            self.keys(dash, state, "r", "p", "p", "p", "p", "p")
-            self.assertIsNone(dash.fan_edit)
-            self.assertIn("invalid and cannot be staged", dash.notice)
-            dash.draw_fans(state, {}, 1, 0, 25, 100)
-            self.assertTrue(any(t == "zz (invalid)" for t in dash.puts))
+        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 153)
+        self.assertIn("stock curve was not recorded", dash.notice)
+        self.assertIn("Could not save the stock marker", dash.notice)
+        self.assertIsNone(m_store.read_stock("custom"))
+
+    def test_reload_dropping_staged_edit_clears_preset_name(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF)
+        dash.fan_preset = "x"
+        dash.fan_result = {"available": True, "mode": "custom", "points": CURVE[:2]}
+        dash.fan_take()
+        self.assertEqual((dash.fan_edit, dash.fan_preset), (None, None))
+
+    def test_reset_reports_file_errors(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", "]", "]", curses.KEY_SF, 10)
+        with patch.object(m_panel, "clear_active", side_effect=PermissionError(13, "Permission denied")):
+            self.keys(dash, state, "R")
+        self.assertIn("Reset failed: Permission denied", dash.notice)
 
     def test_preset_with_null_point_sets_notice(self):
         dash = self.dash()
         state = {"mode": "custom"}
         self.keys(dash, state, "f")
-        with patch.object(m_panel, "preset_options", return_value=[("bad", edit(CURVE, {(0, "cpu_up"): None}))]):
+        with patch.object(m_panel, "curve_options", return_value=[("bad", edit(CURVE, {(0, "cpu_up"): None}))]):
             self.keys(dash, state, "p")
         self.assertIsNone(dash.fan_edit)
-        self.assertIn("Preset bad cannot be staged: Point 1", dash.notice)
+        self.assertIn("Curve bad cannot be staged: Point 1", dash.notice)
 
     def test_locked_mode_blocks_presets(self):
         dash = self.dash("balanced")
         self.keys(dash, {"mode": "balanced"}, "f", "p")
         self.assertIsNone(dash.fan_edit)
+        self.assertIn("locked in balanced mode", dash.notice)
+        self.keys(dash, {"mode": "balanced"}, "R")
         self.assertIn("locked in balanced mode", dash.notice)
