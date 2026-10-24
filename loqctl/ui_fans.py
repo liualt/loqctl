@@ -88,14 +88,14 @@ class FanPanel:
         self.fan_result = None  # set by the loader thread, taken by the UI thread
 
     # --- loading (a curve read takes about a second on EC models) ---
-    def fan_request(self, fresh=False, wait=False):
+    def fan_request(self, wait=False):
         if self.fan_loading:
             return
         self.fan_loading = True
 
         def work():
             try:
-                data = self.backend.fancurve(fresh)
+                data = self.backend.fancurve()
             except FAN_ERRORS as exc:
                 data = {"available": False, "reason": str(exc)}
             self.fan_result = data
@@ -178,7 +178,7 @@ class FanPanel:
                 results = self.run_sudo_fancurve(points)
         finally:
             self.backend.refresh()
-            self.fan_request(fresh=True, wait=True)
+            self.fan_request(wait=True)
         failed = next((r for r in results if r["status"] != "APPLIED"), None)
         done = sum(r["status"] == "APPLIED" for r in results)
         if failed:
@@ -207,7 +207,11 @@ class FanPanel:
             self.notice = f"Saved curve {name} is invalid and cannot be staged."
             return
         current = self.fan_points()
-        merged = merge_curve(current, points)
+        try:
+            merged = merge_curve(current, points)
+        except ControlError as exc:
+            self.notice = f"Preset {name} cannot be staged: {exc}"
+            return
         self.fan_edit = None if merged == current else merged
         changes = sum(p.get(f) != c.get(f) for p, c in zip(merged, current) for f in WRITABLE)
         self.notice = f"Preset {name} staged ({changes} changes). Press Enter to apply."

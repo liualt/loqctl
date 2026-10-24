@@ -82,10 +82,8 @@ class Backend:
             return request(self.path, "POST", endpoint, {"mode" if key == "mode" else "value": value})
         return self.hardware.set_mode(value) if key == "mode" else self.hardware.set_value(key, value)
 
-    def fancurve(self, fresh=False):
-        """The server drops its cached curve on every write, so `fresh` only matters locally,
-        where a sudo helper process may have written the curve."""
-        return request(self.path, "GET", "/v1/fancurve") if self.remote else self.hardware.fancurve(fresh)
+    def fancurve(self):
+        return request(self.path, "GET", "/v1/fancurve") if self.remote else self.hardware.fancurve()
 
     def write_fancurve(self, points):
         if self.remote:

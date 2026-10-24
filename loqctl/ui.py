@@ -3,6 +3,7 @@
 """Curses dashboard."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -26,10 +27,18 @@ def strike(text):
     return "".join(c + "\u0336" for c in str(text))
 
 
-def gamezone_note(state):
-    """Why limits read N/A when another driver holds the gamezone WMI device, else None."""
+def limit_note(state, items):
+    """Why limits read N/A: the first non-EINVAL read error among items, else the gamezone note, else None.
+
+    EINVAL is what a driver holding the gamezone WMI device causes; any other error is shown as it is."""
+    for key, item in items.items():
+        if item.get("read_error") and item.get("read_errno") != errno.EINVAL:
+            return f"{key}: current value unreadable ({item['read_error']})"
     holder = state.get("gamezone_holder")
-    return f"Gamezone WMI device held by {holder}, limits can't be read; see README" if holder else None
+    if not holder:
+        return None
+    where = "not bound to any driver" if holder == "no driver" else f"held by {holder}"
+    return f"Gamezone WMI device {where}, limits can't be read; see README"
 
 class Theme:
     """UI colors from the terminal palette only. Never redefines RGB."""
@@ -378,7 +387,7 @@ class Dashboard(FanPanel):
                 self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
             else:
                 via = f"{driver}, not {GAMEZONE}" if driver else f"legacy file, {GAMEZONE} not found"
-                note = gamezone_note(state) or f"Mode set via {via}"
+                note = limit_note(state, state.get("attributes", {})) or f"Mode set via {via}"
                 self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
             self.put(detail_y + 2, x + 2, f"Available: {modes}"[: width - 4], self.theme.TEXT, dim=True)
         elif self.locked(state):
@@ -387,7 +396,7 @@ class Dashboard(FanPanel):
                 note = f"{mode} limit from firmware table · custom default {fmt(item['default_value'])}"
             else:
                 reason = state.get("mode_limits_error")
-                note = gamezone_note(state) or (
+                note = limit_note(state, {key: item}) or (
                     reason if reason and not reason.startswith("needs root") else
                     "Stock-mode limits need root: press s or run sudo loqctl serve")
             self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
@@ -399,7 +408,7 @@ class Dashboard(FanPanel):
             step_txt = "N/A" if step is None else "any int" if not step else str(step)
             if item.get("current_value") is None:
                 error = item.get("read_error") or "missing"
-                note = gamezone_note(state) or f"{key}: current value unreadable ({error})"
+                note = limit_note(state, {key: item}) or f"{key}: current value unreadable ({error})"
                 self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
             else:
                 self.put(detail_y + 1, x + 2, key, self.theme.ACCENT)

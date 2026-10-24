@@ -178,9 +178,20 @@ class FanCurveTests(unittest.TestCase):
 
     def test_invalid_target_refused_with_no_writes(self):
         with patch.object(m_fan, "_write_file") as write:
-            for target in (edit(CURVE, {(1, "cpu_up"): 30, (1, "fan1"): 90}), CURVE[:2], edit(CURVE, {(0, "bogus"): 1})):
+            for target in (edit(CURVE, {(1, "cpu_up"): 30, (1, "fan1"): 90}), CURVE[:2], edit(CURVE, {(0, "bogus"): 1}),
+                           edit(CURVE, {(0, "cpu_up"): None})):
                 with self.assertRaises(m_common.ControlError):
                     m_fan.write_curve(self.hwmon, target, self.pct)
+        write.assert_not_called()
+
+    def test_null_ignored_for_missing_or_unreadable_file(self):
+        (self.hwmon / "pwm3_auto_point2_temp").unlink()
+        (self.hwmon / "pwm1_auto_point1_temp").write_text("junk\n")
+        with patch.object(m_fan, "_write_file") as write:
+            target = edit(CURVE, {(1, "ic_up"): None, (0, "cpu_up"): None})
+            self.assertEqual(m_fan.write_curve(self.hwmon, target, self.pct), [])
+            with self.assertRaisesRegex(m_common.ControlError, "Cannot read point 1"):
+                m_fan.write_curve(self.hwmon, edit(CURVE, {(0, "cpu_up"): 50}), self.pct)
         write.assert_not_called()
 
     def test_symlink_and_foreign_path_rejected(self):
@@ -278,26 +289,20 @@ class FanCurveSurfaceTests(unittest.TestCase):
     def set_mode(self, mode):
         self.hw.set_mode(mode)
 
-    def test_hardware_fancurve_cache_and_gate(self):
+    def test_hardware_fancurve_reads_firmware_and_gate(self):
         data = self.hw.fancurve()
         self.assertTrue(data["available"])
         self.assertEqual((data["unit"], data["max_rpm"], data["rpm"][0], data["rpm"][1]),
                          ("percent", 10000, 2100.0, None))
         self.assertEqual(len(data["points"]), 3)
-        with patch.object(m_hardware, "read_curve", side_effect=AssertionError("read again")):
-            data["points"][0]["fan1"] = 99  # callers get a copy
-            self.assertEqual(self.hw.fancurve()["points"][0]["fan1"], 0)
-        with patch.object(m_hardware, "read_curve", wraps=m_fan.read_curve) as read:
-            self.hw.fancurve(fresh=True)
-            self.set_mode("balanced")  # a mode change may reset the curve
-            self.hw.fancurve()
-            self.assertEqual(read.call_count, 2)
+        (self.hwmon / m_fan.FILE_MAP["fan1"].format(n=1)).write_text("33")  # a resume or another program
+        self.assertEqual(self.hw.fancurve()["points"][0]["fan1"], 33)
+        self.set_mode("balanced")
         with self.assertRaisesRegex(m_common.ControlError, "locked in balanced mode"):
             self.hw.write_fancurve(CURVE)
         self.set_mode("custom")
-        self.hw.fancurve()
         self.hw.write_fancurve(edit(CURVE, {(1, "fan1"): 90}))
-        self.assertEqual(self.hw.fancurve()["points"][1]["fan1"], 90)  # write drops the cache
+        self.assertEqual(self.hw.fancurve()["points"][1]["fan1"], 90)
         self.assertFalse(m_hardware.Hardware(self.root / "nowhere").fancurve()["available"])
 
     def test_internal_cli_prints_results(self):
@@ -376,6 +381,17 @@ class FanCurveSurfaceTests(unittest.TestCase):
         started[0]()
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
         self.assertTrue(dash.fan["available"])
+
+    def test_reopen_shows_outside_curve_change(self):
+        dash = self.dash()
+        self.keys(dash, {"mode": "custom"}, "f")
+        dash.fan_take()
+        self.assertEqual(dash.fan_points()[0]["fan1"], 0)
+        dash.panel = "main"
+        (self.hwmon / m_fan.FILE_MAP["fan1"].format(n=1)).write_text("33")
+        self.keys(dash, {"mode": "custom"}, "f")
+        dash.fan_take()
+        self.assertEqual(dash.fan_points()[0]["fan1"], 33)
 
     def test_locked_notice_in_balanced(self):
         dash = self.dash("balanced")
@@ -520,9 +536,12 @@ class CurveStoreTests(unittest.TestCase):
         m_store.write_atomic(self.config / "loqctl/curves/b-good.json", edit(CURVE, {(1, "fan1"): 90}))
         m_store.write_atomic(self.config / "loqctl/curves/a-bad.json", edit(CURVE, {(1, "cpu_up"): 30}))
         (self.config / "loqctl/curves/c-junk.json").write_text("{")
+        null = {"version": 1, "points": m_store.writable_points(CURVE)}
+        null["points"][0]["cpu_up"] = None
+        (self.config / "loqctl/curves/d-null.json").write_text(json.dumps(null))
         saved = m_store.saved_curves(current)
-        self.assertEqual([n for n, _ in saved], ["a-bad", "b-good", "c-junk"])
-        self.assertEqual([p is None for _, p in saved], [True, False, True])
+        self.assertEqual([n for n, _ in saved], ["a-bad", "b-good", "c-junk", "d-null"])
+        self.assertEqual([p is None for _, p in saved], [True, False, True, True])
         names = [n for n, _ in m_store.preset_options(current, current)]
         self.assertEqual(names[:3], ["firmware", "quiet", "cool"])
 
@@ -537,6 +556,18 @@ class CurveStoreTests(unittest.TestCase):
         link.symlink_to(path)
         with self.assertRaises(m_common.ControlError):
             m_store.read_curve_file(link)
+        path.write_text("{}")
+        junk = path.with_name("junk.json")
+        junk.write_text("{")
+        fifo = path.with_name("fifo.json")
+        os.mkfifo(fifo)
+        cases = [(path, None), (path, os.getuid() + 1), (junk, None), (fifo, None), (link, None),
+                 (path.with_name("missing.json"), None)]
+        for bad, uid in cases:
+            with self.assertRaises(m_common.ControlError) as caught:
+                m_store.read_curve_file(bad, uid)
+            self.assertNotIn(str(path.parent), str(caught.exception))
+            self.assertIn(bad.name, str(caught.exception))
 
     def test_fifo_rejected_without_blocking(self):
         path = m_store.save_active(CURVE)
@@ -575,7 +606,8 @@ class ReapplyTests(unittest.TestCase):
         self.assertEqual(self.fan1(), 80)
         self.tick("custom")
         self.assertEqual(self.fan1(), 90)
-        self.assertIn("re-applied", self.log[-1])
+        self.assertIn("re-applied active.json", self.log[-1])
+        self.assertNotIn(str(self.config), self.log[-1])
         (self.hwmon / "pwm1_auto_point2_pwm").write_text("80")
         self.tick("custom")  # no change of mode: no write
         self.assertEqual(self.fan1(), 80)
@@ -609,6 +641,12 @@ class ReapplyTests(unittest.TestCase):
         self.assertEqual(self.fan1(), 80)
         self.assertIn("skipped", self.log[-1])
         path.chmod(0o600)
+        with patch.object(m_store.os.path, "lexists", side_effect=OSError(13, "Permission denied", str(path))):
+            self.reapply.apply("custom mode")
+        self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: Permission denied")
+        with patch.object(self.hw, "write_fancurve", side_effect=ValueError(str(path))):
+            self.reapply.apply("custom mode")
+        self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: ValueError")
         other = m_store.Reapplier(self.hw, os.getuid() + 1, self.log.append)
         with patch.object(m_store, "config_dir", return_value=path.parent):
             other({"mode": "custom"})
@@ -618,7 +656,7 @@ class ReapplyTests(unittest.TestCase):
         self.tick("balanced")
         self.tick("custom")
         self.assertEqual(self.fan1(), 80)
-        self.assertEqual(len(self.log), 3)
+        self.assertEqual(len(self.log), 5)
         m_store.save_active(CURVE[:2])  # wrong size
         self.tick("balanced")
         self.tick("custom")
@@ -662,6 +700,15 @@ class FanPanelPresetTests(FanCurveSurfaceTests):
             self.assertIn("invalid and cannot be staged", dash.notice)
             dash.draw_fans(state, {}, 1, 0, 25, 100)
             self.assertTrue(any(t == "zz (invalid)" for t in dash.puts))
+
+    def test_preset_with_null_point_sets_notice(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f")
+        with patch.object(m_panel, "preset_options", return_value=[("bad", edit(CURVE, {(0, "cpu_up"): None}))]):
+            self.keys(dash, state, "p")
+        self.assertIsNone(dash.fan_edit)
+        self.assertIn("Preset bad cannot be staged: Point 1", dash.notice)
 
     def test_locked_mode_blocks_presets(self):
         dash = self.dash("balanced")

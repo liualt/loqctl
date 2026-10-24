@@ -59,25 +59,27 @@ def save_named(points):
 
 def read_curve_file(path, uid=None):
     """Points from a curve file. With `uid`, the file must belong to that user and not be
-    group/world-writable (the check runs on the opened descriptor)."""
+    group/world-writable (the check runs on the opened descriptor). Errors name only the file,
+    since the server logs them."""
+    name = os.path.basename(path)
     try:
         # O_NONBLOCK so a FIFO cannot hang the open; cleared below once it is known to be a regular file.
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
-        raise ControlError(f"Cannot open {path}: {exc.strerror}") from exc
+        raise ControlError(f"Cannot open {name}: {exc.strerror}") from exc
     with os.fdopen(fd) as handle:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE:
-            raise ControlError(f"{path} is not a regular curve file.")
+            raise ControlError(f"{name} is not a regular curve file.")
         os.set_blocking(handle.fileno(), True)
         if uid is not None and (info.st_uid != uid or info.st_mode & 0o022):
-            raise ControlError(f"{path} must be owned by uid {uid} and not group/world-writable.")
+            raise ControlError(f"{name} must be owned by uid {uid} and not group/world-writable.")
         try:
             data = json.load(handle)
         except ValueError as exc:
-            raise ControlError(f"{path} is not valid JSON.") from exc
+            raise ControlError(f"{name} is not valid JSON.") from exc
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("points"), list):
-        raise ControlError(f"{path} is not a version 1 fan curve.")
+        raise ControlError(f"{name} is not a version 1 fan curve.")
     return data["points"]
 
 
@@ -152,6 +154,9 @@ class Reapplier:
             if failed:
                 self.log(f"fancurve: re-apply after {reason} stopped: {failed.get('error') or failed['status']}")
             else:
-                self.log(f"fancurve: re-applied {path} after {reason} ({len(results)} changes)")
-        except Exception as exc:
+                self.log(f"fancurve: re-applied {path.name} after {reason} ({len(results)} changes)")
+        except ControlError as exc:
             self.log(f"fancurve: skipped re-apply after {reason}: {exc}")
+        except Exception as exc:  # str(exc) can carry the user's paths; strerror and the type name do not
+            detail = exc.strerror if isinstance(exc, OSError) and exc.strerror else type(exc).__name__
+            self.log(f"fancurve: skipped re-apply after {reason}: {detail}")

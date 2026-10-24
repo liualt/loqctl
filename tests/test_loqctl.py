@@ -336,8 +336,8 @@ class FirmwareTests(unittest.TestCase):
         with patch.object(Path, "read_text", einval):
             state = self.hw.capabilities()
         item = state["attributes"]["ppt_pl1_spl"]
-        self.assertEqual((state["gamezone_holder"], item["current_value"], item["read_error"]),
-                         ("legion_wmi", None, "Invalid argument"))
+        self.assertEqual((state["gamezone_holder"], item["current_value"], item["read_errno"]),
+                         ("legion_wmi", None, errno.EINVAL))
         dashboard = self.dashboard()
         dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
         dashboard.box = Mock()
@@ -347,6 +347,33 @@ class FirmwareTests(unittest.TestCase):
             dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
             dashboard.draw_controls({**state, "mode_driver": state_driver}, 0, 0, 20, 90)
             self.assertTrue(any("held by legion_wmi" in text and color == 3 for text, color in calls), calls)
+        self.assertIn("not bound to any driver", m_ui.limit_note({**state, "gamezone_holder": "no driver"}, {}))
+
+    def test_limit_note_precedence(self):
+        # A non-EINVAL read error shows as itself; otherwise a gamezone holder explains the N/A,
+        # even when the reads succeeded or the attributes are absent.
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+        dashboard.box = Mock()
+        cases = (("custom", 0, None, None, "held by legion_wmi"),
+                 ("custom", 1, "Permission denied", errno.EACCES, "unreadable (Permission denied)"),
+                 ("custom", 1, "Invalid argument", errno.EINVAL, "held by legion_wmi"),
+                 ("balanced", 1, None, None, "held by legion_wmi"),
+                 ("balanced", 1, "Permission denied", errno.EACCES, "unreadable (Permission denied)"),
+                 ("balanced", 0, None, None, "held by legion_wmi"))
+        for mode, selected, error, code, expected in cases:
+            self.hw.set_mode(mode)
+            state = {**self.hw.capabilities(), "gamezone_holder": "legion_wmi", "mode_driver": None}
+            for item in state["attributes"].values():
+                item.update(effective_value=None, read_error=error, read_errno=code)
+                if error:
+                    item["current_value"] = None
+            calls = []
+            dashboard.selected = selected
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+            dashboard.draw_controls(state, 0, 0, 20, 90)
+            self.assertTrue(any(expected in text and color == 3 for text, color in calls), (mode, selected, calls))
+        self.assertIn("held by legion_wmi", m_ui.limit_note({"gamezone_holder": "legion_wmi"}, {}))
 
     def test_draw_dims_locked_rows(self):
         self.hw.set_mode("balanced")
@@ -1191,6 +1218,14 @@ class PortabilityTests(unittest.TestCase):
             with self.assertRaisesRegex(m_common.ControlError, "not found"):
                 kb._run(["off"])
 
+    def test_legionaura_timeout_is_control_error(self):
+        kb = m_keyboard.Keyboard(binary="legionaura", config="/nonexistent/loqctl.json")
+        timeout = subprocess.TimeoutExpired(["legionaura", "off"], 8)
+        with patch.object(shutil, "which", return_value="/opt/bin/legionaura"), \
+                patch.object(subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(m_common.ControlError, "did not answer within 8 s"):
+                kb._run(["off"])
+
 
 class TelemetryTests(unittest.TestCase):
     def setUp(self):
@@ -1520,11 +1555,39 @@ class KbCliTests(unittest.TestCase):
         self.assertIsNone(args)
         self.assertEqual(result["zones"], ["ffffff"] * 4)
 
+    def test_output_reports_settings_sent_not_config_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps({"effect": "breath", "zones": ["00ff00"] * 4}))
+
+            class KB(m_keyboard.Keyboard):
+                def __init__(self):
+                    super().__init__(binary="legionaura", config=config)
+
+                def _run(self, args):
+                    return "OK"
+            with patch.object(m_keyboard, "Keyboard", KB), patch.object(shutil, "which", return_value=None):
+                result = m_keyboard.kb_cli(["static", "ff0000"])
+        self.assertEqual(result["effect"], "static")
+        self.assertEqual(result["zones"], ["ff0000"] * 4)
+
     def test_bad_arguments_never_run(self):
         for argv in (("static",), ("static", "--brightness", "1"), ("breath", "zzzzzz"),
                      ("wave", "up"), ("hue", "fast"), ("brightness",), ("bogus",)):
             with self.assertRaises(m_common.ControlError, msg=argv):
                 self.run_cli(*argv)
+
+    def test_timeout_exits_with_message(self):
+        class KB(m_keyboard.Keyboard):
+            def __init__(self):
+                super().__init__(binary="legionaura", config="/nonexistent/loqctl.json")
+        timeout = subprocess.TimeoutExpired(["legionaura"], 8)
+        stderr = io.StringIO()
+        with patch.object(m_keyboard, "Keyboard", KB), \
+                patch.object(shutil, "which", return_value="/opt/bin/legionaura"), \
+                patch.object(subprocess, "run", side_effect=timeout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(m_cli.main(["kb", "static", "ff0000"]), 1)
+        self.assertEqual(stderr.getvalue(), "loqctl: legionaura did not answer within 8 s.\n")
 
 
 class AnsiColorTests(unittest.TestCase):
