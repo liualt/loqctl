@@ -1458,6 +1458,18 @@ class KbCliTests(unittest.TestCase):
             with self.assertRaises(m_common.ControlError, msg=argv):
                 self.run_cli(*argv)
 
+    def test_timeout_exits_with_message(self):
+        class KB(m_keyboard.Keyboard):
+            def __init__(self):
+                super().__init__(binary="legionaura", config="/nonexistent/loqctl.json")
+        timeout = subprocess.TimeoutExpired(["legionaura"], 8)
+        stderr = io.StringIO()
+        with patch.object(m_keyboard, "Keyboard", KB), \
+                patch.object(shutil, "which", return_value="/opt/bin/legionaura"), \
+                patch.object(subprocess, "run", side_effect=timeout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(m_cli.main(["kb", "static", "ff0000"]), 1)
+        self.assertEqual(stderr.getvalue(), "loqctl: legionaura did not answer within 8 s.\n")
+
 
 class AnsiColorTests(unittest.TestCase):
     def test_theme_uses_ansi_palette_only(self):
