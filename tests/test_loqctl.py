@@ -315,6 +315,30 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(row[1:], (7, True))
         self.assertTrue(any("locked in balanced mode" in c[0] for c in calls))
 
+    def test_limit_detail_shows_na_for_unreadable_limits(self):
+        self.hw.set_mode("custom")
+        cases = (
+            (("min_value", "max_value", "default_value"), "N/A–N/A", "step 1", "default N/A"),
+            (("max_value",), "5–N/A", "step 1", "default 60"),
+            (("scalar_increment",), "5–100", "step N/A", "default 60"),
+        )
+        for unreadable, *expected in cases:
+            self.add_attr("ppt_pl1_spl", 60, 5, 100, 1, 60)
+            for name in unreadable:
+                (self.attr.parent / "ppt_pl1_spl" / name).write_text("garbage")
+            state = self.hw.capabilities()
+            dashboard = self.dashboard()
+            dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+            calls = []
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+            dashboard.box = Mock()
+            dashboard.selected = dashboard.rows(state).index("ppt_pl1_spl")
+            dashboard.draw_controls(state, 0, 0, 20, 90)
+            detail = next(text for text, _ in calls if "step" in text or "default" in text)
+            for part in expected:
+                self.assertIn(part, detail, unreadable)
+            self.assertNotIn("None", detail, unreadable)
+
     def dashboard(self):
         dashboard = object.__new__(m_ui.Dashboard)
         dashboard.help = False
