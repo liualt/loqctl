@@ -71,14 +71,15 @@ class Hardware:
         path = self.base / key if self.base else None
         if path is None or not path.is_dir():
             return None
-        item = {"label": label, "unit": unit, "description": read(path / "display_name", label), "read_error": None}
+        item = {"label": label, "unit": unit, "description": read(path / "display_name", label), "read_error": None,
+                "read_errno": None}
         for name in ("current_value", "min_value", "max_value", "default_value", "scalar_increment"):
             try:
                 item[name] = int((path / name).read_text().strip())
             except OSError as exc:
                 item[name] = None
                 if name == "current_value":
-                    item["read_error"] = exc.strerror
+                    item["read_error"], item["read_errno"] = exc.strerror, exc.errno
             except ValueError:
                 item[name] = None
         item["available"] = all(item[n] is not None for n in
