@@ -212,6 +212,8 @@ loqctl kb off
 loqctl kb apply
 ```
 
+`loqctl kb` and `loqctl kb status` print the settings in `~/.config/legionaura/config.json`. The other subcommands print the settings they sent to LegionAura.
+
 ## Local HTTP API
 
 ```sh
