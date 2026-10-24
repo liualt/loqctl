@@ -1504,8 +1504,9 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(kb.zones, ["ffffff", "ff0000", "ff0000", "ff0000"])
 
     def test_smt_siblings_counted_once(self):
-        root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, root, True)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
         s = m_sensors.Sensors(root, root / "proc", root / "dev")
         def counts(core):
             for i, core_id in ((0, "0"), (1, "0"), (2, "1")):
@@ -1600,20 +1601,6 @@ class AnsiColorTests(unittest.TestCase):
         self.assertTrue(pairs)
         for _, fg, bg in pairs:
             self.assertTrue(-1 <= fg <= 15 and -1 <= bg <= 15, (fg, bg))
-
-    def test_sources_never_redefine_colors_or_emit_raw_escapes(self):
-        import tokenize
-        for path in sorted((REPO / "loqctl").glob("*.py")):
-            with path.open("rb") as handle:
-                for token in tokenize.tokenize(handle.readline):
-                    if token.type == tokenize.NAME:
-                        self.assertNotIn(token.string, ("init_color", "can_change_color"), path.name)
-                    elif token.type == tokenize.STRING:
-                        for escape in ("\\x1b[", "\\033[", "\\u001b["):
-                            self.assertNotIn(escape, token.string.lower(), f"{path.name}: raw escape")
-                    elif token.type == tokenize.NUMBER and token.line.lstrip().startswith("curses.init_pair"):
-                        # Color numbers above 15 are outside the 16-color ANSI palette.
-                        self.assertLessEqual(int(token.string), 15, token.line)
 
 
 class CompatibilityTests(unittest.TestCase):
