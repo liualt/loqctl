@@ -57,6 +57,12 @@ class UiTests(helpers.SysfsCase):
         self.assertEqual(dashboard.pending, {"cpu_temp": 90})
         self.assertEqual([r["status"] for r in dashboard.apply_results], ["APPLIED", "FAILED"])
 
+    def test_footer_hints_fit_the_minimum_width(self):
+        for hint in (m_ui.Dashboard.HINT_MAIN, m_ui.Dashboard.HINT_FANS, m_ui.Dashboard.HINT_KEYBOARD):
+            self.assertLessEqual(len(hint), m_ui.Dashboard.MIN_W - 3)
+            self.assertTrue(hint.endswith("q quit"))
+        self.assertTrue(m_ui.Dashboard.HINT_MAIN.endswith("? help  q quit"))
+
     def test_dashboard_mode_lock(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()
