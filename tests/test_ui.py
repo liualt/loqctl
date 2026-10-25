@@ -542,6 +542,40 @@ class UiTests(helpers.SysfsCase):
         dash.put(10, 0, "x")
         self.assertEqual(dash.s.addnstr.call_count, 1)
 
+    def test_help_key_opens_from_every_panel(self):
+        for panel in ("main", "keyboard", "fans"):
+            dash = self.dash()
+            dash.panel = panel
+            dash.handle(ord("?"), {})
+            self.assertTrue(dash.help, panel)
+            dash.handle(ord("?"), {})
+            self.assertFalse(dash.help, panel)
+            self.assertEqual(dash.panel, panel)
+
+    def test_help_key_opens_without_firmware_rows(self):
+        dash = self.dash()
+        dash.rows = lambda state: []
+        dash.handle(ord("?"), {})
+        self.assertTrue(dash.help)
+
+    def test_panel_footers_list_help_key(self):
+        for panel in ("keyboard", "fans"):
+            dash = self.dash()
+            dash.panel = panel
+            calls = []
+            dash.put = lambda y, x, text, *a, **k: calls.append(text)
+            dash.s = Mock()
+            dash.s.getmaxyx.return_value = (30, 80)
+            dash.kb_seen = dash.keyboard.last_seq
+            dash.paused = False
+            dash.push_history = lambda metrics: None
+            dash.help = dash.show_results = dash.show_limits = False
+            dash.sudo_expired = False
+            dash.theme = Mock()
+            dash.draw_main = dash.draw_keyboard = dash.draw_fans = lambda *a, **k: None
+            dash.draw({"metrics": {}})
+            self.assertTrue(any(t.startswith("? help") for t in calls), panel)
+
     def test_external_mode_change_drops_staged_limits(self):
         dash = self.dash()
         dash.pending = {"ppt_pl1_spl": 60, "mode": "balanced"}
