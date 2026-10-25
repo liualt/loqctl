@@ -423,7 +423,7 @@ class Sensors:
 
 class Sampler:
     FIRMWARE_INTERVAL = 5
-    on_firmware = None  # serve hook: called with each good firmware read
+    on_firmware = None  # serve hook: called with each good firmware read, on its own thread
 
     def __init__(self, hardware=None):
         self.hardware = hardware or Hardware()
@@ -432,6 +432,7 @@ class Sampler:
         self.caps = {}  # last good firmware read
         self.metrics = {}
         self.fw_error = None
+        self.hook = None  # thread running on_firmware, so a slow write never stalls the sampler
         self.next_firmware = None
         self.stop = threading.Event()
         self.force = threading.Event()  # refresh() sets it: read firmware now and wake the wait
@@ -448,11 +449,9 @@ class Sampler:
                 self.fw_error = None
             except Exception as exc:
                 self.fw_error = str(exc)
-            if self.on_firmware and self.fw_error is None:
-                try:
-                    self.on_firmware(self.caps)
-                except Exception as exc:
-                    print(f"firmware hook failed: {exc}", flush=True)
+            if self.on_firmware and self.fw_error is None and not (self.hook and self.hook.is_alive()):
+                self.hook = threading.Thread(target=self.call_hook, args=(self.caps,), daemon=True)
+                self.hook.start()
         error = self.fw_error
         try:
             self.metrics = self.sensors.sample()
@@ -462,6 +461,12 @@ class Sampler:
         if error:
             latest["error"] = error
         self.latest = latest
+
+    def call_hook(self, caps):
+        try:
+            self.on_firmware(caps)
+        except Exception as exc:
+            print(f"firmware hook failed: {exc}", flush=True)
 
     def run(self):
         while not self.stop.is_set():

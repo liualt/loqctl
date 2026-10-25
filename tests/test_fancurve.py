@@ -883,6 +883,7 @@ class ReapplyTests(helpers.SysfsCase):
         sampler.on_firmware = Mock(side_effect=RuntimeError("boom"))
         with patch.object(sampler.sensors, "sample", return_value={}), patch("builtins.print"):
             sampler.tick()
+            sampler.hook.join(5)
         sampler.on_firmware.assert_called_once()
         self.assertEqual(sampler.latest["mode"], "custom")
 
