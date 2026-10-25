@@ -55,7 +55,7 @@ def main(argv=None):
     commands.add_parser("limits", help="Print per-mode firmware limits as JSON")
     commands.add_parser("fan", help="Print the fan curve and RPM as JSON")
     mode = commands.add_parser("mode", help="Read or set the platform mode")
-    mode.add_argument("value", nargs="?", help="Mode to set (low-power, balanced, performance or custom); omit to print the current mode")
+    mode.add_argument("value", nargs="?", help="Mode to set; omit to print the current mode")
     setting = commands.add_parser("set", help="Set one firmware attribute, with readback verification")
     setting.add_argument("attribute", choices=FIELDS)
     setting.add_argument("value", type=int)
