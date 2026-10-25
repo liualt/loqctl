@@ -76,7 +76,7 @@ class HardwareTests(helpers.SysfsCase):
         with self.assertRaisesRegex(m_common.ControlError, "custom"):
             self.hw.set_value("ppt_pl1_spl", 60)
         self.assertEqual((self.attr / "current_value").read_text(), "50")
-        with self.assertRaises(m_common.ControlError):
+        with self.assertRaisesRegex(m_common.ControlError, r"'turbo'\. Choose one of .*balanced"):
             self.hw.set_mode("turbo")
 
     def test_allowlist_blocks_traversal_and_unknowns(self):
