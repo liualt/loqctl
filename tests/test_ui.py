@@ -252,12 +252,25 @@ class UiTests(helpers.SysfsCase):
     def test_report_cannot_claim_success_when_readback_missing(self):
         dashboard = self.dashboard()
         dashboard.backend.controls = Mock(side_effect=[self.hw.capabilities(), OSError("read failed")])
+        dashboard.backend.write = Mock(return_value={"verified": True})
         dashboard.pending = {"ppt_pl1_spl": 60}
         with self.assertRaises(m_common.ControlError):
             dashboard.apply(self.hw.capabilities())
         self.assertEqual(dashboard.apply_results[0]["status"], "UNVERIFIED")
         self.assertIsNone(dashboard.apply_results[0]["current"])
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+
+    def test_remote_apply_reads_capabilities_once(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        dashboard = self.dashboard()
+        dashboard.backend.controls = Mock(return_value=self.hw.capabilities())
+        dashboard.backend.write = Mock(side_effect=lambda key, value: {"current": value})
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        dashboard.apply(self.hw.capabilities())
+        self.assertEqual(dashboard.backend.controls.call_count, 1)
+        self.assertEqual([(r["key"], r["before"], r["current"], r["status"]) for r in dashboard.apply_results],
+                         [("ppt_pl1_spl", 50, 60, "APPLIED"), ("cpu_temp", 80, 90, "APPLIED")])
+        self.assertEqual(dashboard.pending, {})
 
     def local_dashboard(self):
         dashboard = self.dashboard()
