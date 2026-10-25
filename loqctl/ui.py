@@ -643,34 +643,42 @@ class Dashboard(FanPanel):
         self.put(tip_y, ix, "Hardware shows the true color. UI uses your terminal theme only.", self.theme.TEXT, dim=True)
         self.put(tip_y + 1, ix, f"config {kb.config}"[:iw], self.theme.TEXT, dim=True)
 
+    HELP_LINES = (
+        "Global    t sensors   Space pause   ? help   q quit",
+        "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
+        "          0-9 type a value   Backspace delete   Esc clear",
+        "          Enter apply all   d custom default   r discard all",
+        "          Limits need custom mode (Enter on mode row)",
+        "          v last results   s sudo authenticate (if needed)",
+        "          m overlay of every mode's firmware limits",
+        "",
+        "Keyboard  l open lighting panel   Esc back to firmware",
+        "          1–4 select zone   ←/→ adjust HSV   ↑↓ channel",
+        "          e cycle effect   b brightness   w wave dir",
+        "          c copy color to all zones   Space live apply",
+        "          Enter apply via legionaura",
+        "",
+        "Fans      f open fan curves (edits need custom mode)",
+        "          ←→ or Tab/[ ] select point",
+        "          ↑↓ next speed the fan stores (both fans)",
+        "          Shift+↑↓ five steps   d details",
+        "          Enter apply   r discard   R reset to stock",
+        "          p next curve   W save   Esc back",
+    )
+
     def draw_help(self):
         h, w = self.s.getmaxyx()
         bw = min(86, w - 4)
-        bh = min(21, h - 2)
+        bh = min(len(self.HELP_LINES) + 2, h - 2)
         bx, by = (w - bw) // 2, max(1, (h - bh) // 2)
         self.fill(by, bx, bh, bw)
-        self.box(by, bx, bh, bw, "Help", self.theme.ACCENT)
-        lines = [
-            "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
-            "          0-9 type a value   Backspace delete   Esc clear row",
-            "          Enter apply all    d custom default   r discard all",
-            "          v last apply results   Limits need custom mode (Enter on mode row)",
-            "          s sudo authenticate (shown when needed)",
-            "          m mode limits overlay: every mode's firmware limits",
-            "",
-            "Keyboard  l open lighting panel   Esc back to firmware",
-            "          1–4 select zone   ←/→ adjust HSV   ↑↓ channel",
-            "          e cycle effect   b brightness   w wave dir",
-            "          c copy color to all zones   Space toggle live apply",
-            "          Enter apply via legionaura",
-            "",
-            "Fans      f open fan curves (edits need custom mode)   ←→ or Tab/[ ] select point",
-            "          ↑↓ next speed the fan stores (both fans)   Shift+↑↓ five steps   d details",
-            "          Enter apply   r discard   R reset to stock   p next curve   W save   Esc back",
-            "Global    t sensors view   Space pause telemetry   ? help   q quit",
-            "Colors use your terminal ANSI palette only (no custom RGB UI).",
-            "Press ? or Esc to close.",
-        ]
+        hint = "? or Esc to close"
+        title = "Help" if bw >= len(hint) + 16 else ""
+        self.box(by, bx, bh, bw, title, self.theme.ACCENT, right=hint)
+        lines = list(self.HELP_LINES)
+        if len(lines) > bh - 2:
+            keep = max(0, bh - 3)
+            lines = lines[:keep] + [f"… ({len(lines) - keep} more, resize)"]
         for i, line in enumerate(lines[: bh - 2]):
             self.put(by + 1 + i, bx + 2, line[: bw - 4], self.theme.TEXT, dim=not line)
 
