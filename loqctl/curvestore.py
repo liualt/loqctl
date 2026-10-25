@@ -3,6 +3,7 @@
 """Saved fan curves, the recorded stock curve per mode and the root-side re-apply of the last applied curve."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -18,12 +19,23 @@ MAX_FILE = 65536
 STOCK = "stock"
 
 
-def config_dir(uid=None):
-    """~/.config/loqctl (XDG_CONFIG_HOME respected); another uid's home comes from pwd."""
-    if uid is not None and uid != os.getuid():
-        return Path(pwd.getpwuid(uid).pw_dir) / ".config/loqctl"
+def config_dir():
+    """~/.config/loqctl, with XDG_CONFIG_HOME respected."""
     base = os.environ.get("XDG_CONFIG_HOME", "")
     return (Path(base) if os.path.isabs(base) else Path.home() / ".config") / "loqctl"
+
+
+def active_path(uid=None):
+    """The user's ~/.config/loqctl/active.json, from the passwd entry of `uid` (default: this user).
+    HOME and XDG_CONFIG_HOME are ignored: sudo resets them, so the server could not see the same path."""
+    uid = os.getuid() if uid is None else uid
+    try:
+        home = pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        home = ""
+    if not os.path.isabs(home):
+        raise OSError(errno.ENOENT, "No home directory for this user")
+    return Path(home) / ".config/loqctl/active.json"
 
 
 def writable_points(points):
@@ -50,11 +62,12 @@ def write_atomic(path, points):
 
 
 def save_active(points):
-    return write_atomic(config_dir() / "active.json", points)
+    return write_atomic(active_path(), points)
 
 
 def clear_active():
-    (config_dir() / "active.json").unlink(missing_ok=True)
+    active_path().unlink(missing_ok=True)
+    (config_dir() / "active.json").unlink(missing_ok=True)  # legacy path, which also blocks save_stock
 
 
 def stock_path(mode):
@@ -85,9 +98,9 @@ def mark_written(mode):
 
 def save_stock(mode, points):
     """Record `points` as the stock curve of `mode` unless one exists, loqctl already wrote in
-    that mode, or active.json exists. Returns True when it wrote."""
+    that mode, or active.json exists (also at the legacy XDG path). Returns True when it wrote."""
     if (not mode or stock_path(mode).exists() or marker_path(mode).exists()
-            or (config_dir() / "active.json").exists()):
+            or active_path().exists() or (config_dir() / "active.json").exists()):
         return False
     write_atomic(stock_path(mode), points)
     return True
@@ -115,8 +128,13 @@ def read_curve_file(path, uid=None):
         if uid is not None and (info.st_uid != uid or info.st_mode & 0o022):
             raise ControlError(f"{name} must be owned by uid {uid} and not group/world-writable.")
         try:
-            data = json.load(handle)
-        except ValueError as exc:
+            raw = handle.buffer.read(MAX_FILE + 1)
+            if len(raw) > MAX_FILE:
+                raise ControlError(f"{name} is not a regular curve file.")
+            data = json.loads(raw.decode())
+        except ControlError:
+            raise
+        except ValueError as exc:  # UnicodeDecodeError is one
             raise ControlError(f"{name} is not valid JSON.") from exc
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("points"), list):
         raise ControlError(f"{name} is not a version 1 fan curve.")
@@ -162,6 +180,7 @@ class Reapplier:
         self.hardware, self.uid = hardware, uid
         self.log = log or (lambda message: print(message, flush=True))
         self.mode = self.gap = None
+        self.missing = False
 
     def __call__(self, caps):
         mode = caps.get("mode")
@@ -174,10 +193,15 @@ class Reapplier:
 
     def apply(self, reason):
         try:
-            path = config_dir(self.uid) / "active.json"
+            path = active_path(self.uid)
             if not os.path.lexists(path):
+                if not self.missing:
+                    self.log(f"fancurve: nothing to re-apply after {reason}: no ~/.config/loqctl/active.json")
+                self.missing = True
                 return
-            results = self.hardware.write_fancurve(read_curve_file(path, self.uid))
+            self.missing = False
+            points = read_curve_file(path, self.uid)
+            results = self.hardware.write_fancurve(points)
             failed = next((r for r in results if r["status"] != "APPLIED"), None)
             if failed:
                 self.log(f"fancurve: re-apply after {reason} stopped: {failed.get('error') or failed['status']}")

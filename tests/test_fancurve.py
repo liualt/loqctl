@@ -288,6 +288,12 @@ class FanPanelFixture:
         env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
         env.start()
         self.addCleanup(env.stop)
+        self.home = self.root / "home"
+        self.active = self.home / ".config/loqctl/active.json"
+        pw = patch.object(m_store.pwd, "getpwuid",
+                          side_effect=lambda uid: Mock(pw_dir=str(self.home if uid == os.getuid() else self.root / f"home{uid}")))
+        pw.start()
+        self.addCleanup(pw.stop)
         thread = patch.object(m_panel, "threading", SimpleNamespace(Thread=ImmediateThread))
         thread.start()
         self.addCleanup(thread.stop)
@@ -547,15 +553,52 @@ class CurveStoreTests(unittest.TestCase):
         env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
         env.start()
         self.addCleanup(env.stop)
+        self.home = self.root / "home"
+        self.active = self.home / ".config/loqctl/active.json"
+        pw = patch.object(m_store.pwd, "getpwuid",
+                          side_effect=lambda uid: Mock(pw_dir=str(self.home if uid == os.getuid() else self.root / f"home{uid}")))
+        pw.start()
+        self.addCleanup(pw.stop)
 
-    def test_config_dir_respects_xdg_and_serve_uid_home(self):
+    def test_config_dir_respects_xdg(self):
         self.assertEqual(m_store.config_dir(), self.config / "loqctl")
         with patch.dict(os.environ, {"XDG_CONFIG_HOME": ""}):
             self.assertEqual(m_store.config_dir(), Path.home() / ".config/loqctl")
-        home = Mock(pw_dir="/home/other")
-        with patch.object(m_store.pwd, "getpwuid", return_value=home):
-            self.assertEqual(m_store.config_dir(os.getuid() + 1), Path("/home/other/.config/loqctl"))
-        self.assertEqual(m_store.config_dir(os.getuid()), self.config / "loqctl")
+
+    def test_active_path_ignores_xdg_and_home_for_own_and_other_uid(self):
+        with patch.dict(os.environ, {"HOME": "/elsewhere"}):
+            self.assertEqual(m_store.active_path(), self.active)
+            self.assertEqual(m_store.active_path(os.getuid() + 1),
+                             self.root / f"home{os.getuid() + 1}/.config/loqctl/active.json")
+        self.assertEqual(m_store.save_active(CURVE), self.active)
+        self.assertFalse((self.config / "loqctl/active.json").exists())
+
+    def test_active_path_needs_an_absolute_home(self):
+        for entry in (KeyError("uid"), Mock(pw_dir=""), Mock(pw_dir="relative")):
+            effect = {"side_effect": entry} if isinstance(entry, KeyError) else {"return_value": entry}
+            with patch.object(m_store.pwd, "getpwuid", **effect):
+                with self.assertRaises(OSError):
+                    m_store.active_path()
+
+    def test_legacy_xdg_active_json_blocks_recording_stock(self):
+        m_store.write_atomic(self.config / "loqctl/active.json", CURVE)
+        self.assertFalse(m_store.save_stock("custom", CURVE))
+        self.assertFalse(m_store.stock_path("custom").exists())
+
+    def test_clear_active_removes_the_legacy_file_too(self):
+        legacy = self.config / "loqctl/active.json"
+        m_store.write_atomic(legacy, CURVE)
+        m_store.save_active(CURVE)
+        m_store.clear_active()
+        self.assertFalse(legacy.exists())
+        self.assertFalse(self.active.exists())
+        self.assertTrue(m_store.save_stock("custom", CURVE))
+
+    def test_non_utf8_file_is_a_control_error(self):
+        path = self.root / "bad.json"
+        path.write_bytes(b"\xff\xfe{")
+        with self.assertRaises(m_common.ControlError):
+            m_store.read_curve_file(path)
 
     def test_stock_is_recorded_once_per_mode_and_never_over_active(self):
         self.assertTrue(m_store.save_stock("custom", CURVE))
@@ -573,11 +616,11 @@ class CurveStoreTests(unittest.TestCase):
         self.assertEqual(m_store.stock_path("../x y").parent, self.config / "loqctl/stock")
         m_store.clear_active()
         m_store.clear_active()  # already gone
-        self.assertFalse((self.config / "loqctl/active.json").exists())
+        self.assertFalse(self.active.exists())
 
     def test_atomic_write_mode_and_round_trip(self):
         path = m_store.save_active(CURVE)
-        self.assertEqual(path, self.config / "loqctl/active.json")
+        self.assertEqual(path, self.active)
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(list(path.parent.glob(".*tmp")), [])
         points = m_store.read_curve_file(path, os.getuid())
@@ -648,6 +691,12 @@ class ReapplyTests(unittest.TestCase):
         env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
         env.start()
         self.addCleanup(env.stop)
+        self.home = self.root / "home"
+        self.active = self.home / ".config/loqctl/active.json"
+        pw = patch.object(m_store.pwd, "getpwuid",
+                          side_effect=lambda uid: Mock(pw_dir=str(self.home if uid == os.getuid() else self.root / f"home{uid}")))
+        pw.start()
+        self.addCleanup(pw.stop)
         m_store.save_active(edit(CURVE, {(1, "fan1"): 90}))
         self.log = []
         self.reapply = m_store.Reapplier(self.hw, os.getuid(), self.log.append)
@@ -697,7 +746,7 @@ class ReapplyTests(unittest.TestCase):
         self.assertIn("after resume", self.log[-1])
 
     def test_untrusted_or_invalid_file_skipped_with_log(self):
-        path = self.config / "loqctl/active.json"
+        path = self.active
         path.chmod(0o666)
         self.tick("custom")
         self.assertEqual(self.fan1(), 80)
@@ -710,7 +759,7 @@ class ReapplyTests(unittest.TestCase):
             self.reapply.apply("custom mode")
         self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: ValueError")
         other = m_store.Reapplier(self.hw, os.getuid() + 1, self.log.append)
-        with patch.object(m_store, "config_dir", return_value=path.parent):
+        with patch.object(m_store, "active_path", return_value=path):
             other({"mode": "custom"})
         self.assertEqual(self.fan1(), 80)
         self.assertIn("skipped", self.log[-1])
@@ -724,10 +773,42 @@ class ReapplyTests(unittest.TestCase):
         self.tick("custom")
         self.assertIn("skipped", self.log[-1])
 
-    def test_missing_file_is_silent_and_sampler_hook_survives_errors(self):
-        (self.config / "loqctl/active.json").unlink()
+    def test_xdg_elsewhere_still_reapplies(self):
+        self.assertFalse((self.config / "loqctl/active.json").exists())
         self.tick("custom")
-        self.assertEqual(self.log, [])
+        self.assertEqual(self.fan1(), 90)
+
+    def test_rejected_file_then_deleted_logs_again(self):
+        self.active.chmod(0o666)
+        self.tick("custom")
+        self.assertIn("skipped", self.log[-1])
+        self.active.unlink()
+        self.tick("balanced")
+        self.tick("custom")
+        self.assertIn("nothing to re-apply", self.log[-1])
+
+    def test_oversized_file_is_rejected(self):
+        self.active.write_text("é" * (m_store.MAX_FILE // 2 + 1))  # under the limit in characters, over in bytes
+        with patch.object(m_store.os, "fstat", return_value=Mock(st_mode=0o100600, st_size=0, st_uid=os.getuid())):
+            with self.assertRaises(m_common.ControlError):
+                m_store.read_curve_file(self.active)
+
+    def test_missing_file_logs_once_and_sampler_hook_survives_errors(self):
+        self.active.unlink()
+        self.tick("custom")
+        self.assertEqual(self.log, ["fancurve: nothing to re-apply after custom mode: no ~/.config/loqctl/active.json"])
+        self.tick("balanced")
+        self.tick("custom")
+        self.assertEqual(len(self.log), 1)
+        m_store.save_active(edit(CURVE, {(1, "fan1"): 90}))
+        self.tick("balanced")
+        self.tick("custom")
+        self.assertIn("re-applied", self.log[-1])
+        self.active.unlink()
+        self.tick("balanced")
+        self.tick("custom")
+        self.assertEqual(len(self.log), 3)
+        self.assertIn("nothing to re-apply", self.log[-1])
         sampler = m_sensors.Sampler(self.hw)
         sampler.on_firmware = Mock(side_effect=RuntimeError("boom"))
         with patch.object(sampler.sensors, "sample", return_value={}), patch("builtins.print"):
@@ -749,7 +830,7 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         self.assertEqual(dash.fan_edit[2]["fan1"], 156)  # the 60 % floor reads back the same as 61 %, so held
         self.keys(dash, state, 10)
         self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 156)
-        self.assertEqual(m_store.read_curve_file(self.config / "loqctl/active.json")[2]["fan1"], 156)
+        self.assertEqual(m_store.read_curve_file(self.active)[2]["fan1"], 156)
         self.assertEqual(m_store.read_stock("custom")[2]["fan1"], 180)  # recorded just before the first write
         self.keys(dash, state, curses.KEY_UP, 10)
         self.assertEqual(m_store.read_stock("custom")[2]["fan1"], 180)  # later applies do not overwrite it
@@ -773,10 +854,10 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         dash = self.dash()
         state = {"mode": "custom"}
         self.keys(dash, state, "f", "]", "]", curses.KEY_SF, 10)
-        self.assertTrue((self.config / "loqctl/active.json").exists())
+        self.assertTrue(self.active.exists())
         self.keys(dash, state, "R")
         self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 180)
-        self.assertFalse((self.config / "loqctl/active.json").exists())
+        self.assertFalse(self.active.exists())
         self.assertIn("Reset to the stock curve", dash.notice)
 
     def test_reset_without_recorded_stock_writes_nothing(self):
@@ -788,7 +869,7 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         with patch.object(self.hw, "write_fancurve") as write:
             self.keys(dash, state, "R")
         write.assert_not_called()
-        self.assertFalse((self.config / "loqctl/active.json").exists())
+        self.assertFalse(self.active.exists())
         self.assertIn("never recorded", dash.notice)
         self.assertNotIn("Reset to", dash.notice)
         self.keys(dash, state, "f")
@@ -814,17 +895,17 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         state = {"mode": "custom"}
         self.keys(dash, state, "f", "]", "]", curses.KEY_SF, 10)
         m_store.write_atomic(self.config / "loqctl/stock/custom.json", CURVE[:2])  # point count changed
-        (self.config / "loqctl/active.json").write_text("{}")
+        self.active.write_text("{}")
         with patch.object(self.hw, "write_fancurve") as write:
             self.keys(dash, state, "R")
             write.assert_not_called()
             self.assertIn("no longer fits", dash.notice)
-            self.assertTrue((self.config / "loqctl/active.json").exists())
+            self.assertTrue(self.active.exists())
             with patch.object(os, "geteuid", return_value=0):
                 self.keys(dash, state, "R")
             write.assert_not_called()
         self.assertIn("not root", dash.notice)
-        self.assertTrue((self.config / "loqctl/active.json").exists())
+        self.assertTrue(self.active.exists())
 
     def test_marker_failure_and_active_json_are_reported_not_fatal(self):
         dash = self.dash()
