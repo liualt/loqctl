@@ -449,6 +449,51 @@ class FanCurveSurfaceTests(FanPanelFixture, unittest.TestCase):
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
         self.assertTrue(dash.fan["available"])
 
+    def test_fresh_read_beats_inflight_load(self):
+        dash = self.dash()
+        started = []
+        with patch.object(m_panel, "threading", SimpleNamespace(
+                Thread=lambda target, daemon=None: Mock(start=lambda: started.append(target)))):
+            dash.open_fans()
+        old = {"available": True, "mode": "custom", "points": CURVE[:2]}
+        new = {"available": True, "mode": "custom", "points": CURVE}
+        self.assertTrue(dash.fan_loading)  # the background load is still running
+        with patch.object(dash.backend, "fancurve", return_value=new):
+            dash.fan_request(wait=True)
+        with patch.object(dash.backend, "fancurve", return_value=old):
+            started[0]()  # the old load finishes late and must be dropped
+        dash.fan_take()
+        self.assertEqual(dash.fan["points"], CURVE)
+        self.assertFalse(dash.fan_loading)
+
+    def test_fresh_read_discards_untaken_result(self):
+        dash = self.dash()
+        dash.fan_init()
+        dash.fan_result = {"available": True, "mode": "custom", "points": CURVE[:2]}
+        new = {"available": True, "mode": "custom", "points": CURVE}
+        with patch.object(dash.backend, "fancurve", return_value=new):
+            dash.fan_request(wait=True)
+        self.assertEqual(dash.fan["points"], CURVE)
+
+    def test_stale_load_resuming_after_fresh_read_is_dropped(self):
+        dash = self.dash()
+        dash.fan_init()
+        new = {"available": True, "mode": "custom", "points": CURVE}
+        old = {"available": True, "mode": "custom", "points": CURVE[:2]}
+        started = []
+
+        def stale_read():
+            # the UI thread applies and reads fresh while this load is mid-read
+            with patch.object(dash.backend, "fancurve", return_value=new):
+                dash.fan_request(wait=True)
+            return old
+        with patch.object(m_panel, "threading", SimpleNamespace(
+                Thread=lambda target, daemon=None: Mock(start=lambda: started.append(target)))), patch.object(dash.backend, "fancurve", side_effect=stale_read):
+            dash.fan_request()
+            started[0]()
+        dash.fan_take()
+        self.assertEqual(dash.fan["points"], CURVE)
+
     def test_reopen_shows_outside_curve_change(self):
         dash = self.dash()
         self.keys(dash, {"mode": "custom"}, "f")
