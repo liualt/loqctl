@@ -3,6 +3,7 @@
 """Saved fan curves, the recorded stock curve per mode and the root-side re-apply of the last applied curve."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,13 @@ def active_path(uid=None):
     """The user's ~/.config/loqctl/active.json, from the passwd entry of `uid` (default: this user).
     HOME and XDG_CONFIG_HOME are ignored: sudo resets them, so the server could not see the same path."""
     uid = os.getuid() if uid is None else uid
-    return Path(pwd.getpwuid(uid).pw_dir) / ".config/loqctl/active.json"
+    try:
+        home = pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        home = ""
+    if not os.path.isabs(home):
+        raise OSError(errno.ENOENT, "No home directory for this user")
+    return Path(home) / ".config/loqctl/active.json"
 
 
 def writable_points(points):
@@ -90,9 +97,9 @@ def mark_written(mode):
 
 def save_stock(mode, points):
     """Record `points` as the stock curve of `mode` unless one exists, loqctl already wrote in
-    that mode, or active.json exists. Returns True when it wrote."""
+    that mode, or active.json exists (also at the legacy XDG path). Returns True when it wrote."""
     if (not mode or stock_path(mode).exists() or marker_path(mode).exists()
-            or active_path().exists()):
+            or active_path().exists() or (config_dir() / "active.json").exists()):
         return False
     write_atomic(stock_path(mode), points)
     return True
@@ -119,12 +126,14 @@ def read_curve_file(path, uid=None):
         os.set_blocking(handle.fileno(), True)
         if uid is not None and (info.st_uid != uid or info.st_mode & 0o022):
             raise ControlError(f"{name} must be owned by uid {uid} and not group/world-writable.")
-        text = handle.read(MAX_FILE + 1)
-        if len(text) > MAX_FILE:
-            raise ControlError(f"{name} is not a regular curve file.")
         try:
+            text = handle.read(MAX_FILE + 1)
+            if len(text) > MAX_FILE:
+                raise ControlError(f"{name} is not a regular curve file.")
             data = json.loads(text)
-        except ValueError as exc:
+        except ControlError:
+            raise
+        except ValueError as exc:  # UnicodeDecodeError is one
             raise ControlError(f"{name} is not valid JSON.") from exc
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("points"), list):
         raise ControlError(f"{name} is not a version 1 fan curve.")
@@ -189,8 +198,8 @@ class Reapplier:
                     self.log(f"fancurve: nothing to re-apply after {reason}: no ~/.config/loqctl/active.json")
                 self.missing = True
                 return
-            points = read_curve_file(path, self.uid)
             self.missing = False
+            points = read_curve_file(path, self.uid)
             results = self.hardware.write_fancurve(points)
             failed = next((r for r in results if r["status"] != "APPLIED"), None)
             if failed:

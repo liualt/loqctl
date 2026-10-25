@@ -290,7 +290,8 @@ class FanPanelFixture:
         self.addCleanup(env.stop)
         self.home = self.root / "home"
         self.active = self.home / ".config/loqctl/active.json"
-        pw = patch.object(m_store.pwd, "getpwuid", return_value=Mock(pw_dir=str(self.home)))
+        pw = patch.object(m_store.pwd, "getpwuid",
+                          side_effect=lambda uid: Mock(pw_dir=str(self.home if uid == os.getuid() else self.root / f"home{uid}")))
         pw.start()
         self.addCleanup(pw.stop)
         thread = patch.object(m_panel, "threading", SimpleNamespace(Thread=ImmediateThread))
@@ -509,7 +510,8 @@ class CurveStoreTests(unittest.TestCase):
         self.addCleanup(env.stop)
         self.home = self.root / "home"
         self.active = self.home / ".config/loqctl/active.json"
-        pw = patch.object(m_store.pwd, "getpwuid", return_value=Mock(pw_dir=str(self.home)))
+        pw = patch.object(m_store.pwd, "getpwuid",
+                          side_effect=lambda uid: Mock(pw_dir=str(self.home if uid == os.getuid() else self.root / f"home{uid}")))
         pw.start()
         self.addCleanup(pw.stop)
 
@@ -521,9 +523,28 @@ class CurveStoreTests(unittest.TestCase):
     def test_active_path_ignores_xdg_and_home_for_own_and_other_uid(self):
         with patch.dict(os.environ, {"HOME": "/elsewhere"}):
             self.assertEqual(m_store.active_path(), self.active)
-            self.assertEqual(m_store.active_path(os.getuid() + 1), self.active)
+            self.assertEqual(m_store.active_path(os.getuid() + 1),
+                             self.root / f"home{os.getuid() + 1}/.config/loqctl/active.json")
         self.assertEqual(m_store.save_active(CURVE), self.active)
         self.assertFalse((self.config / "loqctl/active.json").exists())
+
+    def test_active_path_needs_an_absolute_home(self):
+        for entry in (KeyError("uid"), Mock(pw_dir=""), Mock(pw_dir="relative")):
+            effect = {"side_effect": entry} if isinstance(entry, KeyError) else {"return_value": entry}
+            with patch.object(m_store.pwd, "getpwuid", **effect):
+                with self.assertRaises(OSError):
+                    m_store.active_path()
+
+    def test_legacy_xdg_active_json_blocks_recording_stock(self):
+        m_store.write_atomic(self.config / "loqctl/active.json", CURVE)
+        self.assertFalse(m_store.save_stock("custom", CURVE))
+        self.assertFalse(m_store.stock_path("custom").exists())
+
+    def test_non_utf8_file_is_a_control_error(self):
+        path = self.root / "bad.json"
+        path.write_bytes(b"\xff\xfe{")
+        with self.assertRaises(m_common.ControlError):
+            m_store.read_curve_file(path)
 
     def test_stock_is_recorded_once_per_mode_and_never_over_active(self):
         self.assertTrue(m_store.save_stock("custom", CURVE))
@@ -618,7 +639,8 @@ class ReapplyTests(unittest.TestCase):
         self.addCleanup(env.stop)
         self.home = self.root / "home"
         self.active = self.home / ".config/loqctl/active.json"
-        pw = patch.object(m_store.pwd, "getpwuid", return_value=Mock(pw_dir=str(self.home)))
+        pw = patch.object(m_store.pwd, "getpwuid",
+                          side_effect=lambda uid: Mock(pw_dir=str(self.home if uid == os.getuid() else self.root / f"home{uid}")))
         pw.start()
         self.addCleanup(pw.stop)
         m_store.save_active(edit(CURVE, {(1, "fan1"): 90}))
@@ -683,7 +705,8 @@ class ReapplyTests(unittest.TestCase):
             self.reapply.apply("custom mode")
         self.assertEqual(self.log[-1], "fancurve: skipped re-apply after custom mode: ValueError")
         other = m_store.Reapplier(self.hw, os.getuid() + 1, self.log.append)
-        other({"mode": "custom"})
+        with patch.object(m_store, "active_path", return_value=path):
+            other({"mode": "custom"})
         self.assertEqual(self.fan1(), 80)
         self.assertIn("skipped", self.log[-1])
         m_store.save_active(edit(CURVE, {(1, "cpu_up"): 30, (1, "fan1"): 90}))
@@ -700,6 +723,15 @@ class ReapplyTests(unittest.TestCase):
         self.assertFalse((self.config / "loqctl/active.json").exists())
         self.tick("custom")
         self.assertEqual(self.fan1(), 90)
+
+    def test_rejected_file_then_deleted_logs_again(self):
+        self.active.chmod(0o666)
+        self.tick("custom")
+        self.assertIn("skipped", self.log[-1])
+        self.active.unlink()
+        self.tick("balanced")
+        self.tick("custom")
+        self.assertIn("nothing to re-apply", self.log[-1])
 
     def test_oversized_file_is_rejected(self):
         self.active.write_text(" " * (m_store.MAX_FILE + 1))
