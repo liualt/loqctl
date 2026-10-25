@@ -2,6 +2,7 @@
 import errno
 import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -44,6 +45,24 @@ class HardwareTests(helpers.SysfsCase):
         with self.assertRaises(m_common.ControlError):
             self.hw.set_value("ppt_pl1_spl", 70)
         self.assertEqual(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["max_value"], 60)
+
+    def test_files_that_appear_after_start_are_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root)
+            self.assertEqual(hw.capabilities()["attributes"], {})
+            attr = root / "class/firmware-attributes/lenovo-wmi-other-0/attributes/ppt_pl1_spl"
+            attr.mkdir(parents=True)
+            for name, text in (("current_value", "50"), ("min_value", "50"), ("max_value", "100"),
+                               ("default_value", "50"), ("scalar_increment", "1")):
+                (attr / name).write_text(text + "\n")
+            prof = root / "class/platform-profile/p"
+            prof.mkdir(parents=True)
+            for name, text in (("name", m_hardware.GAMEZONE), ("profile", "custom"), ("choices", "quiet custom")):
+                (prof / name).write_text(text + "\n")
+            caps = hw.capabilities()
+        self.assertIn("ppt_pl1_spl", caps["attributes"])
+        self.assertEqual((caps["mode"], caps["modes"]), ("custom", ["quiet", "custom"]))
 
     def test_incomplete_limits_are_read_again(self):
         (self.attr / "max_value").unlink()

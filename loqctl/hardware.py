@@ -46,6 +46,11 @@ class Hardware:
             self.choices = self.root / "firmware/acpi/platform_profile_choices"
             self.mode_driver = None
 
+    def _rediscover(self):
+        """Look again for files that appeared (or moved) after start."""
+        if self.base is None or self.mode_driver is None or not self.profile.exists():
+            self._discover()
+
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
         with self.lock:
@@ -116,6 +121,7 @@ class Hardware:
 
     def capabilities(self):
         with self.lock:
+            self._rediscover()
             attrs = {}
             mode = self.read_mode()
             if mode != self._static_mode:
@@ -145,6 +151,7 @@ class Hardware:
 
     def set_mode(self, mode):
         with self.lock:
+            self._rediscover()
             previous = self.read_mode()
             if not isinstance(mode, str) or mode not in (read(self.choices, "") or "").split():
                 raise ControlError("Unsupported platform mode.")
@@ -157,6 +164,7 @@ class Hardware:
 
     def set_value(self, key, value):
         with self.lock:
+            self._rediscover()
             item = self._read_item(key, None, None, fresh=True) if key in FIELDS else None
             if item is None:
                 raise ControlError("Unknown or unavailable control.")
