@@ -23,6 +23,7 @@ class Backend:
         elif not self.remote and os.path.isdir(directory := os.path.dirname(self.path)) and not os.access(directory, os.X_OK):
             self.notice = f"Cannot reach {self.path}: no access to its directory; using local access."
         self.hardware = Hardware()
+        self.hardware.on_new_base = lambda: self.load_mode_limits(allow_sudo=False)
         self.sampler = None
         self.latest = {}
         self.stop = threading.Event()
