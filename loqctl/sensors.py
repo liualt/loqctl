@@ -362,7 +362,7 @@ class Sensors:
                 voltages.append({"label": f"{name} {label}", "v": value})
         voltages.append({"label": "CPU 0 Vcore", "v": self.cpu_vcore()})
         return {"battery_w": battery_w, "battery_status": battery_status, "usbc": usbc,
-                "temperatures": temperatures, "voltages": voltages, "cpu_throttle": self.cpu_throttle()}
+                "temperatures": temperatures, "voltages": voltages}
 
     def sample(self, now=None):
         now = time.monotonic() if now is None else now
@@ -416,7 +416,7 @@ class Sensors:
                 "power": {"rapl": rapl, "battery_w": slow["battery_w"],
                           "battery_status": slow["battery_status"], "usbc": slow["usbc"]},
                 "temperatures": temperatures, "voltages": voltages,
-                "throttle": {"cpu": slow["cpu_throttle"],
+                "throttle": {"cpu": self.cpu_throttle(),
                              "gpu": devices[0].get("throttle") if devices else None},
                 "load": list(os.getloadavg()), "uptime_s": number((read(self.proc / "uptime", "0")).split()[0])}
 
