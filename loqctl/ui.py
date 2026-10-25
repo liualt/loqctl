@@ -300,7 +300,7 @@ class Dashboard(FanPanel):
         if self.panel == "keyboard":
             keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
         elif self.panel == "fans":
-            keys = "Tab/[ ] point  ←→ temp  ↑↓ speed  Shift bigger step  Enter apply  r discard  p preset  W save  Esc back  q quit"
+            keys = "←→ point  ↑↓ speed  Enter apply  R reset to stock  p curves  d details  Esc back  q quit"
         else:
             keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  f fans  t sensors  m modes  Space pause  v results  ? help  q"
         self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)
@@ -656,8 +656,8 @@ class Dashboard(FanPanel):
             "          c copy color to all zones   Space toggle live apply",
             "          Enter apply via legionaura",
             "",
-            "Fans      f open fan curves (edits need custom mode)   Tab/[ ] select point",
-            "          ↑↓ speed (both fans)   Shift+arrow bigger step",
+            "Fans      f open fan curves (edits need custom mode)   ←→ or Tab/[ ] select point",
+            "          ↑↓ next speed the fan stores (both fans)   Shift+↑↓ five steps   d details",
             "          Enter apply   r discard   R reset to stock   p next curve   W save   Esc back",
             "Global    t sensors view   Space pause telemetry   ? help   q quit",
             "Colors use your terminal ANSI palette only (no custom RGB UI).",

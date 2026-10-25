@@ -61,8 +61,20 @@ class Scale:
         """Highest displayable speed."""
         return {"rpm": self.max_rpm // 100 * 100, "level": 10}.get(self.unit, 100)
 
-    def step(self, big=False):
-        return {"rpm": (100, 500), "level": (1, 2)}.get(self.unit, (5, 20))[big]
+    def speeds(self):
+        """Every display speed the module can store (one per stored byte), lowest first."""
+        return sorted({self.show(pwm) for pwm in range(256)} & set(range(self.top + 1)))
+
+    def next_speed(self, pwm, steps):
+        """Display speed `steps` storable speeds above pwm's (below when negative). Speeds that
+        read back as pwm's own are skipped, so on percent curves each step is 2 %. Stops at
+        either end of the range."""
+        speeds = self.speeds() if steps > 0 else self.speeds()[::-1]
+        value = self.show(pwm)
+        for _ in range(abs(steps)):
+            ahead = [s for s in speeds if (s > value if steps > 0 else s < value)]
+            value = next((s for s in ahead if not self.same(self.pwm(s), self.pwm(value))), value)
+        return value
 
     def stored(self, pwm):
         """The byte the firmware keeps for a pwm value (also recovers it from a readback)."""
