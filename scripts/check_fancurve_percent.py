@@ -11,6 +11,7 @@ what the module reads back, then restores the original value. It needs root. It 
 fanN_target.
 """
 import argparse
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -33,43 +34,56 @@ def report(hwmon, scale, out):
 
 
 def write_check(hwmon, scale, out):
-    points = fancurve.read_curve(hwmon)
-    original = points[0]["fan1"] if points else None
+    original = first(hwmon)
     if original is None:
         out("write check skipped: point 1 fan 1 is not readable")
         return
     out(f"write check: point 1 fan 1 starts at {original} ({scale.text(original)})")
     try:
         for step in (1, -1):
-            target = [{"fan1": scale.pwm(scale.show(original) + step)}]
+            target = only_fan1(hwmon, scale.pwm(scale.show(original) + step))
             try:
                 results = fancurve.write_curve(hwmon, target, scale)
+                out(f"{step:+d} %: wrote {target[0]['fan1']}, module reads back {first(hwmon)} "
+                    f"({scale.text(first(hwmon))}), {[r['status'] for r in results]}")
             except ControlError as exc:
                 out(f"{step:+d} %: refused: {exc}")
-                continue
-            now = fancurve.read_curve(hwmon)[0]["fan1"]
-            out(f"{step:+d} %: wrote {target[0]['fan1']}, module reads back {now} ({scale.text(now)}), "
-                f"{[r['status'] for r in results]}")
-            break
+            restore(hwmon, scale, original, out)
     finally:
-        if fancurve.read_curve(hwmon)[0]["fan1"] != original:
-            try:
-                fancurve.write_curve(hwmon, [{"fan1": original}], scale)
-            except ControlError as exc:
-                out(f"RESTORE FAILED, set pwm1_auto_point1_pwm back to {original} by hand: {exc}")
-        now = fancurve.read_curve(hwmon)[0]["fan1"]
-        out(f"restored: point 1 fan 1 is {now} ({scale.text(now)}), originally {original}")
+        restore(hwmon, scale, original, out)
+
+
+def only_fan1(hwmon, pwm):
+    """A full target (one entry per point) that changes point 1 fan 1 alone."""
+    return [{"fan1": pwm}] + [{} for _ in fancurve.read_curve(hwmon)[1:]]
+
+
+def first(hwmon):
+    points = fancurve.read_curve(hwmon)
+    return points[0]["fan1"] if points else None
+
+
+def restore(hwmon, scale, original, out):
+    if first(hwmon) != original:
+        try:
+            fancurve.write_curve(hwmon, only_fan1(hwmon, original), scale)
+        except ControlError as exc:
+            out(f"RESTORE FAILED, set pwm1_auto_point1_pwm back to {original} by hand: {exc}")
+    now = first(hwmon)
+    out(f"restored: point 1 fan 1 is {now} ({scale.text(now)}), originally {original}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--write", action="store_true", help="also test a 1 %% write and restore it (root)")
     args = parser.parse_args()
-    lines = []
+    if args.write and os.geteuid() != 0:
+        sys.exit("--write needs root: the fan curve files are only writable by root.")
 
     def out(text):
-        lines.append(text)
         print(text)
+        with LOG.open("a") as handle:  # per line, so a crash still leaves a log
+            handle.write(text + "\n")
 
     out(f"--- {datetime.now():%Y-%m-%d %H:%M:%S} ---")
     out(f"model: {read(Path('/sys/class/dmi/id/product_name'))}")
@@ -81,8 +95,6 @@ def main():
         report(hwmon, scale, out)
         if args.write:
             write_check(hwmon, scale, out)
-    with LOG.open("a") as handle:
-        handle.write("\n".join(lines) + "\n")
     print(f"logged to {LOG}")
 
 
