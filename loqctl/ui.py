@@ -838,6 +838,19 @@ class Dashboard(FanPanel):
             return controls.get("mode")
         return controls.get("attributes", {}).get(key, {}).get("current_value")
 
+    def write_reported(self, key, value):
+        """Write through the backend; in API mode return the response's read-back, else None."""
+        response = self.backend.write(key, value)
+        if not self.backend.remote or not isinstance(response, dict):
+            return None
+        current = response.get("current")
+        if key == "mode":
+            return current if isinstance(current, str) else None
+        try:
+            return int(current)
+        except (TypeError, ValueError):
+            return None
+
     def apply(self, state):
         try:
             self._apply(state)
@@ -854,15 +867,22 @@ class Dashboard(FanPanel):
         if not (self.backend.remote or os.geteuid() == 0):
             results = self.run_sudo_apply([[k, v] for k, v in changes])
         else:
-            check_changes([list(pair) for pair in changes])
-            before = None
+            try:
+                check_changes([list(pair) for pair in changes])
+            except ControlError:
+                self.apply_results, self.show_results = [], False  # drop results of an earlier apply
+                raise
+            snapshot = None
             if self.backend.remote:
                 try:
-                    before = self.backend.controls()  # one capabilities call for every "before"
+                    snapshot = self.backend.controls()  # one capabilities call for every "before"
                 except (ControlError, OSError, ValueError, http_client.HTTPException):
                     pass
-            results = run_changes(changes, self.read_current, self.backend.write,
-                                  lambda key: self.pick_current(before, key) if before else None)
+            results = run_changes(
+                changes, self.read_current, self.write_reported,
+                (ControlError, OSError, ValueError, http_client.HTTPException),
+                (lambda key: self.pick_current(snapshot, key) if snapshot is not None else None)
+                if self.backend.remote else None)
         if results:
             self.apply_results, self.show_results = results, True
         completed = 0

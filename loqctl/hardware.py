@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import errno
-from http import client as http_client
 import os
 from pathlib import Path
 import sys
@@ -280,13 +279,13 @@ def check_changes(changes):
         raise ControlError("Mode and limits are never applied together.")
 
 
-def run_changes(changes, read, write, read_before=None):
+def run_changes(changes, read, write, errors, read_before=None):
     """Write [key, value] pairs in order and verify each; stop at the first failure.
 
-    write(key, value) may return the write response; its "current" is used as the read-back,
-    else read(key) is called. read_before(key) supplies the "before" value (default read).
+    errors is the exception tuple that counts as a failed read or write. write(key, value)
+    returns a read-back value it already trusts, or None to have read(key) check the firmware.
+    read_before(key) supplies the "before" value (default read).
     """
-    errors = (ControlError, OSError, ValueError, http_client.HTTPException)
     results, stopped = [], False
     for key, value in changes:
         result = {"key": key, "requested": value, "before": None,
@@ -296,21 +295,21 @@ def run_changes(changes, read, write, read_before=None):
         except errors:
             pass
         if stopped:
-            result["current"] = result["before"]
+            try:
+                result["current"] = read(key)
+            except errors:
+                pass
             results.append(result)
             continue
         error = None
-        response = None
+        reported = None
         try:
-            response = write(key, value)
+            reported = write(key, value)
         except errors as exc:
             error = str(exc)
         write_failed = error is not None
         try:
-            if isinstance(response, dict) and "current" in response:
-                result["current"] = response["current"]
-            else:
-                result["current"] = read(key)
+            result["current"] = reported if reported is not None and not write_failed else read(key)
         except errors as exc:
             error = error or "Could not read firmware after the write: " + str(exc)
         if error or result["current"] != value:
@@ -326,7 +325,10 @@ def run_changes(changes, read, write, read_before=None):
 def apply_batch(hardware, changes):
     """Apply [key, value] pairs in order as root; stop at the first failure."""
     check_changes(changes)
+    def write(key, value):
+        hardware.set_mode(value) if key == "mode" else hardware.set_value(key, value)
+
     return run_changes(
         changes,
         lambda key: hardware.read_mode() if key == "mode" else hardware.read_attribute(key),
-        lambda key, value: hardware.set_mode(value) if key == "mode" else hardware.set_value(key, value))
+        write, (ControlError, OSError, ValueError))

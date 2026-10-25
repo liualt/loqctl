@@ -285,9 +285,10 @@ class HardwareTests(helpers.SysfsCase):
         results = m_hardware.apply_batch(self.hw, [["ppt_pl1_spl", 60]])
         self.assertEqual((results[0]["status"], results[0]["before"], results[0]["current"]), ("APPLIED", 50, 60))
 
-    def test_run_changes_uses_write_response_as_readback(self):
+    def test_run_changes_uses_reported_value_as_readback(self):
         read = Mock(return_value=50)
-        results = m_hardware.run_changes([["ppt_pl1_spl", 60]], read, lambda key, value: {"current": value})
+        results = m_hardware.run_changes([["ppt_pl1_spl", 60]], read, lambda key, value: value,
+                                        (m_common.ControlError,))
         self.assertEqual((results[0]["status"], results[0]["before"], results[0]["current"]), ("APPLIED", 50, 60))
         self.assertEqual(read.call_count, 1)
 
