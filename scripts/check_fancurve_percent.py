@@ -12,6 +12,7 @@ fanN_target.
 """
 import argparse
 import os
+import pwd
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +21,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from loqctl import fancurve  # noqa: E402
 from loqctl.common import ControlError, read  # noqa: E402
 
-LOG = Path.home() / "loqctl-fancurve-check.log"
+LOG_NAME = "loqctl-fancurve-check.log"
+
+
+def log_path():
+    """The log in the invoking user's home, not root's, when run through sudo."""
+    uid = os.environ.get("SUDO_UID")
+    home = Path(pwd.getpwuid(int(uid)).pw_dir) if uid and uid.isdigit() else Path.home()
+    return home / LOG_NAME
+
+
+def append_log(path, text):
+    new = not path.exists()
+    with path.open("a") as handle:  # per line, so a crash still leaves a log
+        handle.write(text + "\n")
+    uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+    if new and uid and gid and uid.isdigit() and gid.isdigit():
+        os.chown(path, int(uid), int(gid))
 
 
 def report(hwmon, scale, out):
@@ -39,18 +56,16 @@ def write_check(hwmon, scale, out):
         out("write check skipped: point 1 fan 1 is not readable")
         return
     out(f"write check: point 1 fan 1 starts at {original} ({scale.text(original)})")
-    try:
-        for step in (1, -1):
-            target = only_fan1(hwmon, scale.pwm(scale.show(original) + step))
-            try:
-                results = fancurve.write_curve(hwmon, target, scale)
-                out(f"{step:+d} %: wrote {target[0]['fan1']}, module reads back {first(hwmon)} "
-                    f"({scale.text(first(hwmon))}), {[r['status'] for r in results]}")
-            except ControlError as exc:
-                out(f"{step:+d} %: refused: {exc}")
-            restore(hwmon, scale, original, out)
-    finally:
-        restore(hwmon, scale, original, out)
+    for step in (1, -1):
+        target = only_fan1(hwmon, scale.pwm(scale.show(original) + step))
+        try:
+            results = fancurve.write_curve(hwmon, target, scale)
+            out(f"{step:+d} %: wrote {target[0]['fan1']}, module reads back {first(hwmon)} "
+                f"({scale.text(first(hwmon))}), {[r['status'] for r in results]}")
+        except ControlError as exc:
+            out(f"{step:+d} %: refused: {exc}")
+        if not restore(hwmon, scale, original, out):
+            return  # do not test anything else while the original value is not back
 
 
 def only_fan1(hwmon, pwm):
@@ -64,13 +79,19 @@ def first(hwmon):
 
 
 def restore(hwmon, scale, original, out):
-    if first(hwmon) != original:
-        try:
-            fancurve.write_curve(hwmon, only_fan1(hwmon, original), scale)
-        except ControlError as exc:
-            out(f"RESTORE FAILED, set pwm1_auto_point1_pwm back to {original} by hand: {exc}")
+    """Put the original pwm back by writing the allowlisted file directly, so loqctl's curve
+    validation cannot refuse it. Returns whether it reads back as the original."""
+    try:
+        if first(hwmon) != original:
+            fancurve._write_file(fancurve._path(hwmon, "fan1", 1), original)
+    except ControlError as exc:
+        out(f"RESTORE FAILED, set pwm1_auto_point1_pwm back to {original} by hand: {exc}")
+        return False
     now = first(hwmon)
-    out(f"restored: point 1 fan 1 is {now} ({scale.text(now)}), originally {original}")
+    ok = now is not None and scale.same(now, original)
+    out(f"restored: point 1 fan 1 is {now} ({scale.text(now)}), originally {original}"
+        + ("" if ok else ". RESTORE FAILED, set it back by hand"))
+    return ok
 
 
 def main():
@@ -80,10 +101,11 @@ def main():
     if args.write and os.geteuid() != 0:
         sys.exit("--write needs root: the fan curve files are only writable by root.")
 
+    log = log_path()
+
     def out(text):
         print(text)
-        with LOG.open("a") as handle:  # per line, so a crash still leaves a log
-            handle.write(text + "\n")
+        append_log(log, text)
 
     out(f"--- {datetime.now():%Y-%m-%d %H:%M:%S} ---")
     out(f"model: {read(Path('/sys/class/dmi/id/product_name'))}")
@@ -95,7 +117,7 @@ def main():
         report(hwmon, scale, out)
         if args.write:
             write_check(hwmon, scale, out)
-    print(f"logged to {LOG}")
+    print(f"logged to {log}")
 
 
 if __name__ == "__main__":

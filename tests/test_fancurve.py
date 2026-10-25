@@ -2,6 +2,7 @@
 # Copyright (C) 2026 loqctl contributors
 import copy
 import errno
+import importlib.util
 import json
 import os
 import sys
@@ -264,6 +265,53 @@ class FanCurveTests(unittest.TestCase):
         with self.assertRaises(m_common.ControlError):
             m_fan._write_file(self.hwmon / "missing", 1)  # never created
         self.assertFalse((self.hwmon / "missing").exists())
+
+
+class CheckScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.hwmon = make_hwmon(Path(self.temp.name))
+        path = Path(__file__).resolve().parent.parent / "scripts/check_fancurve_percent.py"
+        spec = importlib.util.spec_from_file_location("check_fancurve_percent", path)
+        self.script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.script)
+        self.lines = []
+        self.pct = m_fan.Scale("percent")
+
+    def test_report_lists_each_pwm_with_its_percent(self):
+        self.script.report(self.hwmon, self.pct, self.lines.append)
+        self.assertIn("pwm1_auto_point2_pwm: 80 -> 31%", self.lines)
+        self.assertIn("pwm2_auto_point3_pwm: 180 -> 71%", self.lines)
+
+    def test_write_check_tries_both_directions_and_restores(self):
+        (self.hwmon / "pwm1_auto_point1_pwm").write_text("40")
+        self.script.write_check(self.hwmon, self.pct, self.lines.append)
+        self.assertEqual(m_fan.read_curve(self.hwmon)[0]["fan1"], 40)
+        self.assertEqual(sum(line.startswith("restored:") for line in self.lines), 2)
+        self.assertTrue(any(line.startswith("+1 %: wrote") for line in self.lines))
+        self.assertTrue(any(line.startswith("-1 %: wrote") for line in self.lines))
+
+    def test_failed_restore_stops_the_check(self):
+        (self.hwmon / "pwm1_auto_point1_pwm").write_text("40")
+        real, calls = m_fan._write_file, []
+
+        def write_once(path, value):  # the first write lands, the restore is refused
+            calls.append(value)
+            if len(calls) > 1:
+                raise m_common.ControlError("busy")
+            real(path, value)
+
+        with patch.object(m_fan, "_write_file", side_effect=write_once):
+            self.script.write_check(self.hwmon, self.pct, self.lines.append)
+        self.assertTrue(any("RESTORE FAILED" in line for line in self.lines))
+        self.assertFalse(any(line.startswith("-1 %") for line in self.lines))
+
+    def test_log_goes_to_the_sudo_users_home(self):
+        home = Path(self.temp.name)
+        with patch.dict(os.environ, {"SUDO_UID": "1000"}), \
+                patch.object(self.script.pwd, "getpwuid", return_value=SimpleNamespace(pw_dir=str(home))):
+            self.assertEqual(self.script.log_path(), home / "loqctl-fancurve-check.log")
 
 
 class MoveTests(unittest.TestCase):
