@@ -202,9 +202,6 @@ class Sensors:
                 "RAPL package energy" if sources else
                 "RAPL needs root: run sudo loqctl serve" if denied else "Waiting for RAPL samples or no package counter")
 
-    def cpu_power(self):
-        return self.rapl_power()[1:]
-
     def gpu_suspended(self):
         def scan():
             return [path for path in self.root.glob("bus/pci/devices/*")
