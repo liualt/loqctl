@@ -61,12 +61,15 @@ class FanPanel:
         self.fan_opts = []  # [(name, points or None)]
         self.fan_details = False  # show GPU/IC temperatures, hysteresis and the point table
         self.fan_loading = False
+        self.fan_gen = 0  # bumped by each fresh read; results from older loads are dropped
         self.fan_result = None  # set by the loader thread, taken by the UI thread
 
     # --- loading (a curve read takes about a second on EC models) ---
     def fan_request(self, wait=False):
-        if self.fan_loading:
+        if self.fan_loading and not wait:
             return
+        self.fan_gen += 1
+        gen = self.fan_gen
         self.fan_loading = True
 
         def work():
@@ -74,6 +77,8 @@ class FanPanel:
                 data = self.backend.fancurve()
             except FAN_ERRORS as exc:
                 data = {"available": False, "reason": str(exc)}
+            if gen != self.fan_gen:
+                return  # a newer read started meanwhile; this one may predate a write
             self.fan_result = data
             self.fan_loading = False
         if wait:
