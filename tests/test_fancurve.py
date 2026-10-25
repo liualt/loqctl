@@ -537,7 +537,7 @@ class FanCurveSurfaceTests(FanPanelFixture, unittest.TestCase):
         dash = self.dash()
         state = {"mode": "custom"}
         self.keys(dash, state, "f", curses.KEY_DOWN)  # point 1 is already at 0
-        self.assertIn("held", dash.notice)
+        self.assertIn("at its 0% floor", dash.notice)
         self.keys(dash, state, curses.KEY_UP, "r")
         self.assertIsNone(dash.fan_edit)
 
@@ -588,7 +588,7 @@ class FanCurveSurfaceTests(FanPanelFixture, unittest.TestCase):
         dash.put = lambda y, x, text, color=None, *a, **k: cells.update({(y, x): (str(text), color)})
         dash.draw_fans({"mode": "custom"}, {"cpu": {"temperature_c": 67.4}, "fans": [{"rpm": 2000.0}]}, 1, 0, 30, 110)
         text = {t for t, _ in cells.values()}
-        self.assertIn("Point 3/10 · 75°C · 3500 RPM (was 3400 RPM)", text)
+        self.assertIn("Point 3/10 · 75°C · 3500 RPM (was 3400 RPM) (fan 2 was 3700 RPM)", text)  # fan 2 is compared too
         self.assertIn("▲ CPU 67°C", text)
         self.assertTrue({"70°C", " 4000", "RPM"} <= text)
         self.assertFalse(any("GPU" in t or "Curves" in t for t in text))  # details and the curve list stay hidden
@@ -914,6 +914,7 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         self.keys(dash, state, "r", "p", "p", "p", "p")
         self.assertIsNone(dash.fan_edit)
         self.assertIn("Curve zz (4/4) is invalid and cannot be staged", dash.notice)
+        self.assertNotEqual(dash.fan_preset, "zz")
 
     def test_reset_writes_stock_and_stops_reapply(self):
         dash = self.dash()

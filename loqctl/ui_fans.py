@@ -131,11 +131,24 @@ class FanPanel:
         target, i = self.fan_target(), self.fan_sel
         target, moved = move_speed(target, i, direction * (BIG_STEPS if big else 1), self.fan_scale())
         if not moved:
-            self.notice = f"Point {i + 1} is held by its neighbours or the limits."
+            self.notice = f"Point {i + 1} cannot move: {self.fan_held_reason(target, i, direction)}."
             return
         self.fan_edit = None if target == self.fan_points() else target
         self.fan_preset = None
         self.notice = "Edit staged. Press Enter to apply."
+
+    def fan_held_reason(self, points, i, direction):
+        scale = self.fan_scale()
+        speed = scale.show(points[i].get("fan1"))
+        floor = scale.show(min_speed(points, i, scale))
+        if direction < 0 and speed <= floor:
+            return f"it is at its {scale.text(scale.pwm(floor))} floor"
+        if direction > 0 and speed >= scale.top:
+            return "it is at the top speed"
+        j = i + direction
+        if 0 <= j < len(points) and scale.show(points[j].get("fan1")) == speed:
+            return f"point {j + 1} has the same speed"
+        return "the firmware would store the same speed"
 
     def fan_write(self, points):
         """Write `points` as the right user and refresh; returns the number of verified writes."""
@@ -242,21 +255,21 @@ class FanPanel:
             return
         names = [name for name, _ in self.fan_opts]
         at = ((names.index(self.fan_preset) if self.fan_preset in names else -1) + 1) % len(names)
-        self.fan_preset = names[at]
         name, points = self.fan_opts[at]
-        name = f"{name} ({at + 1}/{len(names)})"
+        label = f"{name} ({at + 1}/{len(names)})"
         if points is None:
-            self.notice = f"Curve {name} is invalid and cannot be staged."
+            self.notice = f"Curve {label} is invalid and cannot be staged."
             return
         current = self.fan_points()
         try:
             merged = merge_curve(current, points)
         except ControlError as exc:
-            self.notice = f"Curve {name} cannot be staged: {exc}"
+            self.notice = f"Curve {label} cannot be staged: {exc}"
             return
+        self.fan_preset = name
         self.fan_edit = None if merged == current else merged
         changes = sum(p.get(f) != c.get(f) for p, c in zip(merged, current) for f in WRITABLE)
-        self.notice = f"Curve {name} staged ({changes} changes). Press Enter to apply."
+        self.notice = f"Curve {label} staged ({changes} changes). Press Enter to apply."
 
     def fan_save(self):
         if os.geteuid() == 0:
@@ -338,7 +351,7 @@ class FanPanel:
             return
         scale = self.fan_scale()
         staged = f"Staged {self.fan_preset} · " if self.fan_preset else "Staged · "
-        right = (staged if self.fan_edit is not None else "") + "Unit: " + scale.label
+        right = ((staged if self.fan_edit is not None else "") + "Unit: " + scale.label)[:max(0, width - 8)]
         self.box(y, x, height, width, "Fans · " + rpm, self.theme.GPU, right)
         target = self.fan_target()
         cpu_temp = (metrics.get("cpu") or {}).get("temperature_c")
@@ -373,9 +386,11 @@ class FanPanel:
             if p.get("fan2") is not None and scale.show(p["fan2"]) != scale.show(p.get("fan1")):
                 text += f" · fan 2 {scale.text(p['fan2'])}"
             current = self.fan_points()
-            was = current[self.fan_sel].get("fan1") if self.fan_sel < len(current) else None
-            if scale.show(was) != scale.show(p.get("fan1")):
-                text += f" (was {scale.text(was)})"
+            old = current[self.fan_sel] if self.fan_sel < len(current) else {}
+            for field, tag in (("fan1", ""), ("fan2", "fan 2 ")):
+                was = old.get(field)
+                if p.get(field) is not None and scale.show(was) != scale.show(p[field]):
+                    text += f" ({tag}was {scale.text(was)})"
         cpu = f"▲ CPU {cpu_temp:.0f}°C" if cpu_temp is not None else ""
         if cpu and len(text) + len(cpu) + 2 <= w:
             self.put(y, x + w - len(cpu), cpu, self.theme.WARN)
