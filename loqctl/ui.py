@@ -112,6 +112,10 @@ class Theme:
 
 class Dashboard(FanPanel):
     MIN_W, MIN_H = 72, 20
+    # Each hint must fit MIN_W - 3 columns, with the quit key last.
+    HINT_KEYBOARD = "1–4 zone  ←→ value  ↑↓ HSV  e effect  Enter apply  Esc back  q quit"
+    HINT_FANS = "←→ point  ↑↓ speed  Enter apply  r discard  W save  Esc back  q quit"
+    HINT_MAIN = "↑↓ select  ←→ adjust  Enter apply  l keyboard  f fans  ? help  q quit"
     show_limits = False
 
     def __init__(self, screen, backend, sudo_ok=True):
@@ -298,11 +302,11 @@ class Dashboard(FanPanel):
             status, warn = "sudo not authenticated · press s to authenticate · edits stay staged", True
         self.put(h - 2, 1, status[: w - 3], self.theme.WARN if warn else self.theme.TEXT)
         if self.panel == "keyboard":
-            keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
+            keys = self.HINT_KEYBOARD
         elif self.panel == "fans":
-            keys = "Esc back  q quit  ←→ point  ↑↓ speed (Shift x5)  Enter apply  r discard  W save  R stock  p curves  d details"
+            keys = self.HINT_FANS
         else:
-            keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  f fans  t sensors  m modes  Space pause  v results  ? help  q"
+            keys = self.HINT_MAIN
         self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)
 
         if self.help:
