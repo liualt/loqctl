@@ -568,6 +568,15 @@ class ViewTests(unittest.TestCase):
         dash.draw_telemetry({}, {"cpu": {}}, 1, 40, 22, 60)  # no limits, small box
         self.assertIn("PL1 N/A", "\n".join(t for _, _, t in calls))
 
+    def test_small_cpu_box_shows_power_reason(self):
+        dash, calls = self.stub_dash(24, 80)
+        reason = "RAPL needs root: run sudo loqctl serve"
+        dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": reason}}, 1, 0, 24, 80)
+        self.assertIn(reason, [t for _, _, t in calls])
+        calls.clear()
+        dash.draw_telemetry({}, {"cpu": {"power_w": 12.0, "power_source": "RAPL package energy"}}, 1, 0, 24, 80)
+        self.assertNotIn("RAPL package energy", [t for _, _, t in calls])
+
     def test_sensors_view_draws_na(self):
         dash, calls = self.stub_dash()
         dash.draw_sensors({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
