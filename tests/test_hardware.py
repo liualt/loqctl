@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import helpers
@@ -284,6 +284,12 @@ class HardwareTests(helpers.SysfsCase):
         self.assertEqual((self.attr / "current_value").read_text().strip(), "50")
         results = m_hardware.apply_batch(self.hw, [["ppt_pl1_spl", 60]])
         self.assertEqual((results[0]["status"], results[0]["before"], results[0]["current"]), ("APPLIED", 50, 60))
+
+    def test_run_changes_uses_write_response_as_readback(self):
+        read = Mock(return_value=50)
+        results = m_hardware.run_changes([["ppt_pl1_spl", 60]], read, lambda key, value: {"current": value})
+        self.assertEqual((results[0]["status"], results[0]["before"], results[0]["current"]), ("APPLIED", 50, 60))
+        self.assertEqual(read.call_count, 1)
 
     def test_apply_batch_validates_before_writing(self):
         self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
