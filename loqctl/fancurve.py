@@ -66,8 +66,9 @@ class Scale:
         return sorted({self.show(pwm) for pwm in range(256)} & set(range(self.top + 1)))
 
     def next_speed(self, pwm, steps):
-        """Display speed `steps` storable speeds above pwm's (below when negative). Speeds that
-        Stops at either end of the range."""
+        """Display speed `steps` storable speeds above pwm's (below when negative).
+        Every storable speed counts, so percent curves move 1 % at a time. Stops at either end
+        of the range."""
         speeds = self.speeds() if steps > 0 else self.speeds()[::-1]
         value = self.show(pwm)
         for _ in range(abs(steps)):
@@ -304,7 +305,9 @@ def write_curve(hwmon, target, scale=None):
         result["current"] = after[i][f] if i < len(after) else None
         if n >= sent or result["status"] == "FAILED":
             continue
-        if _same(f, result["current"], result["requested"], scale):
+        # read-back may differ by 1 % from the write, but a 1 % request must not read back as before
+        unchanged = f in SPEEDS and _same(f, result["current"], result["before"], scale, exact=True)
+        if _same(f, result["current"], result["requested"], scale) and not unchanged:
             result["status"] = "APPLIED"
         else:
             result["status"] = "FAILED"

@@ -185,6 +185,12 @@ class FanCurveTests(unittest.TestCase):
         self.assertEqual(m_fan.read_curve(self.hwmon)[1]["fan1"], 82)
         self.assertEqual(m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 81}), self.pct), [])  # still 32 %
 
+    def test_one_percent_write_the_module_ignores_is_not_applied(self):
+        with patch.object(m_fan, "_write_file"):  # the module accepts the write and keeps the old value
+            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 82}), self.pct)
+        self.assertEqual([r["status"] for r in results], ["FAILED"])
+        self.assertEqual(m_fan.read_curve(self.hwmon)[1]["fan1"], 80)
+
     def test_never_touches_fan_target_or_other_files(self):
         self.assertTrue(all("target" not in p and "points_size" not in p for p in m_fan.FILE_MAP.values()))
         with patch.object(m_fan.os, "open", wraps=os.open) as opened:
@@ -278,6 +284,10 @@ class MoveTests(unittest.TestCase):
         low = edit(NECN_STOCK, {(8, "fan1"): 0, (8, "fan2"): 0})
         points, _ = m_panel.move_speed(low, 9, -500, RPM)
         self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (3000, 3000))
+
+    def test_move_clamped_to_its_neighbour_is_held(self):
+        close = edit(CURVE, {(2, "fan1"): 80, (2, "fan2"): 80})  # point 3 equals point 2
+        self.assertEqual(m_panel.move_speed(close, 1, 1, m_fan.Scale("percent")), (close, False))
 
 
 class FanPanelFixture:
