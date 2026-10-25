@@ -7,11 +7,13 @@ import errno
 import os
 from pathlib import Path
 import threading
+import time
 
 from .capdata import effective_value, read_mode_table
 from .common import FIELDS, ControlError, read, scaled
 from .fancurve import curve_scale, find_legion_hwmon, read_curve, write_curve
 
+REDISCOVER_SECONDS = 5
 GAMEZONE = "lenovo-wmi-gamezone"
 # The gamezone WMI device. lenovo-wmi-other needs lenovo_wmi_gamezone bound to it to know the
 # current mode; LenovoLegionLinux's legion_wmi driver claims the same GUID when it loads first,
@@ -24,32 +26,46 @@ class Hardware:
     def __init__(self, root=Path("/sys")):
         self.root = Path(root)
         self.lock = threading.RLock()
-        self._discover()
+        self.base = self.profile = self.choices = self.mode_driver = None
+        self.on_new_base = None  # called when the attributes directory first appears or moves
         self._limits = (None, None)  # (table, reason); static per boot
         self._limits_tried = False
         self._static = {}  # key -> display name and limits; dropped when the mode changes
         self._static_mode = None
+        self._discovered_at = time.monotonic()
+        self._discover()
 
     def _discover(self):
         bases = sorted(self.root.glob("class/firmware-attributes/lenovo-wmi-other*/attributes"))
-        self.base = bases[0] if bases else None
+        base = bases[0] if bases else None
         # Prefer gamezone's class device, then any other handler. The legacy
         # /sys/firmware/acpi/platform_profile lists "custom" but the kernel rejects writing it
         # (EINVAL), so it is only a last resort.
         profiles = [p for p in sorted(self.root.glob("class/platform-profile/*")) if (p / "profile").exists()]
         chosen = next((p for p in profiles if read(p / "name") == GAMEZONE), profiles[0] if profiles else None)
         if chosen is not None:
-            self.profile, self.choices = chosen / "profile", chosen / "choices"
-            self.mode_driver = read(chosen / "name")
+            found = (base, chosen / "profile", chosen / "choices", read(chosen / "name"))
         else:
-            self.profile = self.root / "firmware/acpi/platform_profile"
-            self.choices = self.root / "firmware/acpi/platform_profile_choices"
-            self.mode_driver = None
+            found = (base, self.root / "firmware/acpi/platform_profile",
+                     self.root / "firmware/acpi/platform_profile_choices", None)
+        with self.lock:
+            if found == (self.base, self.profile, self.choices, self.mode_driver):
+                return
+            new_base = found[0] != self.base
+            self.base, self.profile, self.choices, self.mode_driver = found
+            if new_base:
+                self._static = {}
+                self._limits, self._limits_tried = (None, None), False
+                if self.on_new_base:
+                    self.on_new_base()
 
-    def _rediscover(self):
-        """Look again for files that appeared (or moved) after start."""
-        if self.base is None or self.mode_driver is None or not self.profile.exists():
-            self._discover()
+    def _rediscover(self, force=False):
+        """Look again for files that appeared or moved after start, at most every 5 s unless forced."""
+        now = time.monotonic()
+        with self.lock:
+            if force or now - self._discovered_at >= REDISCOVER_SECONDS:
+                self._discovered_at = now
+                self._discover()
 
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
@@ -64,11 +80,16 @@ class Hardware:
             self._limits, self._limits_tried = (table, None if table else reason), True
 
     def read_mode(self):
-        return read(self.profile)
+        with self.lock:
+            self._rediscover()
+            return read(self.profile)
 
     def read_attribute(self, key):
         """One attribute's current_value as int, or None when missing or unreadable."""
-        path = self.base / key / "current_value" if self.base and key in FIELDS else None
+        with self.lock:
+            self._rediscover()
+            base = self.base
+        path = base / key / "current_value" if base and key in FIELDS else None
         try:
             return int(read(path)) if path else None
         except (ValueError, TypeError):
@@ -121,7 +142,6 @@ class Hardware:
 
     def capabilities(self):
         with self.lock:
-            self._rediscover()
             attrs = {}
             mode = self.read_mode()
             if mode != self._static_mode:
@@ -151,7 +171,7 @@ class Hardware:
 
     def set_mode(self, mode):
         with self.lock:
-            self._rediscover()
+            self._rediscover(force=True)
             previous = self.read_mode()
             if not isinstance(mode, str) or mode not in (read(self.choices, "") or "").split():
                 raise ControlError("Unsupported platform mode.")
@@ -164,7 +184,7 @@ class Hardware:
 
     def set_value(self, key, value):
         with self.lock:
-            self._rediscover()
+            self._rediscover(force=True)
             item = self._read_item(key, None, None, fresh=True) if key in FIELDS else None
             if item is None:
                 raise ControlError("Unknown or unavailable control.")

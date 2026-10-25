@@ -46,23 +46,61 @@ class HardwareTests(helpers.SysfsCase):
             self.hw.set_value("ppt_pl1_spl", 70)
         self.assertEqual(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["max_value"], 60)
 
+    def _late_files(self, root, mode="custom", name=m_hardware.GAMEZONE, profile="p"):
+        attr = root / "class/firmware-attributes/lenovo-wmi-other-0/attributes/ppt_pl1_spl"
+        attr.mkdir(parents=True, exist_ok=True)
+        for fname, text in (("current_value", "50"), ("min_value", "50"), ("max_value", "100"),
+                            ("default_value", "50"), ("scalar_increment", "1")):
+            (attr / fname).write_text(text + "\n")
+        prof = root / "class/platform-profile" / profile
+        prof.mkdir(parents=True, exist_ok=True)
+        for fname, text in (("name", name), ("profile", mode), ("choices", "quiet custom")):
+            (prof / fname).write_text(text + "\n")
+
     def test_files_that_appear_after_start_are_found(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m_hardware.time, "monotonic") as clock:
+            clock.return_value = 0
             root = Path(tmp)
             hw = m_hardware.Hardware(root)
             self.assertEqual(hw.capabilities()["attributes"], {})
-            attr = root / "class/firmware-attributes/lenovo-wmi-other-0/attributes/ppt_pl1_spl"
-            attr.mkdir(parents=True)
-            for name, text in (("current_value", "50"), ("min_value", "50"), ("max_value", "100"),
-                               ("default_value", "50"), ("scalar_increment", "1")):
-                (attr / name).write_text(text + "\n")
-            prof = root / "class/platform-profile/p"
-            prof.mkdir(parents=True)
-            for name, text in (("name", m_hardware.GAMEZONE), ("profile", "custom"), ("choices", "quiet custom")):
-                (prof / name).write_text(text + "\n")
+            self._late_files(root)
+            self.assertEqual(hw.capabilities()["attributes"], {})  # throttled
+            clock.return_value = 6
             caps = hw.capabilities()
         self.assertIn("ppt_pl1_spl", caps["attributes"])
         self.assertEqual((caps["mode"], caps["modes"]), ("custom", ["quiet", "custom"]))
+
+    def test_writes_rediscover_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root)
+            with self.assertRaises(m_common.ControlError):
+                hw.set_value("ppt_pl1_spl", 60)
+            self._late_files(root)
+            self.assertTrue(hw.set_value("ppt_pl1_spl", 60)["verified"])
+            self.assertEqual(hw.set_mode("quiet")["current"], "quiet")
+
+    def test_gamezone_profile_replaces_another_handler(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m_hardware.time, "monotonic") as clock:
+            clock.return_value = 0
+            root = Path(tmp)
+            self._late_files(root, mode="balanced", name="other", profile="a")
+            hw = m_hardware.Hardware(root)
+            self.assertEqual(hw.mode_driver, "other")
+            self._late_files(root, mode="custom", profile="b")
+            clock.return_value = 6
+            self.assertEqual(hw.read_mode(), "custom")
+            self.assertEqual(hw.mode_driver, m_hardware.GAMEZONE)
+
+    def test_new_attributes_directory_reloads_mode_limits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root)
+            hw.set_mode_limits(None, "needs root")
+            hw.on_new_base = lambda: hw.set_mode_limits({"custom": {}}, None)
+            self._late_files(root)
+            hw.set_mode("quiet")
+            self.assertEqual(hw.mode_limits(), ({"custom": {}}, None))
 
     def test_incomplete_limits_are_read_again(self):
         (self.attr / "max_value").unlink()
