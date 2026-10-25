@@ -28,10 +28,10 @@ class SensorsTests(helpers.SysfsCase):
         (duplicate / "energy_uj").write_text("99999999999")
         sensors = m_sensors.Sensors(self.root)
         with patch.object(time, "monotonic", return_value=1):
-            self.assertIsNone(sensors.cpu_power()[0])
+            self.assertIsNone(sensors.rapl_power()[1])
         (rapl / "energy_uj").write_text("3000000")
         with patch.object(time, "monotonic", return_value=3):
-            self.assertEqual(sensors.cpu_power()[0], 2)
+            self.assertEqual(sensors.rapl_power()[1], 2)
 
     def test_unsupported_sensor_values_are_null(self):
         for value in ("[N/A]", "nan", "inf", None, "Not Supported"):

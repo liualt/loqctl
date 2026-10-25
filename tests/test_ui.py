@@ -62,6 +62,8 @@ class UiTests(helpers.SysfsCase):
             self.assertLessEqual(len(hint), m_ui.Dashboard.MIN_W - 3)
             self.assertTrue(hint.endswith("q quit"))
         self.assertTrue(m_ui.Dashboard.HINT_MAIN.endswith("? help  q quit"))
+        for hint in (m_ui.Dashboard.HINT_FANS, m_ui.Dashboard.HINT_KEYBOARD):
+            self.assertTrue(hint.startswith("? help  "))
 
     def test_dashboard_mode_lock(self):
         self.hw.set_mode("balanced")
@@ -515,6 +517,28 @@ class UiTests(helpers.SysfsCase):
         dash.draw_results()
         self.assertFalse(any("matched firmware" in c for c in calls))
 
+    def test_help_overlay_fits_80x24_and_shows_close_hint(self):
+        dash = self.dashboard()
+        dash.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+        lines = m_ui.Dashboard.HELP_LINES
+        self.assertLessEqual(max(map(len, lines)), 60)
+        self.assertTrue(lines[0].startswith("Global"))
+        for size in ((24, 80), (20, 72), (20, 30)):
+            calls = []
+            dash.s = Mock()
+            dash.s.getmaxyx.return_value = size
+            dash.put = lambda y, x, text, *a, **k: calls.append(text)
+            dash.fill = Mock()
+            dash.draw_help()
+            self.assertTrue(any("? or Esc to close" in c for c in calls))
+            if size == (24, 80):
+                self.assertTrue(set(filter(None, lines)) <= set(calls))
+            elif size == (20, 72):
+                self.assertIn(lines[0], calls)
+                self.assertTrue(any("more, resize" in c for c in calls))
+            else:
+                self.assertNotIn(" Help ", calls)
+
     def test_put_draws_the_last_column(self):
         dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
         dash.theme = m_ui.Theme(False)
@@ -525,6 +549,40 @@ class UiTests(helpers.SysfsCase):
         dash.put(0, 20, "x")
         dash.put(10, 0, "x")
         self.assertEqual(dash.s.addnstr.call_count, 1)
+
+    def test_help_key_opens_from_every_panel(self):
+        for panel in ("main", "keyboard", "fans"):
+            dash = self.dash()
+            dash.panel = panel
+            dash.handle(ord("?"), {})
+            self.assertTrue(dash.help, panel)
+            dash.handle(ord("?"), {})
+            self.assertFalse(dash.help, panel)
+            self.assertEqual(dash.panel, panel)
+
+    def test_help_key_opens_without_firmware_rows(self):
+        dash = self.dash()
+        dash.rows = lambda state: []
+        dash.handle(ord("?"), {})
+        self.assertTrue(dash.help)
+
+    def test_panel_footers_list_help_key(self):
+        for panel in ("keyboard", "fans"):
+            dash = self.dash()
+            dash.panel = panel
+            calls = []
+            dash.put = lambda y, x, text, *a, **k: calls.append(text)
+            dash.s = Mock()
+            dash.s.getmaxyx.return_value = (30, 80)
+            dash.kb_seen = dash.keyboard.last_seq
+            dash.paused = False
+            dash.push_history = lambda metrics: None
+            dash.help = dash.show_results = dash.show_limits = False
+            dash.sudo_expired = False
+            dash.theme = Mock()
+            dash.draw_main = dash.draw_keyboard = dash.draw_fans = lambda *a, **k: None
+            dash.draw({"metrics": {}})
+            self.assertTrue(any(t.startswith("? help") for t in calls), panel)
 
     def test_external_mode_change_drops_staged_limits(self):
         dash = self.dash()
@@ -573,6 +631,21 @@ class ViewTests(unittest.TestCase):
         calls.clear()
         dash.draw_telemetry({}, {"cpu": {}}, 1, 40, 22, 60)  # no limits, small box
         self.assertIn("PL1 N/A", "\n".join(t for _, _, t in calls))
+
+    def test_cpu_power_reason_at_box_heights(self):
+        reason = "RAPL needs root: run sudo loqctl serve"
+        for height, cpu_h in ((18, 7), (22, 8), (27, 10), (29, 11)):
+            with self.subTest(cpu_h=cpu_h):
+                dash, calls = self.stub_dash(height, 80)
+                dash.chart, dash.chart_rows = Mock(), Mock()
+                dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": reason}}, 0, 0, height, 80)
+                shown = [(y, t) for y, _, t in calls if reason in t]
+                self.assertEqual(len(shown), 1)
+                self.assertLessEqual(shown[0][0], cpu_h - 2)
+                dash.chart.assert_any_call(3, 2, 76, "cpu", color=dash.theme.OK)
+        dash, calls = self.stub_dash(22, 80)
+        dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": "Waiting for RAPL samples"}}, 0, 0, 22, 80)
+        self.assertNotIn("Waiting", "\n".join(t for _, _, t in calls))
 
     def test_sensors_view_draws_na(self):
         dash, calls = self.stub_dash()
