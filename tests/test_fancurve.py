@@ -887,6 +887,19 @@ class ReapplyTests(helpers.SysfsCase):
         sampler.on_firmware.assert_called_once()
         self.assertEqual(sampler.latest["mode"], "custom")
 
+    def test_slow_hook_does_not_delay_the_snapshot(self):
+        release = threading.Event()
+        sampler = m_sensors.Sampler(self.hw)
+        sampler.on_firmware = Mock(side_effect=lambda caps: release.wait(5))
+        with patch.object(sampler.sensors, "sample", return_value={}):
+            sampler.tick()
+            self.assertEqual(sampler.latest["mode"], "custom")
+            sampler.force.set()
+            sampler.tick()  # hook still running: not started twice
+            release.set()
+            sampler.hook.join(5)
+        sampler.on_firmware.assert_called_once()
+
 
 class FanPanelPresetTests(FanPanelFixture):
     def test_stock_cycle_stage_save_and_reset_keys(self):
