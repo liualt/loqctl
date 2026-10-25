@@ -18,7 +18,7 @@ import curses
 from loqctl import api as m_api, backend as m_backend, cli as m_cli, common as m_common
 from loqctl import curvestore as m_store, fancurve as m_fan, hardware as m_hardware, sensors as m_sensors, ui as m_ui
 from loqctl import ui_fans as m_panel
-from tests import test_loqctl as base
+from tests import helpers
 
 CURVE = [
     dict(cpu_up=40, cpu_down=0, gpu_up=40, gpu_down=0, ic_up=40, ic_down=0, fan1=0, fan2=0, accel=1, decel=1),
@@ -342,12 +342,9 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(m_panel.move_speed(close, 1, 1, m_fan.Scale("percent")), (close, False))
 
 
-class FanPanelFixture:
-    dashboard = base.FirmwareTests.dashboard
-
+class FanPanelFixture(helpers.SysfsCase):
     def setUp(self):
-        base.FirmwareTests.setUp(self)
-        self.addCleanup(self.temp.cleanup)
+        super().setUp()
         self.hwmon = make_hwmon(self.root)
         self.config = self.root / "config"
         env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
@@ -391,7 +388,7 @@ class FanPanelFixture:
             dash.handle(ord(key) if isinstance(key, str) else key, state)
 
 
-class FanCurveSurfaceTests(FanPanelFixture, unittest.TestCase):
+class FanCurveSurfaceTests(FanPanelFixture):
     def test_hardware_fancurve_reads_firmware_and_gate(self):
         data = self.hw.fancurve()
         self.assertTrue(data["available"])
@@ -764,10 +761,9 @@ class CurveStoreTests(unittest.TestCase):
             m_store.read_curve_file(path, os.getuid())
 
 
-class ReapplyTests(unittest.TestCase):
+class ReapplyTests(helpers.SysfsCase):
     def setUp(self):
-        base.FirmwareTests.setUp(self)
-        self.addCleanup(self.temp.cleanup)
+        super().setUp()
         self.hwmon = make_hwmon(self.root)
         self.config = self.root / "config"
         env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
@@ -899,7 +895,7 @@ class ReapplyTests(unittest.TestCase):
         self.assertEqual(sampler.latest["mode"], "custom")
 
 
-class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
+class FanPanelPresetTests(FanPanelFixture):
     def test_stock_cycle_stage_save_and_reset_keys(self):
         dash = self.dash()
         state = {"mode": "custom"}
