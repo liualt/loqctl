@@ -435,7 +435,8 @@ class Sensors:
 
 class Sampler:
     FIRMWARE_INTERVAL = 5
-    on_firmware = None  # serve hook: called with each good firmware read
+    on_firmware = None  # serve hook: called with each good firmware read, on its own thread
+    hook = None  # that thread, so a slow write never stalls the sampler
 
     def __init__(self, hardware=None):
         self.hardware = hardware or Hardware()
@@ -451,9 +452,11 @@ class Sampler:
 
     def tick(self):
         now = time.monotonic()
-        forced = self.force.is_set()
-        self.force.clear()
-        if forced or self.next_firmware is None or now >= self.next_firmware:
+        # no firmware read while the hook runs: it would wait on Hardware.lock, and the hook then
+        # sees the state after its own write on the next read
+        busy = self.busy()
+        if not busy and (self.force.is_set() or self.next_firmware is None or now >= self.next_firmware):
+            self.force.clear()
             self.next_firmware = now + self.FIRMWARE_INTERVAL
             try:
                 self.caps = self.hardware.capabilities()
@@ -461,10 +464,8 @@ class Sampler:
             except Exception as exc:
                 self.fw_error = str(exc)
             if self.on_firmware and self.fw_error is None:
-                try:
-                    self.on_firmware(self.caps)
-                except Exception as exc:
-                    print(f"firmware hook failed: {exc}", flush=True)
+                self.hook = threading.Thread(target=self.call_hook, args=(self.caps,), daemon=True)
+                self.hook.start()
         error = self.fw_error
         try:
             self.metrics = self.sensors.sample()
@@ -473,12 +474,26 @@ class Sampler:
         latest = {**self.caps, "metrics": self.metrics}
         if error:
             latest["error"] = error
+        if busy:
+            latest["stale"] = True  # firmware fields are from before the running hook
         self.latest = latest
+
+    def call_hook(self, caps):
+        try:
+            self.on_firmware(caps)
+        except Exception as exc:
+            print(f"firmware hook failed: {exc}", flush=True)
+
+    def busy(self):
+        return self.hook is not None and self.hook.is_alive()
 
     def run(self):
         while not self.stop.is_set():
             self.tick()
-            self.force.wait(1)
+            if self.busy():  # a pending refresh waits for the hook, not a busy loop
+                self.stop.wait(1)
+            else:
+                self.force.wait(1)
 
     def refresh(self):
         self.force.set()
@@ -486,6 +501,11 @@ class Sampler:
     def halt(self):
         self.stop.set()
         self.force.set()
+        # a write in flight finishes, but quitting must not hang: join the sampler, then its hook
+        if self.thread.is_alive() and self.thread is not threading.current_thread():
+            self.thread.join(3)
+        if self.busy() and self.hook is not threading.current_thread():
+            self.hook.join(10)
 
     def start(self):
         self.thread.start()

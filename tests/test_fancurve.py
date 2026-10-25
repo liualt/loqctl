@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -883,8 +884,114 @@ class ReapplyTests(helpers.SysfsCase):
         sampler.on_firmware = Mock(side_effect=RuntimeError("boom"))
         with patch.object(sampler.sensors, "sample", return_value={}), patch("builtins.print"):
             sampler.tick()
+            sampler.hook.join(5)
         sampler.on_firmware.assert_called_once()
         self.assertEqual(sampler.latest["mode"], "custom")
+
+    def finish(self, sampler):
+        sampler.hook.join(5)
+        self.assertFalse(sampler.hook.is_alive())
+
+    def test_slow_hook_does_not_delay_the_snapshot(self):
+        release = threading.Event()
+        sampler = m_sensors.Sampler(self.hw)
+        sampler.on_firmware = Mock(side_effect=lambda caps: release.wait(5))
+        with patch.object(sampler.sensors, "sample", return_value={}):
+            sampler.tick()
+            self.assertEqual(sampler.latest["mode"], "custom")
+            sampler.force.set()
+            sampler.tick()  # hook still running: not started twice
+            release.set()
+            self.finish(sampler)
+        sampler.on_firmware.assert_called_once()
+
+    def test_reapplier_on_hook_thread_sees_every_mode_flip(self):
+        release, written = threading.Event(), threading.Event()
+        applied = []
+        real_apply = self.reapply.apply
+
+        def slow_apply(reason):
+            applied.append(reason)
+            real_apply(reason)
+            if len(applied) == 1:
+                written.set()
+                release.wait(5)
+        self.reapply.apply = slow_apply
+        sampler = m_sensors.Sampler(self.hw)
+        sampler.on_firmware = self.reapply
+        with patch.object(sampler.sensors, "sample", return_value={}):
+            sampler.tick()  # enters custom, hook blocks mid-write
+            self.assertTrue(written.wait(5))
+            self.hw.profile.write_text("balanced\n")
+            sampler.force.set()
+            sampler.tick()  # no firmware read while the hook runs
+            self.assertEqual(sampler.latest["mode"], "custom")
+            release.set()
+            self.finish(sampler)
+            self.assertEqual(self.fan1(), 90)
+            sampler.force.set()
+            sampler.tick()  # sees the flip once the hook is done
+            self.finish(sampler)
+            self.assertEqual(sampler.latest["mode"], "balanced")
+            self.hw.profile.write_text("custom\n")
+            sampler.force.set()
+            sampler.tick()
+            self.finish(sampler)
+        self.assertEqual(len(applied), 2)
+
+    def test_forced_refresh_waits_for_the_hook_and_marks_stale(self):
+        release = threading.Event()
+        sampler = m_sensors.Sampler(self.hw)
+        sampler.on_firmware = lambda caps: release.wait(5)
+        with patch.object(sampler.sensors, "sample", return_value={}):
+            sampler.tick()
+            self.assertNotIn("stale", sampler.latest)
+            sampler.force.set()
+            sampler.tick()
+            self.assertTrue(sampler.latest["stale"])
+            self.assertTrue(sampler.force.is_set())
+            release.set()
+            self.finish(sampler)
+            sampler.tick()
+        self.assertFalse(sampler.force.is_set())
+        self.assertNotIn("stale", sampler.latest)
+
+    def test_halt_waits_for_the_running_hook(self):
+        release, started, done = threading.Event(), threading.Event(), []
+        sampler = m_sensors.Sampler(self.hw)
+        sampler.on_firmware = lambda caps: (started.set(), release.wait(5), done.append(1))
+        with patch.object(sampler.sensors, "sample", return_value={}):
+            sampler.tick()
+        self.assertTrue(started.wait(5))
+        helper = threading.Thread(target=lambda: (time.sleep(0.2), release.set()))
+        helper.start()
+        sampler.halt()
+        helper.join(5)
+        self.assertEqual(done, [1])
+
+    def test_halt_joins_a_hook_started_by_the_last_tick(self):
+        gate, spawned, release = (threading.Event() for _ in range(3))
+        done = []
+        sampler = m_sensors.Sampler(self.hw)
+
+        def last_tick():
+            gate.wait(5)
+            sampler.hook = threading.Thread(target=lambda: (release.wait(5), done.append(1)))
+            sampler.hook.start()
+            spawned.set()
+        sampler.thread = threading.Thread(target=last_tick)
+        sampler.thread.start()
+
+        def helper_run():
+            gate.set()
+            spawned.wait(5)
+            time.sleep(0.2)
+            release.set()
+        helper = threading.Thread(target=helper_run)
+        helper.start()
+        sampler.halt()
+        helper.join(5)
+        self.assertEqual(done, [1])
 
 
 class FanPanelPresetTests(FanPanelFixture):
