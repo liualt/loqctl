@@ -58,6 +58,7 @@ class FanPanel:
         self.fan = {"available": False, "reason": "not loaded"}
         self.fan_sel = 0  # selected point
         self.fan_edit = None  # staged curve (full points) or None
+        self.fan_cycle = None  # name of the last curve `p` tried, valid or not
         self.fan_preset = None  # name of the staged option in fan_opts, None = none staged
         self.fan_opts = []  # [(name, points or None)]
         self.fan_details = False  # show GPU/IC temperatures, hysteresis and the point table
@@ -102,6 +103,7 @@ class FanPanel:
         points = self.fan_points()
         if self.fan_edit is not None and (len(self.fan_edit) != len(points) or self.fan_edit == points):
             self.fan_edit = self.fan_preset = None
+            self.fan_cycle = None
         self.fan_sel = clamp(self.fan_sel, 0, max(0, len(points) - 1))
         self.fan_refresh_options()
         if self.panel == "fans":
@@ -111,7 +113,10 @@ class FanPanel:
         return self.fan.get("points") or [] if self.fan.get("available") else []
 
     def fan_scale(self):
-        return Scale(self.fan.get("unit"), self.fan.get("max_rpm"))
+        key = (self.fan.get("unit"), self.fan.get("max_rpm"))
+        if getattr(self, "_fan_scale", (None,))[0] != key:
+            self._fan_scale = (key, Scale(*key))
+        return self._fan_scale[1]
 
     def fan_target(self):
         return copy.deepcopy(self.fan_edit if self.fan_edit is not None else self.fan_points())
@@ -131,11 +136,28 @@ class FanPanel:
         target, i = self.fan_target(), self.fan_sel
         target, moved = move_speed(target, i, direction * (BIG_STEPS if big else 1), self.fan_scale())
         if not moved:
-            self.notice = f"Point {i + 1} is held by its neighbours or the limits."
+            self.notice = f"Point {i + 1} cannot move: {self.fan_held_reason(target, i, direction)}."
             return
         self.fan_edit = None if target == self.fan_points() else target
         self.fan_preset = None
+        self.fan_cycle = None
         self.notice = "Edit staged. Press Enter to apply."
+
+    def fan_held_reason(self, points, i, direction):
+        scale = self.fan_scale()
+        field = next((f for f in SPEEDS if points[i].get(f) is not None), None)
+        if field is None:
+            return "it has no fan speed"
+        speed = scale.show(points[i][field])
+        j = i + direction
+        if 0 <= j < len(points) and points[j].get(field) is not None and scale.show(points[j][field]) == speed:
+            return f"point {j + 1} has the same speed"
+        floor = scale.show(min_speed(points, i, scale))
+        if direction < 0 and speed <= floor:
+            return f"it is at its {scale.text(scale.pwm(floor))} floor"
+        if direction > 0 and speed >= scale.top:
+            return "it is at the top speed"
+        return "the firmware would store the same speed"
 
     def fan_write(self, points):
         """Write `points` as the right user and refresh; returns the number of verified writes."""
@@ -207,6 +229,7 @@ class FanPanel:
         """Write the recorded stock curve of the current mode and stop re-applying a custom one."""
         mode = state.get("mode")
         self.fan_edit = self.fan_preset = None
+        self.fan_cycle = None
         if os.geteuid() == 0:
             self.notice = "Reset needs the dashboard to run as your user, not root."
             return
@@ -241,22 +264,24 @@ class FanPanel:
             self.notice = "No stock or saved curves yet."
             return
         names = [name for name, _ in self.fan_opts]
-        at = ((names.index(self.fan_preset) if self.fan_preset in names else -1) + 1) % len(names)
-        self.fan_preset = names[at]
+        last = next((n for n in (self.fan_cycle, self.fan_preset) if n in names), None)
+        at = ((names.index(last) if last else -1) + 1) % len(names)
+        self.fan_cycle = names[at]
         name, points = self.fan_opts[at]
-        name = f"{name} ({at + 1}/{len(names)})"
+        label = f"{name} ({at + 1}/{len(names)})"
         if points is None:
-            self.notice = f"Curve {name} is invalid and cannot be staged."
+            self.notice = f"Curve {label} is invalid and cannot be staged."
             return
         current = self.fan_points()
         try:
             merged = merge_curve(current, points)
         except ControlError as exc:
-            self.notice = f"Curve {name} cannot be staged: {exc}"
+            self.notice = f"Curve {label} cannot be staged: {exc}"
             return
+        self.fan_preset = name
         self.fan_edit = None if merged == current else merged
         changes = sum(p.get(f) != c.get(f) for p, c in zip(merged, current) for f in WRITABLE)
-        self.notice = f"Curve {name} staged ({changes} changes). Press Enter to apply."
+        self.notice = f"Curve {label} staged ({changes} changes). Press Enter to apply."
 
     def fan_save(self):
         if os.geteuid() == 0:
@@ -290,6 +315,7 @@ class FanPanel:
         locked = self.fan_locked(state)
         if locked and self.fan_edit is not None:
             self.fan_edit = self.fan_preset = None
+            self.fan_cycle = None
             self.notice = f"Staged fan edits dropped: mode changed to {state.get('mode')}."
         shifted = {curses.KEY_SR: 1, curses.KEY_SF: -1}
         plain = {curses.KEY_UP: 1, curses.KEY_DOWN: -1}
@@ -309,6 +335,7 @@ class FanPanel:
             self.fan_move(plain.get(ch) or shifted[ch], big=ch in shifted)
         elif ch == ord("r"):
             self.fan_edit = self.fan_preset = None
+            self.fan_cycle = None
             self.notice = "Pending fan edits discarded."
         elif ch == ord("R"):
             self.fan_reset(state)
@@ -337,8 +364,14 @@ class FanPanel:
             self.put(y + 5 + len(lines), ix, "Esc returns to firmware controls.", self.theme.TEXT, dim=True)
             return
         scale = self.fan_scale()
-        staged = f"Staged {self.fan_preset} · " if self.fan_preset else "Staged · "
-        right = (staged if self.fan_edit is not None else "") + "Unit: " + scale.label
+        unit = "Unit: " + scale.label
+        right = unit
+        if self.fan_edit is not None:
+            room = width - len("Fans · " + rpm) - len(unit) - 14  # title, side padding and "Staged  · "
+            name = self.fan_preset or ""
+            if len(name) > room:
+                name = name[:max(0, room - 1)] + "…" if room > 1 else ""
+            right = f"Staged {name} · {unit}" if name else f"Staged · {unit}"
         self.box(y, x, height, width, "Fans · " + rpm, self.theme.GPU, right)
         target = self.fan_target()
         cpu_temp = (metrics.get("cpu") or {}).get("temperature_c")
@@ -373,9 +406,11 @@ class FanPanel:
             if p.get("fan2") is not None and scale.show(p["fan2"]) != scale.show(p.get("fan1")):
                 text += f" · fan 2 {scale.text(p['fan2'])}"
             current = self.fan_points()
-            was = current[self.fan_sel].get("fan1") if self.fan_sel < len(current) else None
-            if scale.show(was) != scale.show(p.get("fan1")):
-                text += f" (was {scale.text(was)})"
+            old = current[self.fan_sel] if self.fan_sel < len(current) else {}
+            for field, tag in (("fan1", ""), ("fan2", "fan 2 ")):
+                was = old.get(field)
+                if p.get(field) is not None and scale.show(was) != scale.show(p[field]):
+                    text += f" ({tag}was {scale.text(was)})"
         cpu = f"▲ CPU {cpu_temp:.0f}°C" if cpu_temp is not None else ""
         if cpu and len(text) + len(cpu) + 2 <= w:
             self.put(y, x + w - len(cpu), cpu, self.theme.WARN)

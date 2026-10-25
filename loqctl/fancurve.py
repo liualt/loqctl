@@ -51,6 +51,7 @@ class Scale:
     def __init__(self, unit=None, max_rpm=None):
         self.unit = unit
         self.max_rpm = max_rpm if max_rpm and 0 < max_rpm <= 25500 else DEFAULT_MAX_RPM
+        self._speeds = None
 
     @property
     def label(self):
@@ -63,7 +64,9 @@ class Scale:
 
     def speeds(self):
         """Every display speed the module can store (one per stored byte), lowest first."""
-        return sorted({self.show(pwm) for pwm in range(256)} & set(range(self.top + 1)))
+        if self._speeds is None:
+            self._speeds = sorted({self.show(pwm) for pwm in range(256)} & set(range(self.top + 1)))
+        return self._speeds
 
     def next_speed(self, pwm, steps):
         """Display speed `steps` storable speeds above pwm's (below when negative).
