@@ -315,6 +315,10 @@ class CheckScriptTests(unittest.TestCase):
 
 
 class MoveTests(unittest.TestCase):
+    def test_speeds_are_computed_once(self):
+        scale = m_fan.Scale("percent")
+        self.assertIs(scale.speeds(), scale.speeds())
+
     def test_speed_sets_both_fans_and_keeps_order(self):
         points, moved = m_panel.move_speed(NECN_STOCK, 1, 1, RPM)
         self.assertTrue(moved)
