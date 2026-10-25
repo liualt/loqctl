@@ -183,6 +183,19 @@ class KeyboardConfigTests(helpers.SysfsCase):
         kb.load(force=True)
         self.assertEqual(kb.zones, ["ffffff", "ff0000", "ff0000", "ff0000"])
 
+    def test_status_is_null_without_usable_config(self):
+        config = self.root / "kb.json"
+        for text in (None, "{bad", "[1]"):
+            if text is not None:
+                config.write_text(text)
+            kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
+            status = kb.status()
+            for key in ("effect", "speed", "brightness", "wave_dir", "zones"):
+                self.assertIsNone(status[key])
+            self.assertTrue(status["problem"])
+        kb.mark_dirty()
+        self.assertEqual(kb.status()["effect"], "static")
+
     def test_legionaura_resolved_via_path(self):
         kb = m_keyboard.Keyboard(binary="legionaura", config="/nonexistent/loqctl.json")
         run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))

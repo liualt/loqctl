@@ -27,6 +27,8 @@ class Keyboard:
         self.brightness = 2
         self.wave_dir = "ltr"
         self.zones = ["ffffff"] * self.ZONES
+        self.loaded = False  # True once a config file parsed; until then the values above are placeholders
+        self.problem = ""  # why the config could not be used
         self.dirty = False  # in-memory edits not yet confirmed applied; load() leaves them alone
         self.edits = 0  # bumped per in-memory edit; a job only clears dirty if no edit came after it
         self.last_message = ""
@@ -55,10 +57,14 @@ class Keyboard:
             return
         try:
             data = json.loads(self.config.read_text())
-        except (OSError, json.JSONDecodeError, TypeError):
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            self.problem = f"Cannot read {self.config}: {exc}"
             return
         if not isinstance(data, dict):
+            self.problem = f"{self.config} is not a JSON object."
             return
+        self.loaded = True
+        self.problem = ""
         if data.get("effect") in self.EFFECTS:
             self.effect = data["effect"]
         try:
@@ -82,15 +88,17 @@ class Keyboard:
         self.zones = cleaned
 
     def status(self):
+        known = self.loaded or self.dirty
         return {
             "available": self.available,
             "binary": shutil.which(self.binary) or self.binary,
             "config": str(self.config),
-            "effect": self.effect,
-            "speed": self.speed,
-            "brightness": self.brightness,
-            "wave_dir": self.wave_dir,
-            "zones": list(self.zones),
+            "effect": self.effect if known else None,
+            "speed": self.speed if known else None,
+            "brightness": self.brightness if known else None,
+            "wave_dir": self.wave_dir if known else None,
+            "zones": list(self.zones) if known else None,
+            "problem": "" if known else self.problem,
         }
 
     def _run(self, args):
@@ -194,6 +202,7 @@ def kb_cli(argv):
         return kb.status()
     if action == "apply":
         return {"result": kb.apply_current(), **kb.status()}
+    kb.mark_dirty()  # the commands below set values, so status() reports them
     if action == "off":
         kb.effect = "off"
         return {"result": kb.apply_current(), **kb.status()}

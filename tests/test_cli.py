@@ -65,7 +65,7 @@ class KbCliTests(unittest.TestCase):
             self.assertEqual(self.run_cli(*argv)[0], expected, argv)
         args, result = self.run_cli()
         self.assertIsNone(args)
-        self.assertEqual(result["zones"], ["ffffff"] * 4)
+        self.assertIsNone(result["zones"])
 
     def test_output_reports_settings_sent_not_config_file(self):
         with tempfile.TemporaryDirectory() as tmp:
