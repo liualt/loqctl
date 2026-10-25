@@ -167,6 +167,8 @@ class FanPanel:
             save_active(points)
         except OSError as exc:
             self.notice += f" Could not save active.json: {exc.strerror}"
+        except KeyError:
+            self.notice += " Could not save active.json: no home directory for this user."
 
     def fan_record_stock(self, mode):
         """Before loqctl's first write in `mode`, record the live curve as stock from a fresh read
@@ -217,6 +219,8 @@ class FanPanel:
                 self.notice = f"Reset to the stock curve: applied and verified {done} fan curve change(s)."
         except OSError as exc:
             self.notice = f"Reset failed: {exc.strerror or exc}"
+        except KeyError:
+            self.notice = "Reset failed: no home directory for this user."
         if marker:
             self.notice += " " + marker
 
