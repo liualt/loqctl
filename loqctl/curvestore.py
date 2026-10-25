@@ -67,6 +67,7 @@ def save_active(points):
 
 def clear_active():
     active_path().unlink(missing_ok=True)
+    (config_dir() / "active.json").unlink(missing_ok=True)  # legacy path, which also blocks save_stock
 
 
 def stock_path(mode):
@@ -127,10 +128,10 @@ def read_curve_file(path, uid=None):
         if uid is not None and (info.st_uid != uid or info.st_mode & 0o022):
             raise ControlError(f"{name} must be owned by uid {uid} and not group/world-writable.")
         try:
-            text = handle.read(MAX_FILE + 1)
-            if len(text) > MAX_FILE:
+            raw = handle.buffer.read(MAX_FILE + 1)
+            if len(raw) > MAX_FILE:
                 raise ControlError(f"{name} is not a regular curve file.")
-            data = json.loads(text)
+            data = json.loads(raw.decode())
         except ControlError:
             raise
         except ValueError as exc:  # UnicodeDecodeError is one

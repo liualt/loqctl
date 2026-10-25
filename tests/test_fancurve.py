@@ -540,6 +540,15 @@ class CurveStoreTests(unittest.TestCase):
         self.assertFalse(m_store.save_stock("custom", CURVE))
         self.assertFalse(m_store.stock_path("custom").exists())
 
+    def test_clear_active_removes_the_legacy_file_too(self):
+        legacy = self.config / "loqctl/active.json"
+        m_store.write_atomic(legacy, CURVE)
+        m_store.save_active(CURVE)
+        m_store.clear_active()
+        self.assertFalse(legacy.exists())
+        self.assertFalse(self.active.exists())
+        self.assertTrue(m_store.save_stock("custom", CURVE))
+
     def test_non_utf8_file_is_a_control_error(self):
         path = self.root / "bad.json"
         path.write_bytes(b"\xff\xfe{")
@@ -734,7 +743,7 @@ class ReapplyTests(unittest.TestCase):
         self.assertIn("nothing to re-apply", self.log[-1])
 
     def test_oversized_file_is_rejected(self):
-        self.active.write_text(" " * (m_store.MAX_FILE + 1))
+        self.active.write_text("é" * (m_store.MAX_FILE // 2 + 1))  # under the limit in characters, over in bytes
         with patch.object(m_store.os, "fstat", return_value=Mock(st_mode=0o100600, st_size=0, st_uid=os.getuid())):
             with self.assertRaises(m_common.ControlError):
                 m_store.read_curve_file(self.active)
