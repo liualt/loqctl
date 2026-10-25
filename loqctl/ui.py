@@ -456,7 +456,10 @@ class Dashboard(FanPanel):
                  f"avg {fmt(cpu.get('clock_mhz'), ' MHz')}   max {fmt(cpu.get('max_clock_mhz'), ' MHz')}   "
                  f"{fmt(temp_c, '°C')}"[:iw],
                  self.theme.heat(temp_c))
-        if cpu_h >= 7:
+        if cpu_h < 11 and cpu.get("power_w") is None and cpu.get("power_source"):
+            # Too short for the reason line below: it replaces the chart row.
+            self.put(y + 3, ix, cpu["power_source"][:iw], self.theme.TEXT, dim=True)
+        elif cpu_h >= 7:
             self.chart(y + 3, ix, iw, "cpu", color=self.theme.OK)
         pl1, pl2 = limit("ppt_pl1_spl"), limit("ppt_pl2_sppt")
         cpu_label = f"W {fmt(cpu.get('power_w'), '', 1)} · PL1 {fmt(pl1)} · PL2 {fmt(pl2)}"
