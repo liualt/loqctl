@@ -15,7 +15,7 @@ from .capdata import effective_value
 from .colors import hex_to_rgb, hsv_to_rgb, nearest_ansi, rgb_to_hex, rgb_to_hsv
 from .common import (BAR_EMPTY, BAR_FILL, FIELDS, SPARK, ControlError, SudoExpired, _lazy, clamp, fmt,
                      sudo_run, unit_sep)
-from .hardware import GAMEZONE
+from .hardware import GAMEZONE, check_changes, run_changes
 from .keyboard import Keyboard
 from .ui_fans import FanPanel
 
@@ -830,10 +830,26 @@ class Dashboard(FanPanel):
         if not self.backend.remote:
             hardware = self.backend.hardware
             return hardware.read_mode() if key == "mode" else hardware.read_attribute(key)
-        controls = self.backend.controls()
+        return self.pick_current(self.backend.controls(), key)
+
+    @staticmethod
+    def pick_current(controls, key):
         if key == "mode":
             return controls.get("mode")
         return controls.get("attributes", {}).get(key, {}).get("current_value")
+
+    def write_reported(self, key, value):
+        """Write through the backend; in API mode return the response's read-back, else None."""
+        response = self.backend.write(key, value)
+        if not self.backend.remote or not isinstance(response, dict):
+            return None
+        current = response.get("current")
+        if key == "mode":
+            return current if isinstance(current, str) else None
+        try:
+            return int(current)
+        except (TypeError, ValueError):
+            return None
 
     def apply(self, state):
         try:
@@ -846,58 +862,38 @@ class Dashboard(FanPanel):
             self.notice = "No pending changes."
             return
         changes = sorted(self.pending.items(), key=lambda pair: pair[0] != "mode")
-        completed = 0
-        stopped = None
         if any(k != "mode" for k in self.pending) and self.locked(state):
             raise ControlError(f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter.")
         if not (self.backend.remote or os.geteuid() == 0):
             results = self.run_sudo_apply([[k, v] for k, v in changes])
-            if results:
-                self.apply_results, self.show_results = results, True
-            for result in results:
-                if result["status"] == "APPLIED":
-                    self.pending.pop(result["key"], None)
-                    self.fields.pop(result["key"], None)
-                    completed += 1
-            failed = next((r for r in results if r["status"] != "APPLIED"), None)
-            if failed:
-                raise ControlError(f"Apply stopped after {completed} writes: {failed.get('error') or failed['status']}")
-            self.notice = f"Applied and verified {completed} change(s)."
-            return
-        results = self.apply_results = []  # changes is non-empty: every pass appends a result
-        self.show_results = True
-        for key, value in changes:
-            result = {"key": key, "requested": value, "before": None,
-                      "current": None, "status": "NOT SENT", "error": None}
+        else:
             try:
-                result["before"] = self.read_current(key)
-            except (ControlError, OSError, ValueError, http_client.HTTPException):
-                pass
-            if stopped:
-                result["current"] = result["before"]
-                results.append(result)
-                continue
-            error = None
-            try:
-                self.backend.write(key, value)
-            except (ControlError, OSError, ValueError, http_client.HTTPException) as exc:
-                error = str(exc)
-            write_failed = error is not None
-            try:
-                result["current"] = self.read_current(key)
-            except (ControlError, OSError, ValueError, http_client.HTTPException) as exc:
-                error = error or "Could not read firmware after the write: " + str(exc)
-            if error or result["current"] != value:
-                result["status"] = "UNVERIFIED" if result["current"] is None and not write_failed else "FAILED"
-                result["error"] = error or f"Requested {value}, but firmware reports {result['current']!r}."
-                stopped = result["error"]
-            else:
-                result["status"] = "APPLIED"
-                self.pending.pop(key)
+                check_changes([list(pair) for pair in changes])
+            except ControlError:
+                self.apply_results, self.show_results = [], False  # drop results of an earlier apply
+                raise
+            snapshot = None
+            if self.backend.remote:
+                try:
+                    snapshot = self.backend.controls()  # one capabilities call for every "before"
+                except (ControlError, OSError, ValueError, http_client.HTTPException):
+                    pass
+            results = run_changes(
+                changes, self.read_current, self.write_reported,
+                (ControlError, OSError, ValueError, http_client.HTTPException),
+                (lambda key: self.pick_current(snapshot, key) if snapshot is not None else None)
+                if self.backend.remote else None)
+        if results:
+            self.apply_results, self.show_results = results, True
+        completed = 0
+        for result in results:
+            if result["status"] == "APPLIED":
+                self.pending.pop(result["key"], None)
+                self.fields.pop(result["key"], None)
                 completed += 1
-            results.append(result)
-        if stopped:
-            raise ControlError(f"Apply stopped after {completed} writes: {stopped}")
+        failed = next((r for r in results if r["status"] != "APPLIED"), None)
+        if failed:
+            raise ControlError(f"Apply stopped after {completed} writes: {failed.get('error') or failed['status']}")
         self.notice = f"Applied and verified {completed} change(s)."
 
     def kb_set_hsv(self, h, s, v):

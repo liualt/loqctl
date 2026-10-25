@@ -252,12 +252,66 @@ class UiTests(helpers.SysfsCase):
     def test_report_cannot_claim_success_when_readback_missing(self):
         dashboard = self.dashboard()
         dashboard.backend.controls = Mock(side_effect=[self.hw.capabilities(), OSError("read failed")])
+        dashboard.backend.write = Mock(return_value={"verified": True})
         dashboard.pending = {"ppt_pl1_spl": 60}
         with self.assertRaises(m_common.ControlError):
             dashboard.apply(self.hw.capabilities())
         self.assertEqual(dashboard.apply_results[0]["status"], "UNVERIFIED")
         self.assertIsNone(dashboard.apply_results[0]["current"])
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+
+    def test_remote_apply_reads_capabilities_once(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        dashboard = self.dashboard()
+        dashboard.backend.controls = Mock(return_value=self.hw.capabilities())
+        dashboard.backend.write = Mock(side_effect=lambda key, value: {"current": value})
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        dashboard.apply(self.hw.capabilities())
+        self.assertEqual(dashboard.backend.controls.call_count, 1)
+        self.assertEqual([(r["key"], r["before"], r["current"], r["status"]) for r in dashboard.apply_results],
+                         [("ppt_pl1_spl", 50, 60, "APPLIED"), ("cpu_temp", 80, 90, "APPLIED")])
+        self.assertEqual(dashboard.pending, {})
+
+    def test_remote_apply_rereads_skipped_items(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        dashboard = self.dashboard()
+        caps = self.hw.capabilities()
+        fresh = self.hw.capabilities()
+        fresh["attributes"]["cpu_temp"]["current_value"] = 85
+        dashboard.backend.controls = Mock(side_effect=[caps, fresh])
+        dashboard.backend.write = Mock(return_value={"current": "50"})
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        with self.assertRaises(m_common.ControlError):
+            dashboard.apply(caps)
+        first, skipped = dashboard.apply_results
+        self.assertEqual((first["status"], first["current"]), ("FAILED", 50))
+        self.assertEqual((skipped["status"], skipped["before"], skipped["current"]), ("NOT SENT", 80, 85))
+
+    def test_remote_apply_normalises_reported_type(self):
+        dashboard = self.dashboard()
+        dashboard.backend.controls = Mock(return_value=self.hw.capabilities())
+        dashboard.backend.write = Mock(return_value={"current": "60"})
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        dashboard.apply(self.hw.capabilities())
+        self.assertEqual((dashboard.apply_results[0]["status"], dashboard.apply_results[0]["current"]),
+                         ("APPLIED", 60))
+
+    def test_direct_root_apply_fills_before(self):
+        dashboard = self.local_dashboard()
+        dashboard.backend.hardware = self.hw
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        with patch.object(os, "geteuid", return_value=0):
+            dashboard.apply(self.hw.capabilities())
+        result = dashboard.apply_results[0]
+        self.assertEqual((result["before"], result["current"], result["status"]), (50, 60, "APPLIED"))
+
+    def test_invalid_changes_clear_old_results(self):
+        dashboard = self.dashboard()
+        dashboard.apply_results, dashboard.show_results = [{"key": "old"}], True
+        dashboard.pending = {"ppt_pl1_spl": "60"}
+        with self.assertRaises(m_common.ControlError):
+            dashboard.apply(self.hw.capabilities())
+        self.assertEqual((dashboard.apply_results, dashboard.show_results), ([], False))
 
     def local_dashboard(self):
         dashboard = self.dashboard()
