@@ -26,7 +26,7 @@ class KeyboardWorkerTests(unittest.TestCase):
         kb.zones = ["ff0000", "00ff00", "0000ff", "ffffff"]
         kb.speed, kb.brightness, kb.wave_dir = 2, 1, "rtl"
         expected = {
-            "off": ["off"], "apply": ["apply"],
+            "off": ["off"],
             "static": ["static", *kb.zones, "--brightness", "1"],
             "breath": ["breath", *kb.zones, "--speed", "2", "--brightness", "1"],
             "wave": ["wave", "rtl", "--speed", "2", "--brightness", "1"],
@@ -160,7 +160,7 @@ class KeyboardConfigTests(helpers.SysfsCase):
             config = Path(tmp) / "config.json"
             config.write_text(json.dumps({
                 "effect": "breath", "speed": 3, "brightness": 1,
-                "waveDir": "rtl", "zones": ["ff0000", "00ff00"],
+                "waveDir": "rtl", "zones": ["ff0000", "00ff00", "0000ff", "ffffff"],
             }))
             kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
             status = kb.status()
@@ -168,7 +168,8 @@ class KeyboardConfigTests(helpers.SysfsCase):
             self.assertEqual(status["speed"], 3)
             self.assertEqual(status["brightness"], 1)
             self.assertEqual(status["wave_dir"], "rtl")
-            self.assertEqual(status["zones"], ["ff0000", "00ff00", "00ff00", "00ff00"])
+            self.assertEqual(status["zones"], ["ff0000", "00ff00", "0000ff", "ffffff"])
+            self.assertEqual(status["problem"], "")
 
     def test_keyboard_load_tolerates_bad_config(self):
         config = self.root / "kb.json"
@@ -179,9 +180,83 @@ class KeyboardConfigTests(helpers.SysfsCase):
             kb.load(force=True)
             self.assertEqual((kb.effect, kb.speed, kb.brightness), ("static", 1, 2))
             self.assertEqual(len(kb.zones), 4)
-        config.write_text('{"zones": [5, "ff0000"]}')
+        config.write_text('{"zones": [5, "ff0000", "00ff00", "0000ff"]}')
         kb.load(force=True)
-        self.assertEqual(kb.zones, ["ffffff", "ff0000", "ff0000", "ff0000"])
+        self.assertEqual(kb.zones, ["ffffff"] * 4)
+        self.assertNotIn("zones", kb.from_config)
+
+    def test_status_is_null_without_usable_config(self):
+        config = self.root / "kb.json"
+        for text in (None, "{bad", "[1]"):
+            if text is not None:
+                config.write_text(text)
+            kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
+            status = kb.status()
+            for key in ("effect", "speed", "brightness", "wave_dir", "zones"):
+                self.assertIsNone(status[key])
+            self.assertTrue(status["problem"])
+        kb.mark_dirty()
+        self.assertEqual(kb.status()["effect"], "static")
+        self.assertTrue(kb.status()["problem"])
+
+    def test_status_reports_only_fields_the_config_holds(self):
+        config = self.root / "kb.json"
+        config.write_text("{}")
+        kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
+        self.assertEqual(kb.from_config, set())
+        self.assertEqual(kb.status()["problem"], "config is missing: effect, speed, brightness, wave_dir, zones")
+        config.write_text('{"effect": "nope", "zones": [], "brightness": 1}')
+        kb.load()
+        status = kb.status()
+        self.assertEqual(status["brightness"], 1)
+        for key in ("effect", "speed", "wave_dir", "zones"):
+            self.assertIsNone(status[key])
+
+    def test_status_problem_is_short_and_follows_the_latest_load(self):
+        config = self.root / "kb.json"
+        kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
+        self.assertEqual(kb.status()["problem"], "no config yet")
+        config.write_text('{"effect": "wave"}')
+        kb.load()
+        self.assertEqual(kb.status()["effect"], "wave")
+        self.assertIn("speed", kb.status()["problem"])
+        config.unlink()
+        kb.load()
+        status = kb.status()
+        self.assertIsNone(status["effect"])
+        self.assertEqual(status["problem"], "no config yet")
+        self.assertNotIn(str(self.root), status["problem"])
+
+    def test_invalid_values_are_not_known(self):
+        config = self.root / "kb.json"
+        config.write_text(json.dumps({
+            "effect": "static", "speed": 0, "brightness": None, "waveDir": "up",
+            "zones": ["ff0000", "00ff00"],
+        }))
+        kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
+        self.assertEqual(kb.from_config, {"effect"})
+        self.assertEqual(kb.status()["problem"], "config is missing: speed, brightness, wave_dir, zones")
+        config.write_text('{"speed": 9, "zones": ["ff0000", "x", "00ff00", "0000ff"]}')
+        kb.load()
+        self.assertEqual(kb.from_config, set())
+
+    def test_edited_fields_survive_a_missing_config(self):
+        kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=self.root / "none.json")
+        kb.brightness = 1
+        kb.mark_dirty("brightness")
+        kb.dirty = False  # as after a successful apply
+        kb.load()
+        status = kb.status()
+        self.assertEqual(status["brightness"], 1)
+        self.assertIsNone(status["effect"])
+        self.assertEqual(status["problem"], "no config yet")
+
+    def test_kb_apply_runs_legionaura_apply(self):
+        kb = m_keyboard.Keyboard(binary="legionaura", config=self.root / "none.json")
+        with patch.object(m_keyboard, "Keyboard", return_value=kb), patch.object(kb, "_run", return_value="OK") as run:
+            result = m_keyboard.kb_cli(["apply"])
+        run.assert_called_once_with(["apply"])
+        self.assertEqual(result["result"], "OK")
 
     def test_legionaura_resolved_via_path(self):
         kb = m_keyboard.Keyboard(binary="legionaura", config="/nonexistent/loqctl.json")

@@ -182,8 +182,16 @@ class HardwareTests(helpers.SysfsCase):
         with self.assertRaisesRegex(m_common.ControlError, "custom"):
             self.hw.set_value("ppt_pl1_spl", 60)
         self.assertEqual((self.attr / "current_value").read_text(), "50")
-        with self.assertRaises(m_common.ControlError):
+        with self.assertRaisesRegex(m_common.ControlError, r"'turbo'\. Choose one of .*balanced"):
             self.hw.set_mode("turbo")
+
+    def test_set_mode_rejects_non_str_and_empty_choices(self):
+        for bad in (None, 5):
+            with self.assertRaisesRegex(m_common.ControlError, "Choose one of"):
+                self.hw.set_mode(bad)
+        self.hw.choices.write_text("")
+        with self.assertRaisesRegex(m_common.ControlError, "No platform modes"):
+            self.hw.set_mode("balanced")
 
     def test_allowlist_blocks_traversal_and_unknowns(self):
         for key in ("../ppt_pl1_spl", "ppt_pl1_spl/current_value", "gpu_mode", "/etc/passwd"):
