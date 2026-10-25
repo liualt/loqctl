@@ -49,9 +49,9 @@ class SensorsTests(helpers.SysfsCase):
                 (base / "topology/core_id").write_text(core_id)
                 (base / "topology/physical_package_id").write_text("0")
         counts(1)
-        s.cpu_throttle()
+        s.cpu_throttle(0)
         counts(3)
-        self.assertEqual(s.cpu_throttle()["core_events"], 4)
+        self.assertEqual(s.cpu_throttle(1)["core_events"], 4)
 
 
 class FakeNVML:
@@ -318,12 +318,28 @@ class TelemetryTests(unittest.TestCase):
                 self.put(f"devices/system/cpu/cpu{i}/topology/physical_package_id", "0")
         s = self.sensors()
         counts(1, 5)
-        first = s.cpu_throttle()
+        first = s.cpu_throttle(0)
         self.assertEqual(first, {"core_events": None, "package_events": None, "active": None})
         counts(3, 6)
-        second = s.cpu_throttle()
+        second = s.cpu_throttle(1)
         self.assertEqual((second["core_events"], second["package_events"], second["active"]), (4, 1, True))
-        self.assertIs(s.cpu_throttle()["active"], False)
+        self.assertIs(s.cpu_throttle(2)["active"], True)
+        self.assertIs(s.cpu_throttle(2 + m_sensors.SLOW_INTERVAL)["active"], False)
+
+    def test_sample_throttle_delta_and_window(self):
+        def counts(n):
+            for name in ("core", "package"):
+                self.put(f"devices/system/cpu/cpu0/thermal_throttle/{name}_throttle_count", str(n))
+        counts(2)
+        s = self.sensors()
+        self.assertIsNone(s.sample(now=0)["throttle"]["cpu"]["core_events"])
+        counts(5)
+        cpu = s.sample(now=1)["throttle"]["cpu"]
+        self.assertEqual((cpu["core_events"], cpu["package_events"], cpu["active"]), (3, 3, True))
+        cpu = s.sample(now=2)["throttle"]["cpu"]  # no new events, still inside the window
+        self.assertEqual((cpu["core_events"], cpu["active"]), (3, True))
+        cpu = s.sample(now=1 + m_sensors.SLOW_INTERVAL)["throttle"]["cpu"]
+        self.assertEqual((cpu["core_events"], cpu["active"]), (0, False))
 
     def test_nvml_throttle_reasons(self):
         lib = FakeNVML()

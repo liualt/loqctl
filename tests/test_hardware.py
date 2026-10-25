@@ -2,6 +2,7 @@
 import errno
 import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -45,6 +46,111 @@ class HardwareTests(helpers.SysfsCase):
             self.hw.set_value("ppt_pl1_spl", 70)
         self.assertEqual(self.hw.capabilities()["attributes"]["ppt_pl1_spl"]["max_value"], 60)
 
+    def _late_files(self, root, mode="custom", name=m_hardware.GAMEZONE, profile="p"):
+        attr = root / "class/firmware-attributes/lenovo-wmi-other-0/attributes/ppt_pl1_spl"
+        attr.mkdir(parents=True, exist_ok=True)
+        for fname, text in (("current_value", "50"), ("min_value", "50"), ("max_value", "100"),
+                            ("default_value", "50"), ("scalar_increment", "1")):
+            (attr / fname).write_text(text + "\n")
+        prof = root / "class/platform-profile" / profile
+        prof.mkdir(parents=True, exist_ok=True)
+        for fname, text in (("name", name), ("profile", mode), ("choices", "quiet custom")):
+            (prof / fname).write_text(text + "\n")
+
+    def test_files_that_appear_after_start_are_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
+            self.assertEqual(hw.capabilities()["attributes"], {})
+            self._late_files(root)
+            self.assertEqual(hw.capabilities()["attributes"], {})  # throttled
+            now[0] = 6
+            caps = hw.capabilities()
+        self.assertIn("ppt_pl1_spl", caps["attributes"])
+        self.assertEqual((caps["mode"], caps["modes"]), ("custom", ["quiet", "custom"]))
+
+    def test_writes_rediscover_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root)
+            with self.assertRaises(m_common.ControlError):
+                hw.set_value("ppt_pl1_spl", 60)
+            self._late_files(root)
+            self.assertTrue(hw.set_value("ppt_pl1_spl", 60)["verified"])
+            self.assertEqual(hw.set_mode("quiet")["current"], "quiet")
+
+    def test_gamezone_profile_replaces_another_handler(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
+            root = Path(tmp)
+            self._late_files(root, mode="balanced", name="other", profile="a")
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
+            self.assertEqual(hw.mode_driver, "other")
+            self._late_files(root, mode="custom", profile="b")
+            now[0] = 6
+            self.assertEqual(hw.read_mode(), "custom")
+            self.assertEqual(hw.mode_driver, m_hardware.GAMEZONE)
+
+    def test_attributes_directory_disappearing_is_noticed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
+            root = Path(tmp)
+            self._late_files(root)
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
+            self.assertIn("ppt_pl1_spl", hw.capabilities()["attributes"])
+            shutil.rmtree(root / "class/firmware-attributes")
+            now[0] = 6
+            self.assertEqual(hw.capabilities()["attributes"], {})
+            self.assertIsNone(hw.base)
+
+    def test_profile_change_drops_static_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
+            root = Path(tmp)
+            self._late_files(root, mode="balanced", name="other", profile="a")
+            (root / "class/firmware-attributes/lenovo-wmi-other-0/attributes/ppt_pl1_spl/display_name").write_text("Sustained\n")
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
+            hw.capabilities()
+            self.assertTrue(hw._static)
+            self._late_files(root, mode="balanced", profile="b")
+            now[0] = 6
+            hw._rediscover()
+            self.assertEqual((hw._static, hw._static_mode), ({}, None))
+
+    def test_failing_limits_hook_is_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
+            calls = []
+
+            def hook():
+                calls.append(1)
+                if len(calls) == 1:
+                    raise OSError("boom")
+
+            hw.on_new_base = hook
+            self._late_files(root)
+            now[0] = 6
+            with patch("sys.stderr"):
+                self.assertEqual(hw.read_mode(), "custom")  # the failure does not escape
+            now[0] = 12
+            hw.read_mode()
+            now[0] = 18
+            hw.read_mode()
+        self.assertEqual(len(calls), 2)
+
+    def test_new_attributes_directory_reloads_mode_limits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root)
+            hw.set_mode_limits(None, "needs root")
+            hw.on_new_base = lambda: hw.set_mode_limits({"custom": {}}, None)
+            self._late_files(root)
+            hw.set_mode("quiet")
+            self.assertEqual(hw.mode_limits(), ({"custom": {}}, None))
+
     def test_incomplete_limits_are_read_again(self):
         (self.attr / "max_value").unlink()
         (self.attr / "default_value").unlink()
@@ -76,8 +182,16 @@ class HardwareTests(helpers.SysfsCase):
         with self.assertRaisesRegex(m_common.ControlError, "custom"):
             self.hw.set_value("ppt_pl1_spl", 60)
         self.assertEqual((self.attr / "current_value").read_text(), "50")
-        with self.assertRaises(m_common.ControlError):
+        with self.assertRaisesRegex(m_common.ControlError, r"'turbo'\. Choose one of .*balanced"):
             self.hw.set_mode("turbo")
+
+    def test_set_mode_rejects_non_str_and_empty_choices(self):
+        for bad in (None, 5):
+            with self.assertRaisesRegex(m_common.ControlError, "Choose one of"):
+                self.hw.set_mode(bad)
+        self.hw.choices.write_text("")
+        with self.assertRaisesRegex(m_common.ControlError, "No platform modes"):
+            self.hw.set_mode("balanced")
 
     def test_allowlist_blocks_traversal_and_unknowns(self):
         for key in ("../ppt_pl1_spl", "ppt_pl1_spl/current_value", "gpu_mode", "/etc/passwd"):
