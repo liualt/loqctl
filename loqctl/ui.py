@@ -300,7 +300,7 @@ class Dashboard(FanPanel):
         if self.panel == "keyboard":
             keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
         elif self.panel == "fans":
-            keys = "←→ point  ↑↓ speed  Shift+↑↓ x5  Enter apply  r discard  W save  R reset to stock  p curves  d details  Esc back  q quit"
+            keys = "Esc back  q quit  ←→ point  ↑↓ speed (Shift x5)  Enter apply  r discard  W save  R stock  p curves  d details"
         else:
             keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  f fans  t sensors  m modes  Space pause  v results  ? help  q"
         self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)

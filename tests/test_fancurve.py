@@ -541,6 +541,23 @@ class FanCurveSurfaceTests(FanPanelFixture, unittest.TestCase):
         self.keys(dash, state, curses.KEY_UP, "r")
         self.assertIsNone(dash.fan_edit)
 
+    def test_held_reason_without_fan1_and_at_neighbour(self):
+        dash = self.dash()
+        dash.fan = {"available": True, "points": edit(CURVE, {(1, "fan1"): None, (1, "fan2"): 50, (2, "fan2"): 50})}
+        self.assertIn("point 3 has the same speed", dash.fan_held_reason(dash.fan_points(), 1, 1))
+
+    def test_fans_key_hint_keeps_esc_and_quit_at_80_columns(self):
+        dash = self.dash()
+        dash.panel = "fans"
+        dash.s.getmaxyx.return_value = (30, 80)
+        dash.kb_seen, dash.paused, dash.sudo_expired = dash.keyboard.last_seq, False, False
+        calls = []
+        dash.put = lambda y, x, text, *a, **k: calls.append(str(text))
+        dash.draw_fans = dash.box = Mock()
+        dash.draw({"mode": "custom"})
+        hint = next(c for c in calls if "Esc back" in c)
+        self.assertIn("q quit", hint[:77])
+
     def test_invalid_staged_curve_is_not_written(self):
         dash = self.dash()
         state = {"mode": "custom"}
@@ -907,6 +924,13 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         self.assertEqual(dash.fan_edit[2]["fan1"], 180)
         dash.draw_fans(state, {}, 1, 0, 25, 100)
         self.assertIn("Staged stock", dash.box.call_args.args[6])
+        dash.fan_preset = "n" * 80
+        dash.draw_fans(state, {}, 1, 0, 25, 40)
+        label = dash.box.call_args.args[6]
+        self.assertTrue(label.endswith("Unit: %"))  # the curve name is cut, the unit stays
+        self.assertLess(len(label), 40 - 8)
+        self.assertIs(dash.fan_scale(), dash.fan_scale())
+        dash.fan_preset = "stock"
         m_store.write_atomic(self.config / "loqctl/curves/aa.json", edit(CURVE, {(1, "fan1"): 90}))
         self.keys(dash, state, "p")  # a new saved curve sorts before the staged one; the name still decides
         self.assertEqual(dash.fan_preset, dash.fan_opts[1][0])
@@ -915,6 +939,10 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         self.assertIsNone(dash.fan_edit)
         self.assertIn("Curve zz (4/4) is invalid and cannot be staged", dash.notice)
         self.assertNotEqual(dash.fan_preset, "zz")
+        self.keys(dash, state, "p")  # the next press moves past the invalid curve instead of retrying it
+        self.assertEqual(dash.fan_preset, dash.fan_opts[0][0])
+        self.keys(dash, state, "p", "p")
+        self.assertEqual(dash.fan_preset, dash.fan_opts[2][0])  # a valid curve after the invalid one is reachable by cycling
 
     def test_reset_writes_stock_and_stops_reapply(self):
         dash = self.dash()
