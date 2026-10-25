@@ -57,14 +57,6 @@ class UiTests(helpers.SysfsCase):
         self.assertEqual(dashboard.pending, {"cpu_temp": 90})
         self.assertEqual([r["status"] for r in dashboard.apply_results], ["APPLIED", "FAILED"])
 
-    def test_footer_hints_fit_the_minimum_width(self):
-        for hint in (m_ui.Dashboard.HINT_MAIN, m_ui.Dashboard.HINT_FANS, m_ui.Dashboard.HINT_KEYBOARD):
-            self.assertLessEqual(len(hint), m_ui.Dashboard.MIN_W - 3)
-            self.assertTrue(hint.endswith("q quit"))
-        self.assertTrue(m_ui.Dashboard.HINT_MAIN.endswith("? help  q quit"))
-        for hint in (m_ui.Dashboard.HINT_FANS, m_ui.Dashboard.HINT_KEYBOARD):
-            self.assertTrue(hint.startswith("? help  "))
-
     def test_dashboard_mode_lock(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()
@@ -566,23 +558,32 @@ class UiTests(helpers.SysfsCase):
         dash.handle(ord("?"), {})
         self.assertTrue(dash.help)
 
-    def test_panel_footers_list_help_key(self):
-        for panel in ("keyboard", "fans"):
-            dash = self.dash()
-            dash.panel = panel
-            calls = []
-            dash.put = lambda y, x, text, *a, **k: calls.append(text)
-            dash.s = Mock()
-            dash.s.getmaxyx.return_value = (30, 80)
-            dash.kb_seen = dash.keyboard.last_seq
-            dash.paused = False
-            dash.push_history = lambda metrics: None
-            dash.help = dash.show_results = dash.show_limits = False
-            dash.sudo_expired = False
-            dash.theme = Mock()
-            dash.draw_main = dash.draw_keyboard = dash.draw_fans = lambda *a, **k: None
-            dash.draw({"metrics": {}})
-            self.assertTrue(any(t.startswith("? help") for t in calls), panel)
+    def test_footer_hint_fits_and_keeps_help_and_quit(self):
+        for panel in ("main", "keyboard", "fans"):
+            for width in (72, 80, 120):
+                dash = self.dash()
+                dash.panel = panel
+                calls = []
+                dash.put = lambda y, x, text, *a, **k: calls.append(text)
+                dash.s = Mock()
+                dash.s.getmaxyx.return_value = (30, width)
+                dash.kb_seen = dash.keyboard.last_seq
+                dash.paused = False
+                dash.push_history = lambda metrics: None
+                dash.help = dash.show_results = dash.show_limits = False
+                dash.sudo_expired = False
+                dash.theme = Mock()
+                dash.draw_main = dash.draw_keyboard = dash.draw_fans = lambda *a, **k: None
+                dash.draw({"metrics": {}})
+                hint = next(t for t in calls if isinstance(t, str) and t.startswith("? help"))
+                self.assertLessEqual(len(hint), width - 3, (panel, width))
+                self.assertTrue(hint.endswith("q quit"), (panel, width))
+                if width >= 80:
+                    self.assertIn("Enter apply", hint, (panel, width))
+                if width == 120 and panel == "fans":
+                    self.assertIn("R stock", hint)
+                dash.s.getmaxyx.return_value = (30, 200)
+                self.assertEqual(dash.footer_hint(197).count("  "), len(m_ui.Dashboard.HINTS[panel]) + 1)
 
     def test_external_mode_change_drops_staged_limits(self):
         dash = self.dash()
