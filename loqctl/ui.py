@@ -112,10 +112,15 @@ class Theme:
 
 class Dashboard(FanPanel):
     MIN_W, MIN_H = 72, 20
-    # Each hint must fit MIN_W - 3 columns, with the quit key last.
-    HINT_KEYBOARD = "? help  1–4 zone  ←→ value  ↑↓ HSV  e effect  Esc back  q quit"
-    HINT_FANS = "? help  ←→ point  ↑↓ speed  r discard  W save  Esc back  q quit"
-    HINT_MAIN = "↑↓ select  ←→ adjust  Enter apply  l keyboard  f fans  ? help  q quit"
+    # Footer entries in priority order. footer_hint() drops from the end to fit.
+    HINTS = {
+        "main": ("↑↓ select", "←→ adjust", "Enter apply", "l keyboard", "f fans", "0-9 type", "Esc clear",
+                 "d default", "r discard", "t sensors", "m modes", "Space pause", "v results"),
+        "fans": ("←→ point", "↑↓ speed", "Enter apply", "Esc back", "r discard", "W save", "R stock",
+                 "p curves", "d details"),
+        "keyboard": ("1–4 zone", "←→ adjust HSV", "↑↓ channel", "Enter apply", "Esc back", "e effect",
+                     "b bright", "c copy-all", "Space live"),
+    }
     show_limits = False
 
     def __init__(self, screen, backend, sudo_ok=True):
@@ -301,13 +306,8 @@ class Dashboard(FanPanel):
         if self.sudo_expired and not self.backend.remote and os.geteuid() != 0:
             status, warn = "sudo not authenticated · press s to authenticate · edits stay staged", True
         self.put(h - 2, 1, status[: w - 3], self.theme.WARN if warn else self.theme.TEXT)
-        if self.panel == "keyboard":
-            keys = self.HINT_KEYBOARD
-        elif self.panel == "fans":
-            keys = self.HINT_FANS
-        else:
-            keys = self.HINT_MAIN
-        self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)
+        keys = self.footer_hint(w - 3)
+        self.put(h - 1, 1, keys, self.theme.ACCENT, dim=True)
 
         if self.help:
             self.draw_help()
@@ -669,6 +669,12 @@ class Dashboard(FanPanel):
         "          Enter apply   r discard   R reset to stock",
         "          p next curve   W save   Esc back",
     )
+
+    def footer_hint(self, width):
+        entries = list(self.HINTS.get(self.panel, self.HINTS["main"]))
+        while entries and len("  ".join(["? help", *entries, "q quit"])) > width:
+            entries.pop()
+        return "  ".join(["? help", *entries, "q quit"])
 
     def draw_help(self):
         h, w = self.s.getmaxyx()
