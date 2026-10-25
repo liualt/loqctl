@@ -131,6 +131,7 @@ class Sensors:
         self.previous_cpu = {}
         self.previous_energy = {}
         self.previous_throttle = None
+        self.throttle_events = []  # (time, core delta, package delta) within SLOW_INTERVAL
         self.slow = None
         self.slow_at = None
         self.found = {}  # discovery cache: name -> (paths, monotonic time of the scan)
@@ -292,33 +293,44 @@ class Sensors:
         except OSError:
             return None
 
-    def cpu_throttle(self):
-        cpus = sorted(self.root.glob("devices/system/cpu/cpu[0-9]*/thermal_throttle"))
-        core, package, seen, cores = None, None, set(), set()
-        for path in cpus:
+    def throttle_files(self):
+        """(core, package) counter files, one per physical core and package (SMT siblings share a counter)."""
+        core_files, package_files, seen, cores = [], [], set(), set()
+        for path in sorted(self.root.glob("devices/system/cpu/cpu[0-9]*/thermal_throttle")):
             cpu = path.parent
             core_id = read(cpu / "topology/core_id")
             core_key = (read(cpu / "topology/physical_package_id"), core_id) if core_id is not None else cpu
-            if core_key not in cores:  # SMT siblings share one core counter
+            if core_key not in cores:
                 cores.add(core_key)
-                if (v := scaled(path / "core_throttle_count")) is not None:
-                    core = (core or 0) + v
+                core_files.append(path / "core_throttle_count")
             pkg = read(cpu / "topology/physical_package_id")
-            if pkg is None and cpu.name != "cpu0":
-                continue
-            if pkg in seen:
+            if (pkg is None and cpu.name != "cpu0") or pkg in seen:
                 continue
             seen.add(pkg)
-            if (v := scaled(path / "package_throttle_count")) is not None:
-                package = (package or 0) + v
-        previous, self.previous_throttle = self.previous_throttle, (core, package)
+            package_files.append(path / "package_throttle_count")
+        return core_files, package_files
 
-        def delta(now, before):
-            return None if now is None or before is None else max(0, now - before)
-        events = [delta(core, previous[0] if previous else None), delta(package, previous[1] if previous else None)]
-        known = [e for e in events if e is not None]
+    def cpu_throttle(self, now):
+        """Throttle events over the last SLOW_INTERVAL, from per-sample counter deltas."""
+        def total(paths):
+            values = [v for p in paths if (v := scaled(p)) is not None]
+            return sum(values) if values else None
+        core_files, package_files = self.discover("throttle", self.throttle_files)
+        current = (total(core_files), total(package_files))
+        previous, self.previous_throttle = self.previous_throttle, current
+        if previous is not None:
+            self.throttle_events.append((now, *(None if a is None or b is None else max(0, a - b)
+                                                for a, b in zip(current, previous))))
+        while self.throttle_events and now - self.throttle_events[0][0] >= SLOW_INTERVAL:
+            self.throttle_events.pop(0)
+
+        def window(i):
+            values = [e[i] for e in self.throttle_events if e[i] is not None]
+            return sum(values) if values else None
+        events = [window(1), window(2)]
+        known = [v for v in events if v is not None]
         return {"core_events": events[0], "package_events": events[1],
-                "active": any(e > 0 for e in known) if known else None}
+                "active": any(v > 0 for v in known) if known else None}
 
     def read_slow(self, hwmons):
         """Sources refreshed every SLOW_INTERVAL seconds."""
@@ -416,7 +428,7 @@ class Sensors:
                 "power": {"rapl": rapl, "battery_w": slow["battery_w"],
                           "battery_status": slow["battery_status"], "usbc": slow["usbc"]},
                 "temperatures": temperatures, "voltages": voltages,
-                "throttle": {"cpu": self.cpu_throttle(),
+                "throttle": {"cpu": self.cpu_throttle(now),
                              "gpu": devices[0].get("throttle") if devices else None},
                 "load": list(os.getloadavg()), "uptime_s": number((read(self.proc / "uptime", "0")).split()[0])}
 
