@@ -201,7 +201,7 @@ def kb_cli(argv):
     if action == "status":
         return kb.status()
     if action == "apply":
-        return {"result": kb.apply_current(), **kb.status()}
+        return {"result": kb._run(["apply"]), **kb.status()}
     kb.mark_dirty()  # the commands below set values, so status() reports them
     if action == "off":
         kb.effect = "off"

@@ -196,6 +196,13 @@ class KeyboardConfigTests(helpers.SysfsCase):
         kb.mark_dirty()
         self.assertEqual(kb.status()["effect"], "static")
 
+    def test_kb_apply_runs_legionaura_apply(self):
+        kb = m_keyboard.Keyboard(binary="legionaura", config=self.root / "none.json")
+        with patch.object(m_keyboard, "Keyboard", return_value=kb), patch.object(kb, "_run", return_value="OK") as run:
+            result = m_keyboard.kb_cli(["apply"])
+        run.assert_called_once_with(["apply"])
+        self.assertEqual(result["result"], "OK")
+
     def test_legionaura_resolved_via_path(self):
         kb = m_keyboard.Keyboard(binary="legionaura", config="/nonexistent/loqctl.json")
         run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
