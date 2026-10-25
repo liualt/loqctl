@@ -887,6 +887,10 @@ class ReapplyTests(helpers.SysfsCase):
         sampler.on_firmware.assert_called_once()
         self.assertEqual(sampler.latest["mode"], "custom")
 
+    def finish(self, sampler):
+        sampler.hook.join(5)
+        self.assertFalse(sampler.hook.is_alive())
+
     def test_slow_hook_does_not_delay_the_snapshot(self):
         release = threading.Event()
         sampler = m_sensors.Sampler(self.hw)
@@ -897,8 +901,53 @@ class ReapplyTests(helpers.SysfsCase):
             sampler.force.set()
             sampler.tick()  # hook still running: not started twice
             release.set()
-            sampler.hook.join(5)
+            self.finish(sampler)
         sampler.on_firmware.assert_called_once()
+
+    def test_reapplier_on_hook_thread_sees_every_mode_flip(self):
+        release, written = threading.Event(), threading.Event()
+        applied = []
+        real_apply = self.reapply.apply
+
+        def slow_apply(reason):
+            applied.append(reason)
+            real_apply(reason)
+            if len(applied) == 1:
+                written.set()
+                release.wait(5)
+        self.reapply.apply = slow_apply
+        sampler = m_sensors.Sampler(self.hw)
+        sampler.on_firmware = self.reapply
+        with patch.object(sampler.sensors, "sample", return_value={}):
+            sampler.tick()  # enters custom, hook blocks mid-write
+            self.assertTrue(written.wait(5))
+            self.hw.profile.write_text("balanced\n")
+            sampler.force.set()
+            sampler.tick()  # no firmware read while the hook runs
+            self.assertEqual(sampler.latest["mode"], "custom")
+            release.set()
+            self.finish(sampler)
+            self.assertEqual(self.fan1(), 90)
+            sampler.force.set()
+            sampler.tick()  # sees the flip once the hook is done
+            self.finish(sampler)
+            self.assertEqual(sampler.latest["mode"], "balanced")
+            self.hw.profile.write_text("custom\n")
+            sampler.force.set()
+            sampler.tick()
+            self.finish(sampler)
+        self.assertEqual(len(applied), 2)
+
+    def test_halt_waits_for_the_running_hook(self):
+        release = threading.Event()
+        done = []
+        sampler = m_sensors.Sampler(self.hw)
+        sampler.on_firmware = lambda caps: (release.wait(5), done.append(1))
+        with patch.object(sampler.sensors, "sample", return_value={}):
+            sampler.tick()
+        threading.Timer(0.2, release.set).start()
+        sampler.halt()
+        self.assertEqual(done, [1])
 
 
 class FanPanelPresetTests(FanPanelFixture):
