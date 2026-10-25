@@ -72,7 +72,7 @@ loqctl
 | `Space` | Pause telemetry |
 | `v` | Reopen the last apply results |
 | `s` | Authenticate sudo (shown when needed) |
-| `?` | Help |
+| `?` | Help (any panel) |
 | `q` | Quit |
 
 Power and temperature limits are only editable in **custom** mode. The other modes (low-power, balanced, performance, and max-power where the firmware offers it) are managed by the firmware, so the limit rows are dimmed and read-only there. To tune limits, select `custom` on the *Platform mode* row and press `Enter` to apply it. The limit rows then unlock with fresh values. Mode changes and limit edits are never applied together.
