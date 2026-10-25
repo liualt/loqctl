@@ -456,15 +456,18 @@ class Dashboard(FanPanel):
                  f"avg {fmt(cpu.get('clock_mhz'), ' MHz')}   max {fmt(cpu.get('max_clock_mhz'), ' MHz')}   "
                  f"{fmt(temp_c, '°C')}"[:iw],
                  self.theme.heat(temp_c))
-        if cpu_h < 11 and cpu.get("power_w") is None and cpu.get("power_source"):
-            # Too short for the reason line below: it replaces the chart row.
-            self.put(y + 3, ix, cpu["power_source"][:iw], self.theme.TEXT, dim=True)
-        elif cpu_h >= 7:
+        # Short boxes have no reason line, so a real reason goes in a spare row or the label.
+        source = cpu.get("power_source") or ""
+        tall = cpu_h >= 11
+        reason = source if cpu.get("power_w") is None and not tall and not source.startswith("Waiting") else ""
+        if cpu_h >= 7:
             self.chart(y + 3, ix, iw, "cpu", color=self.theme.OK)
         pl1, pl2 = limit("ppt_pl1_spl"), limit("ppt_pl2_sppt")
         cpu_label = f"W {fmt(cpu.get('power_w'), '', 1)} · PL1 {fmt(pl1)} · PL2 {fmt(pl2)}"
         cpu_ceiling = max(pl2 or 0, max((v for v in self.history["cpu_w"] if v is not None), default=0), 1)
         cpu_marks = [(v, c) for v, c in ((pl1, self.theme.WARN), (pl2, self.theme.BAD)) if v is not None]
+        if reason and cpu_h >= 9:
+            cpu_label = f"W N/A · {reason}"
         if cpu_h >= 9:
             self.put(y + 4, ix, cpu_label[:iw], self.theme.WARN, dim=True)
             self.chart_rows(y + 5, ix, iw, 3, "cpu_w", cpu_ceiling, self.theme.WARN, cpu_marks)
@@ -472,11 +475,13 @@ class Dashboard(FanPanel):
                 cores = list((cpu.get("cores") or {}).values())
                 spark = "".join("·" if c is None else SPARK[min(7, round((c or 0) * 7 / 100))] for c in cores)
                 self.put(y + 8, ix, f"cores {spark}"[:iw], self.theme.OK)
-            if cpu_h >= 11:
-                self.put(y + 9, ix, (cpu.get("power_source") or "Sampling")[:iw], self.theme.TEXT, dim=True)
+            if tall:
+                self.put(y + 9, ix, (source or "Sampling")[:iw], self.theme.TEXT, dim=True)
         elif cpu_h >= 8:
             self.put(y + 4, ix, cpu_label[:iw], self.theme.WARN, dim=True)
             self.chart(y + 4, ix + len(cpu_label) + 1, iw - len(cpu_label) - 1, "cpu_w", cpu_ceiling, self.theme.WARN)
+        if reason and cpu_h < 9:
+            self.put(y + 4 + (cpu_h - 7), ix, reason[:iw], self.theme.TEXT, dim=True)
 
         # GPU
         gy = y + cpu_h
