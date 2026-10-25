@@ -2,6 +2,7 @@
 # Copyright (C) 2026 loqctl contributors
 import copy
 import errno
+import importlib.util
 import json
 import os
 import sys
@@ -159,13 +160,14 @@ class FanCurveTests(unittest.TestCase):
         self.assertEqual((RPM.label, RPM.text(94), self.pct.text(128), level.text(128)), ("RPM", "3700 RPM", "50%", "5 level"))
 
     def test_speed_steps_come_from_the_module(self):
-        # Each step is the next speed the module stores and reads back as different.
+        # Each step is the next speed the module stores.
         self.assertEqual(RPM.speeds(), list(range(0, 10100, 100)))
         self.assertEqual(m_fan.Scale("rpm", 5450).speeds()[-2:], [5300, 5400])  # top is fan1_max rounded down
         self.assertEqual(m_fan.Scale("level").speeds(), list(range(11)))
         self.assertEqual((RPM.next_speed(94, 1), RPM.next_speed(94, -5), RPM.next_speed(255, 1)), (3800, 3200, 10000))
-        self.assertEqual([self.pct.next_speed(self.pct.pwm(50), n) for n in (1, 2, -1)], [52, 54, 48])  # 51 reads back as 50
+        self.assertEqual([self.pct.next_speed(self.pct.pwm(50), n) for n in (1, 2, -1)], [51, 52, 49])
         self.assertEqual((self.pct.next_speed(0, -1), self.pct.next_speed(255, 1)), (0, 100))
+        self.assertEqual((self.pct.next_speed(self.pct.pwm(99), 1), self.pct.next_speed(self.pct.pwm(1), -1)), (100, 0))
 
     def test_write_only_changed_files_in_order(self):
         writes = []
@@ -177,6 +179,18 @@ class FanCurveTests(unittest.TestCase):
         self.assertEqual({r["status"] for r in results}, {"APPLIED"})
         self.assertEqual(m_fan.read_curve(self.hwmon)[1]["fan1"], 90)
         self.assertEqual(m_fan.write_curve(self.hwmon, m_fan.read_curve(self.hwmon), self.pct), [])
+
+    def test_one_percent_change_is_written(self):
+        results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 82}), self.pct)  # 31 % to 32 %
+        self.assertEqual([(r["field"], r["status"]) for r in results], [("fan1", "APPLIED")])
+        self.assertEqual(m_fan.read_curve(self.hwmon)[1]["fan1"], 82)
+        self.assertEqual(m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 81}), self.pct), [])  # still 32 %
+
+    def test_one_percent_write_the_module_ignores_is_not_applied(self):
+        with patch.object(m_fan, "_write_file"):  # the module accepts the write and keeps the old value
+            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 82}), self.pct)
+        self.assertEqual([r["status"] for r in results], ["FAILED"])
+        self.assertEqual(m_fan.read_curve(self.hwmon)[1]["fan1"], 80)
 
     def test_never_touches_fan_target_or_other_files(self):
         self.assertTrue(all("target" not in p and "points_size" not in p for p in m_fan.FILE_MAP.values()))
@@ -253,6 +267,53 @@ class FanCurveTests(unittest.TestCase):
         self.assertFalse((self.hwmon / "missing").exists())
 
 
+class CheckScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.hwmon = make_hwmon(Path(self.temp.name))
+        path = Path(__file__).resolve().parent.parent / "scripts/check_fancurve_percent.py"
+        spec = importlib.util.spec_from_file_location("check_fancurve_percent", path)
+        self.script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.script)
+        self.lines = []
+        self.pct = m_fan.Scale("percent")
+
+    def test_report_lists_each_pwm_with_its_percent(self):
+        self.script.report(self.hwmon, self.pct, self.lines.append)
+        self.assertIn("pwm1_auto_point2_pwm: 80 -> 31%", self.lines)
+        self.assertIn("pwm2_auto_point3_pwm: 180 -> 71%", self.lines)
+
+    def test_write_check_tries_both_directions_and_restores(self):
+        (self.hwmon / "pwm1_auto_point1_pwm").write_text("40")
+        self.script.write_check(self.hwmon, self.pct, self.lines.append)
+        self.assertEqual(m_fan.read_curve(self.hwmon)[0]["fan1"], 40)
+        self.assertEqual(sum(line.startswith("restored:") for line in self.lines), 2)
+        self.assertTrue(any(line.startswith("+1 %: wrote") for line in self.lines))
+        self.assertTrue(any(line.startswith("-1 %: wrote") for line in self.lines))
+
+    def test_failed_restore_stops_the_check(self):
+        (self.hwmon / "pwm1_auto_point1_pwm").write_text("40")
+        real, calls = m_fan._write_file, []
+
+        def write_once(path, value):  # the first write lands, the restore is refused
+            calls.append(value)
+            if len(calls) > 1:
+                raise m_common.ControlError("busy")
+            real(path, value)
+
+        with patch.object(m_fan, "_write_file", side_effect=write_once):
+            self.script.write_check(self.hwmon, self.pct, self.lines.append)
+        self.assertTrue(any("RESTORE FAILED" in line for line in self.lines))
+        self.assertFalse(any(line.startswith("-1 %") for line in self.lines))
+
+    def test_log_goes_to_the_sudo_users_home(self):
+        home = Path(self.temp.name)
+        with patch.dict(os.environ, {"SUDO_UID": "1000"}), \
+                patch.object(self.script.pwd, "getpwuid", return_value=SimpleNamespace(pw_dir=str(home))):
+            self.assertEqual(self.script.log_path(), home / "loqctl-fancurve-check.log")
+
+
 class MoveTests(unittest.TestCase):
     def test_speed_sets_both_fans_and_keeps_order(self):
         points, moved = m_panel.move_speed(NECN_STOCK, 1, 1, RPM)
@@ -272,8 +333,8 @@ class MoveTests(unittest.TestCase):
         points, _ = m_panel.move_speed(low, 9, -500, RPM)
         self.assertEqual((RPM.show(points[9]["fan1"]), RPM.show(points[9]["fan2"])), (3000, 3000))
 
-    def test_move_that_reads_back_unchanged_is_held(self):
-        close = edit(CURVE, {(2, "fan1"): 82, (2, "fan2"): 82})  # point 3 is 1 % above point 2
+    def test_move_clamped_to_its_neighbour_is_held(self):
+        close = edit(CURVE, {(2, "fan1"): 80, (2, "fan2"): 80})  # point 3 equals point 2
         self.assertEqual(m_panel.move_speed(close, 1, 1, m_fan.Scale("percent")), (close, False))
 
 
@@ -461,10 +522,10 @@ class FanCurveSurfaceTests(FanPanelFixture, unittest.TestCase):
         self.assertEqual(dash.fan_sel, 0)
         self.keys(dash, state, curses.KEY_RIGHT, curses.KEY_UP)  # point 2; temperatures are fixed
         self.assertEqual((dash.fan_edit[1]["cpu_up"], dash.fan_edit[1]["gpu_down"]), (60, 35))
-        self.assertEqual((dash.fan_edit[1]["fan1"], dash.fan_edit[1]["fan2"]), (85, 85))  # 31 % + 2 % = 33 %
+        self.assertEqual((dash.fan_edit[1]["fan1"], dash.fan_edit[1]["fan2"]), (82, 82))  # 31 % + 1 % = 32 %
         self.keys(dash, state, 10)
         point = m_fan.read_curve(self.hwmon)[1]
-        self.assertEqual((point["cpu_up"], point["fan1"], point["fan2"]), (60, 85, 85))
+        self.assertEqual((point["cpu_up"], point["fan1"], point["fan2"]), (60, 82, 82))
         self.assertIsNone(dash.fan_edit)
         self.assertIn("Applied and verified", dash.notice)
 
@@ -495,7 +556,7 @@ class FanCurveSurfaceTests(FanPanelFixture, unittest.TestCase):
         with patch.object(os, "geteuid", return_value=1000), \
                 patch.object(m_ui.Dashboard, "run_sudo_fancurve", return_value=[{"status": "APPLIED"}]) as run:
             self.keys(dash, state, 10)
-        self.assertEqual(run.call_args.args[0][1]["fan1"], 85)
+        self.assertEqual(run.call_args.args[0][1]["fan1"], 82)
         with patch.object(m_ui, "sudo_run", side_effect=m_common.SudoExpired("x")):
             with self.assertRaisesRegex(m_common.ControlError, "expired"):
                 dash.sudo_call(["_fancurve", "[]"])
@@ -825,9 +886,9 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         dash.fan_take()
         self.assertIsNone(m_store.read_stock("custom"))  # reading never records it
         self.keys(dash, state, "]", "]", curses.KEY_SF)
-        self.assertEqual(dash.fan_edit[2]["fan1"], 156)  # five 2 % steps: 71 % to 61 %
+        self.assertEqual(dash.fan_edit[2]["fan1"], 169)  # five 1 % steps: 71 % to 66 %
         self.keys(dash, state, curses.KEY_SF)
-        self.assertEqual(dash.fan_edit[2]["fan1"], 156)  # the 60 % floor reads back the same as 61 %, so held
+        self.assertEqual(dash.fan_edit[2]["fan1"], 156)  # 61 %
         self.keys(dash, state, 10)
         self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 156)
         self.assertEqual(m_store.read_curve_file(self.active)[2]["fan1"], 156)
@@ -885,7 +946,7 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         dash.backend.fancurve = Mock(return_value={"available": False, "reason": "gone"})
         self.keys(dash, state, 10)
         dash.backend.fancurve = real
-        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 156)
+        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 169)
         self.assertIn("stock curve was not recorded", dash.notice)
         self.assertIsNone(m_store.read_stock("custom"))
         self.assertTrue((self.config / "loqctl/stock/custom.written").exists())
@@ -914,7 +975,7 @@ class FanPanelPresetTests(FanPanelFixture, unittest.TestCase):
         self.keys(dash, state, "f", "]", "]", curses.KEY_SF)
         with patch.object(m_panel, "mark_written", side_effect=PermissionError(13, "Permission denied")):
             self.keys(dash, state, 10)
-        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 156)
+        self.assertEqual(m_fan.read_curve(self.hwmon)[2]["fan1"], 169)
         self.assertIn("stock curve was not recorded", dash.notice)
         self.assertIn("Could not save the stock marker", dash.notice)
         self.assertIsNone(m_store.read_stock("custom"))
