@@ -568,6 +568,21 @@ class ViewTests(unittest.TestCase):
         dash.draw_telemetry({}, {"cpu": {}}, 1, 40, 22, 60)  # no limits, small box
         self.assertIn("PL1 N/A", "\n".join(t for _, _, t in calls))
 
+    def test_cpu_power_reason_at_box_heights(self):
+        reason = "RAPL needs root: run sudo loqctl serve"
+        for height, cpu_h in ((18, 7), (22, 8), (27, 10), (29, 11)):
+            with self.subTest(cpu_h=cpu_h):
+                dash, calls = self.stub_dash(height, 80)
+                dash.chart, dash.chart_rows = Mock(), Mock()
+                dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": reason}}, 0, 0, height, 80)
+                shown = [(y, t) for y, _, t in calls if reason in t]
+                self.assertEqual(len(shown), 1)
+                self.assertLessEqual(shown[0][0], cpu_h - 2)
+                dash.chart.assert_any_call(3, 2, 76, "cpu", color=dash.theme.OK)
+        dash, calls = self.stub_dash(22, 80)
+        dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": "Waiting for RAPL samples"}}, 0, 0, 22, 80)
+        self.assertNotIn("Waiting", "\n".join(t for _, _, t in calls))
+
     def test_sensors_view_draws_na(self):
         dash, calls = self.stub_dash()
         dash.draw_sensors({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
