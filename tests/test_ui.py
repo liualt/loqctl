@@ -1,0 +1,614 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+import curses
+import errno
+import fcntl
+import json
+import os
+import pty
+import select
+import shutil
+import struct
+import subprocess
+import sys
+import termios
+import time
+import unittest
+from unittest.mock import patch, Mock
+
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tests import helpers
+from loqctl import backend as m_backend
+from loqctl import cli as m_cli
+from loqctl import common as m_common
+from loqctl import hardware as m_hardware
+from loqctl import keyboard as m_keyboard
+from loqctl import ui as m_ui
+
+
+class UiTests(helpers.SysfsCase):
+    def test_ui_partial_apply_retains_only_unapplied_edits(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        state = self.hw.capabilities()
+        # First write fails: nothing sent after it.
+        dashboard = self.dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        calls = []
+        def reject(key, value):
+            calls.append(key)
+            raise m_common.ControlError("rejected")
+        dashboard.backend.write = reject
+        with self.assertRaisesRegex(m_common.ControlError, "after 0 writes"):
+            dashboard.apply(state)
+        self.assertEqual(calls, ["ppt_pl1_spl"])
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60, "cpu_temp": 90})
+        self.assertEqual([r["status"] for r in dashboard.apply_results], ["FAILED", "NOT SENT"])
+        # First write succeeds, second fails: only the failed key stays staged.
+        dashboard = self.dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        def partial(key, value):
+            if key == "cpu_temp":
+                raise m_common.ControlError("rejected")
+            self.hw.set_value(key, value)
+        dashboard.backend.write = partial
+        with self.assertRaisesRegex(m_common.ControlError, "after 1 writes"):
+            dashboard.apply(state)
+        self.assertEqual(dashboard.pending, {"cpu_temp": 90})
+        self.assertEqual([r["status"] for r in dashboard.apply_results], ["APPLIED", "FAILED"])
+
+    def test_dashboard_mode_lock(self):
+        self.hw.set_mode("balanced")
+        state = self.hw.capabilities()
+        for key in (ord("6"), curses.KEY_LEFT, ord("d"), 10):
+            dashboard = self.dashboard()
+            dashboard.handle(key, state)
+            self.assertEqual(dashboard.pending, {})
+            self.assertIn("locked in balanced mode", dashboard.notice)
+        # Staging custom does not unlock the limits.
+        dashboard = self.dashboard()
+        dashboard.selected = 0
+        for _ in range(4):
+            dashboard.handle(curses.KEY_RIGHT, state)
+            if dashboard.pending.get("mode") == "custom":
+                break
+        self.assertEqual(dashboard.pending, {"mode": "custom"})
+        dashboard.selected = 1
+        for key in (ord("6"), curses.KEY_RIGHT):
+            dashboard.handle(key, state)
+            self.assertEqual(dashboard.pending, {"mode": "custom"})
+            self.assertIn("locked in balanced mode", dashboard.notice)
+        # Apply rechecks the live mode.
+        dashboard = self.dashboard()
+        dashboard.backend.write = Mock()
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        with self.assertRaisesRegex(m_common.ControlError, "locked in balanced mode"):
+            dashboard.apply(self.hw.capabilities())
+        dashboard.backend.write.assert_not_called()
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+
+    def test_mode_and_limit_edits_never_batched(self):
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.stage(state, "ppt_pl1_spl", 60)
+        dashboard.stage(state, "mode", "balanced")
+        self.assertEqual(dashboard.pending, {"mode": "balanced"})
+        self.assertIn("limit edits dropped", dashboard.notice)
+        dashboard.stage(state, "ppt_pl1_spl", 60)
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+        self.assertIn("mode change dropped", dashboard.notice)
+        dashboard.stage(state, "mode", "custom")
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+
+    def test_mode_row_warns_when_gamezone_missing(self):
+        dashboard = self.dashboard()
+        dashboard.selected = 0
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+        dashboard.box = Mock()
+        for driver, expected in (("lenovo-legion", "via lenovo-legion"), (None, "legacy file")):
+            calls = []
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+            dashboard.draw_controls({**self.hw.capabilities(), "mode_driver": driver}, 0, 0, 20, 60)
+            self.assertTrue(any(expected in text and color == 3 for text, color in calls), calls)
+
+    def test_limit_note_precedence(self):
+        # A non-EINVAL read error shows as itself; otherwise a gamezone holder explains the N/A,
+        # even when the reads succeeded or the attributes are absent.
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+        dashboard.box = Mock()
+        cases = (("custom", 0, None, None, "held by legion_wmi"),
+                 ("custom", 1, "Permission denied", errno.EACCES, "unreadable (Permission denied)"),
+                 ("custom", 1, "Invalid argument", errno.EINVAL, "held by legion_wmi"),
+                 ("balanced", 1, None, None, "held by legion_wmi"),
+                 ("balanced", 1, "Permission denied", errno.EACCES, "unreadable (Permission denied)"),
+                 ("balanced", 0, None, None, "held by legion_wmi"))
+        for mode, selected, error, code, expected in cases:
+            self.hw.set_mode(mode)
+            state = {**self.hw.capabilities(), "gamezone_holder": "legion_wmi", "mode_driver": None}
+            for item in state["attributes"].values():
+                item.update(effective_value=None, read_error=error, read_errno=code)
+                if error:
+                    item["current_value"] = None
+            calls = []
+            dashboard.selected = selected
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+            dashboard.draw_controls(state, 0, 0, 20, 90)
+            self.assertTrue(any(expected in text and color == 3 for text, color in calls), (mode, selected, calls))
+        self.assertIn("held by legion_wmi", m_ui.limit_note({"gamezone_holder": "legion_wmi"}, {}))
+
+    def test_draw_dims_locked_rows(self):
+        self.hw.set_mode("balanced")
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+        calls = []
+        dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color, dim))
+        dashboard.box = Mock()
+        dashboard.draw_controls(state, 0, 0, 20, 50)
+        row = next(c for c in calls if "CPU sustained" in c[0] or "PL1" in c[0] or c[0].startswith("▶"))
+        self.assertEqual(row[1:], (7, True))
+        self.assertTrue(any("locked in balanced mode" in c[0] for c in calls))
+
+    def test_limit_detail_shows_na_for_unreadable_limits(self):
+        self.hw.set_mode("custom")
+        cases = (
+            (("min_value", "max_value", "default_value"), "N/A–N/A", "step 1", "default N/A"),
+            (("max_value",), "5–N/A", "step 1", "default 60"),
+            (("scalar_increment",), "5–100", "step N/A", "default 60"),
+        )
+        for unreadable, *expected in cases:
+            self.add_attr("ppt_pl1_spl", 60, 5, 100, 1, 60)
+            for name in unreadable:
+                (self.attr.parent / "ppt_pl1_spl" / name).write_text("garbage")
+            state = self.hw.capabilities()
+            dashboard = self.dashboard()
+            dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
+            calls = []
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+            dashboard.box = Mock()
+            dashboard.selected = dashboard.rows(state).index("ppt_pl1_spl")
+            dashboard.draw_controls(state, 0, 0, 20, 90)
+            detail = next(text for text, _ in calls if "step" in text or "default" in text)
+            for part in expected:
+                self.assertIn(part, detail, unreadable)
+            self.assertNotIn("None", detail, unreadable)
+
+    def type_keys(self, dashboard, state, *keys):
+        for key in keys:
+            dashboard.handle(ord(key) if isinstance(key, str) else key, state)
+
+    def multi(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        self.add_attr("gpu_temp", 70, 60, 90, 5, 85)
+        return self.dashboard(), self.hw.capabilities()
+
+    def test_typing_and_enter_applies(self):
+        dashboard = self.dashboard()
+        state = self.hw.capabilities()
+        self.type_keys(dashboard, state, "6", "0", 10)
+        self.assertEqual((self.attr / "current_value").read_text().strip(), "60")
+        self.assertEqual(dashboard.pending, {})
+        self.assertEqual(dashboard.fields, {})
+        self.assertIn("Applied and verified", dashboard.notice)
+        self.assertEqual(dashboard.apply_results[0], {
+            "key": "ppt_pl1_spl", "requested": 60, "before": 50,
+            "current": 60, "status": "APPLIED", "error": None})
+
+    def test_moving_keeps_valid_drops_empty_keeps_invalid(self):
+        dashboard, state = self.multi()
+        self.type_keys(dashboard, state, "6", "0", "j", "8", "5", curses.KEY_BACKSPACE, 127, "j", "5", "1")
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+        self.assertEqual(dashboard.invalid, {"gpu_temp"})
+        self.assertEqual(dashboard.fields, {"ppt_pl1_spl": "60", "gpu_temp": "51"})
+
+    def test_enter_refuses_with_invalid_and_jumps(self):
+        dashboard, state = self.multi()
+        dashboard.selected = 3
+        self.type_keys(dashboard, state, "5", "1", "k", "k")
+        self.assertEqual(dashboard.selected, 1)
+        self.type_keys(dashboard, state, 10)
+        self.assertEqual(dashboard.selected, 3)
+        self.assertIn("red", dashboard.notice)
+        self.assertEqual((self.attr / "current_value").read_text(), "50")
+
+    def test_arrows_step_from_staged_value(self):
+        dashboard = self.dashboard()
+        state = self.hw.capabilities()
+        right, left = curses.KEY_RIGHT, curses.KEY_LEFT
+        self.type_keys(dashboard, state, right, right)
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+        self.type_keys(dashboard, state, left, left)
+        self.assertEqual(dashboard.pending, {})
+        self.assertEqual(dashboard.fields, {"ppt_pl1_spl": "50"})
+        self.type_keys(dashboard, state, left)
+        self.assertEqual(dashboard.pending, {})
+
+    def test_d_stages_custom_default(self):
+        dashboard = self.dashboard()
+        state = self.hw.capabilities()
+        self.type_keys(dashboard, state, "d")
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+        dashboard.selected = 0
+        self.type_keys(dashboard, state, "d")
+        self.assertIn("no default", dashboard.notice)
+        self.hw.set_mode("balanced")
+        locked = self.dashboard()
+        self.type_keys(locked, self.hw.capabilities(), "d")
+        self.assertEqual(locked.pending, {})
+        self.assertIn("locked in balanced mode", locked.notice)
+
+    def test_report_detects_unchanged_firmware_despite_write_success(self):
+        dashboard = self.dashboard()
+        dashboard.backend.write = Mock(return_value={"verified": True})
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        with self.assertRaisesRegex(m_common.ControlError, "firmware reports 50"):
+            dashboard.apply(self.hw.capabilities())
+        result = dashboard.apply_results[0]
+        self.assertEqual((result["before"], result["requested"], result["current"], result["status"]),
+                         (50, 60, 50, "FAILED"))
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+
+    def test_report_cannot_claim_success_when_readback_missing(self):
+        dashboard = self.dashboard()
+        dashboard.backend.controls = Mock(side_effect=[self.hw.capabilities(), OSError("read failed")])
+        dashboard.pending = {"ppt_pl1_spl": 60}
+        with self.assertRaises(m_common.ControlError):
+            dashboard.apply(self.hw.capabilities())
+        self.assertEqual(dashboard.apply_results[0]["status"], "UNVERIFIED")
+        self.assertIsNone(dashboard.apply_results[0]["current"])
+        self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+
+    def local_dashboard(self):
+        dashboard = self.dashboard()
+        dashboard.backend.remote = False
+        dashboard.backend.load_mode_limits = Mock()
+        dashboard.s = Mock()
+        return dashboard
+
+    def test_sudo_failure_keeps_edits_and_flags_expiry(self):
+        cases = (("sudo: authentication failed", "authentication failed", False),
+                 ("sudo: a password is required", "Press s", True))
+        for stderr, message, expired in cases:
+            with self.subTest(stderr=stderr):
+                dashboard = self.local_dashboard()
+                dashboard.pending = {"ppt_pl1_spl": 60}
+                result = subprocess.CompletedProcess([], 1, "", stderr)
+                with patch.object(os, "geteuid", return_value=1000), \
+                     patch.object(subprocess, "run", return_value=result):
+                    with self.assertRaisesRegex(m_common.ControlError, message):
+                        dashboard.apply(self.hw.capabilities())
+                self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
+                self.assertEqual(dashboard.sudo_expired, expired)
+
+    def sudo_results(self, *statuses):
+        keys = ["ppt_pl1_spl", "cpu_temp"]
+        return [{"key": k, "requested": 1, "before": 0, "current": 1, "status": st,
+                 "error": "boom" if st == "FAILED" else None} for k, st in zip(keys, statuses)]
+
+    def test_apply_uses_one_sudo_n_call(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        dashboard = self.local_dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        dashboard.fields = {"ppt_pl1_spl": "60", "cpu_temp": "90"}
+        out = subprocess.CompletedProcess([], 0, json.dumps(self.sudo_results("APPLIED", "APPLIED")), "")
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(subprocess, "run", return_value=out) as run:
+            dashboard.apply(self.hw.capabilities())
+        self.assertEqual(run.call_count, 1)
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[:7], ["sudo", "-n", "--", sys.executable, "-I", m_common.ENTRY, "_apply"])
+        self.assertEqual(json.loads(argv[7]), [["ppt_pl1_spl", 60], ["cpu_temp", 90]])
+        self.assertEqual((dashboard.pending, dashboard.fields), ({}, {}))
+        self.assertTrue(dashboard.show_results)
+
+    def test_apply_partial_failure_keeps_failed_staged(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        dashboard = self.local_dashboard()
+        dashboard.pending = {"ppt_pl1_spl": 60, "cpu_temp": 90}
+        out = subprocess.CompletedProcess([], 0, json.dumps(self.sudo_results("APPLIED", "FAILED")), "")
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(subprocess, "run", return_value=out):
+            with self.assertRaisesRegex(m_common.ControlError, "after 1 writes"):
+                dashboard.apply(self.hw.capabilities())
+        self.assertEqual(dashboard.pending, {"cpu_temp": 90})
+
+    def test_s_key_reauthenticates(self):
+        state = self.hw.capabilities()
+        for code, expired in ((0, False), (1, True)):
+            dashboard = self.local_dashboard()
+            dashboard.sudo_expired = True
+            dashboard.notice = ""
+            out = subprocess.CompletedProcess([], code)
+            with patch.object(os, "geteuid", return_value=1000), \
+                 patch.object(curses, "def_prog_mode"), patch.object(curses, "endwin"), \
+                 patch.object(curses, "reset_prog_mode"), \
+                 patch.object(subprocess, "run", return_value=out) as run:
+                dashboard.handle(ord("s"), state)
+            run.assert_called_once_with(["sudo", "-v"])
+            self.assertEqual(dashboard.sudo_expired, expired)
+
+    def test_preauth_skips(self):
+        caps = {"attributes": {"x": {}}, "modes": ["custom"]}
+        def backend(remote=False, caps=caps):
+            return Mock(remote=remote, hardware=Mock(capabilities=Mock(return_value=caps)))
+        def run_with(rcs, **kw):
+            def fake(argv, **_):
+                return subprocess.CompletedProcess(argv, rcs[tuple(argv)])
+            return patch.object(subprocess, "run", side_effect=fake)
+        nv = ("sudo", "-n", "true")
+        with patch.object(os, "geteuid", return_value=0), patch.object(subprocess, "run") as run:
+            self.assertTrue(m_cli.preauth(backend()))
+            run.assert_not_called()
+        with patch.object(os, "geteuid", return_value=1000), patch.object(subprocess, "run") as run:
+            self.assertTrue(m_cli.preauth(backend(remote=True)))
+            self.assertTrue(m_cli.preauth(backend(caps={"attributes": {}, "modes": []})))
+            run.assert_not_called()
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(shutil, "which", return_value="/usr/bin/sudo"):
+            with run_with({nv: 0}) as run:
+                self.assertTrue(m_cli.preauth(backend()))
+                self.assertEqual(run.call_count, 1)
+            with run_with({nv: 1, ("sudo", "-v"): 0}), patch("builtins.print"):
+                self.assertTrue(m_cli.preauth(backend()))
+            with run_with({nv: 1, ("sudo", "-v"): 1}), patch("builtins.print"):
+                self.assertFalse(m_cli.preauth(backend()))
+        with patch.object(os, "geteuid", return_value=1000), \
+             patch.object(shutil, "which", return_value=None):
+            self.assertFalse(m_cli.preauth(backend()))
+
+    def test_draw_unlocked_selected_row(self):
+        self.add_attr("cpu_temp", 80, 70, 100, 5, 90)
+        self.add_attr("gpu_temp", 70, 60, 90, 5, 85)
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3, BAD=5)
+        dashboard.pending = {"cpu_temp": 90}
+        dashboard.fields = {"ppt_pl1_spl": "60", "cpu_temp": "90", "gpu_temp": "7"}
+        dashboard.invalid = {"gpu_temp"}
+        calls = []
+        dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
+        dashboard.box = Mock()
+        rows = dashboard.rows(state)
+        def draw(key):
+            calls.clear()
+            dashboard.selected = rows.index(key)
+            dashboard.draw_controls(state, 0, 0, 20, 60)
+        draw("ppt_pl1_spl")
+        self.assertIn("1 staged, 1 invalid", dashboard.box.call_args[0])
+        row = next(c for c in calls if c[0].startswith("▶"))
+        self.assertIn("\u0336", row[0])
+        self.assertIn("-> 60_", row[0])
+        self.assertEqual(row[1], 1)
+        staged = next(c for c in calls if "CPU" in c[0].upper() and "→ 90" in c[0])
+        self.assertEqual(staged[1], 3)
+        draw("gpu_temp")
+        row = next(c for c in calls if c[0].startswith("▶"))
+        self.assertIn("-> 7_", row[0])
+        self.assertEqual(row[1], 5)
+
+    def test_empty_state_does_not_crash_handle(self):
+        dashboard = self.dashboard()
+        dashboard.panel = "main"
+        dashboard.keyboard = m_keyboard.Keyboard(binary="/usr/bin/false",
+                                          config=self.root / "missing.json")
+        dashboard.handle(ord("j"), {})
+        dashboard.handle(ord("l"), {})
+        self.assertEqual(dashboard.panel, "keyboard")
+        dashboard.handle(27, {})
+        self.assertEqual(dashboard.panel, "main")
+
+    def test_dashboard_init_and_draw_under_pty(self):
+        """Catch curses API mistakes that unit tests with __new__ miss."""
+        attributes = self.hw.capabilities()["attributes"]
+        pid, fd = pty.fork()
+        if pid == 0:
+            # Child: never touch the host's /sys, socket path or ~/.config.
+            os.environ.setdefault("TERM", "xterm-256color")
+            os.environ.update(HOME=str(self.root), XDG_CONFIG_HOME=str(self.root / "config"),
+                              XDG_CACHE_HOME=str(self.root / "cache"))
+            m_backend.Hardware = lambda: m_hardware.Hardware(self.root)
+            m_ui.Keyboard = lambda: m_keyboard.Keyboard(binary="/nonexistent/legionaura",
+                                                        config=self.root / "legionaura.json")
+            try:
+                def run(screen):
+                    backend = m_backend.Backend(str(self.root / "none.sock"))
+                    dash = m_ui.Dashboard(screen, backend)
+                    state = {
+                        "model": "test", "mode": "balanced",
+                        "modes": ["balanced", "custom"],
+                        "attributes": attributes,
+                        "metrics": {"cpu": {}, "gpu": {}, "memory": {},
+                                    "battery": [], "fans": [], "load": [0, 0, 0],
+                                    "timestamp": time.time()},
+                    }
+                    dash.draw(state)
+                    dash.panel = "keyboard"
+                    dash.draw(state)
+                    dash.open_fans()
+                    dash.draw(state)
+                    dash.help = True
+                    dash.draw(state)
+                    sys.stdout.write("TUI_OK\n")
+                    sys.stdout.flush()
+                curses.wrapper(run)
+            except Exception as exc:
+                sys.stdout.write("TUI_FAIL " + repr(exc) + "\n")
+                sys.stdout.flush()
+                os._exit(1)
+            os._exit(0)
+
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        out = b""
+        deadline = time.time() + 6
+        status = None
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.1)
+            if ready:
+                try:
+                    chunk = os.read(fd, 8192)
+                except OSError:
+                    chunk = b""
+                if chunk:
+                    out += chunk
+            waited = os.waitpid(pid, os.WNOHANG)
+            if waited[0]:
+                status = waited[1]
+                # Drain any remaining PTY output after exit.
+                while True:
+                    ready, _, _ = select.select([fd], [], [], 0.05)
+                    if not ready:
+                        break
+                    try:
+                        chunk = os.read(fd, 8192)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    out += chunk
+                break
+        if status is None:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+            self.fail("dashboard PTY smoke timed out: " + out.decode("utf-8", "replace")[-500:])
+        self.assertTrue(os.WIFEXITED(status), out.decode("utf-8", "replace")[-500:])
+        self.assertEqual(os.WEXITSTATUS(status), 0, out.decode("utf-8", "replace")[-500:])
+        self.assertIn(b"TUI_OK", out)
+
+    def dash(self):
+        dash = self.dashboard()
+        dash.notice = ""
+        dash.backend.remote = False
+        dash.backend.hardware = self.hw
+        dash.panel = "main"
+        dash.show_limits = False
+        dash.view = "summary"
+        dash.running = True
+        dash.keyboard = Mock()
+        return dash
+
+    def test_sudo_failure_keeps_overlay_closed_and_previous_results(self):
+        dash = self.dash()
+        dash.pending = {"ppt_pl1_spl": 60}
+        dash.apply_results = [{"key": "mode", "status": "APPLIED"}]
+        with patch.object(os, "geteuid", return_value=1000), \
+                patch.object(m_ui.Dashboard, "run_sudo_apply", side_effect=m_common.ControlError("sudo expired")):
+            with self.assertRaises(m_common.ControlError):
+                dash._apply(self.hw.capabilities())
+        self.assertFalse(dash.show_results)
+        self.assertEqual(dash.apply_results, [{"key": "mode", "status": "APPLIED"}])
+
+    def test_empty_results_never_claim_match(self):
+        dash = self.dash()
+        dash.theme = m_ui.Theme(False)
+        dash.s = Mock()
+        dash.s.getmaxyx.return_value = (30, 100)
+        calls = []
+        dash.put = lambda y, x, text, *a, **k: calls.append(str(text))
+        dash.fill = dash.box = Mock()
+        dash.draw_results()
+        self.assertFalse(any("matched firmware" in c for c in calls))
+
+    def test_put_draws_the_last_column(self):
+        dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
+        dash.theme = m_ui.Theme(False)
+        dash.s = Mock()
+        dash.s.getmaxyx.return_value = (10, 20)
+        dash.put(0, 19, "│")  # right box border
+        dash.s.addnstr.assert_called_once_with(0, 19, "│", 1, 0)
+        dash.put(0, 20, "x")
+        dash.put(10, 0, "x")
+        self.assertEqual(dash.s.addnstr.call_count, 1)
+
+    def test_external_mode_change_drops_staged_limits(self):
+        dash = self.dash()
+        dash.pending = {"ppt_pl1_spl": 60, "mode": "balanced"}
+        state = self.hw.capabilities()
+        state["mode"] = "performance"
+        dash.handle(ord("?"), state)
+        self.assertEqual(dash.pending, {"mode": "balanced"})
+        self.assertIn("Staged limit edits dropped: mode changed to performance", dash.notice)
+
+
+class ViewTests(unittest.TestCase):
+    def stub_dash(self, h=30, w=100):
+        dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
+        dash.theme = m_ui.Theme(False)
+        dash.history = {k: m_ui.collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
+        dash.view = "summary"
+        dash.pending, dash.fields, dash.invalid = {}, {}, {}
+        dash.s = Mock()
+        dash.s.getmaxyx.return_value = (h, w)
+        calls = []
+        dash.put = lambda y, x, text, *a, **k: calls.append((y, x, str(text)))
+        return dash, calls
+
+    def state(self):
+        attrs = {k: {"effective_value": v} for k, v in (("ppt_pl1_spl", 55), ("ppt_pl2_sppt", 115),
+                                                      ("gpu_nv_ctgp", 115))}
+        return {"attributes": attrs}
+
+    def test_summary_view_with_markers(self):
+        dash, calls = self.stub_dash(45)
+        dash.history["cpu_w"].extend([20, 45, 60])
+        dash.history["gpu_w"].extend([30, 80])
+        metrics = {"cpu": {"utilization_pct": 5, "power_w": 45.2, "cores": {}},
+                   "gpu": {"devices": [{"name": "G", "power_w": 80.1, "power_limit_w": 140,
+                                        "throttle": ["sw_power_cap"]}]},
+                   "throttle": {"cpu": {"active": True}}}
+        dash.draw_telemetry(self.state(), metrics, 1, 40, 42, 60)
+        text = "\n".join(t for _, _, t in calls)
+        self.assertIn("W 45.2 · PL1 55 · PL2 115", text)
+        self.assertIn("W 80.1 · cTGP 115 · limit 140", text)
+        self.assertIn("THROTTLE", text)
+        self.assertIn("throttle: sw_power_cap", text)
+        self.assertIn("┄", text)
+        self.assertTrue(all(0 <= y < 45 and x + len(t) <= 100 for y, x, t in calls))
+        calls.clear()
+        dash.draw_telemetry({}, {"cpu": {}}, 1, 40, 22, 60)  # no limits, small box
+        self.assertIn("PL1 N/A", "\n".join(t for _, _, t in calls))
+
+    def test_sensors_view_draws_na(self):
+        dash, calls = self.stub_dash()
+        dash.draw_sensors({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
+                           "power": {"rapl": {"psys": None}, "battery_w": None, "battery_status": None,
+                                     "usbc": []},
+                           "voltages": [{"label": "CPU 0 Vcore", "v": None}],
+                           "throttle": {"cpu": {"core_events": None}, "gpu": None}}, 1, 0, 30, 60)
+        text = "\n".join(t for _, _, t in calls)
+        for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle"):
+            self.assertIn(needle, text)
+        self.assertGreaterEqual(text.count("N/A"), 6)
+        calls.clear()
+        dash.draw_sensors({"temperatures": [{"group": "cpu", "label": str(i), "c": 1} for i in range(40)]},
+                          1, 0, 8, 60)
+        self.assertEqual(calls[-1][2], "…")
+        self.assertTrue(all(y <= 8 for y, _, _ in calls))
+        dash.help = False
+        dash.show_results = False
+        dash.panel = "main"
+        dash.paused = False
+        dash.rows = lambda state: ["mode"]
+        dash.selected = 0
+        dash.locked = lambda state: True
+        dash.fields, dash.invalid = {}, set()
+        dash.handle(ord("t"), {})
+        self.assertEqual(dash.view, "sensors")
+        dash.handle(ord("t"), {})
+        self.assertEqual(dash.view, "summary")
+
+
+class AnsiColorTests(unittest.TestCase):
+    def test_theme_uses_ansi_palette_only(self):
+        pairs = []
+        with patch.object(curses, "start_color"), patch.object(curses, "use_default_colors"), \
+                patch.object(curses, "init_pair", side_effect=lambda *a: pairs.append(a)), \
+                patch.object(curses, "init_color", side_effect=AssertionError("init_color redefines RGB")):
+            m_ui.Theme(True)
+        self.assertTrue(pairs)
+        for _, fg, bg in pairs:
+            self.assertTrue(-1 <= fg <= 15 and -1 <= bg <= 15, (fg, bg))
+
+
+if __name__ == "__main__":
+    unittest.main()
