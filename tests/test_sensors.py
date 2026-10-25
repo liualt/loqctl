@@ -325,6 +325,13 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual((second["core_events"], second["package_events"], second["active"]), (4, 1, True))
         self.assertIs(s.cpu_throttle()["active"], False)
 
+    def test_sample_reports_throttle_on_second_sample(self):
+        for name in ("core", "package"):
+            self.put(f"devices/system/cpu/cpu0/thermal_throttle/{name}_throttle_count", "2")
+        s = self.sensors()
+        self.assertIsNone(s.sample()["throttle"]["cpu"]["core_events"])
+        self.assertEqual(s.sample()["throttle"]["cpu"]["core_events"], 0)
+
     def test_nvml_throttle_reasons(self):
         lib = FakeNVML()
         lib.nvmlDeviceGetCurrentClocksEventReasons = lambda h, box: (setattr(box._obj, "value", 0x1 | 0x4 | 0x40), 0)[1]
