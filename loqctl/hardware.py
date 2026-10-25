@@ -143,8 +143,11 @@ class Hardware:
     def set_mode(self, mode):
         with self.lock:
             previous = self.read_mode()
-            if not isinstance(mode, str) or mode not in (read(self.choices, "") or "").split():
-                raise ControlError("Unsupported platform mode.")
+            choices = (read(self.choices, "") or "").split()
+            if not choices:
+                raise ControlError("No platform modes are available.")
+            if not isinstance(mode, str) or mode not in choices:
+                raise ControlError(f"Unsupported platform mode {str(mode)[:40]!r}. Choose one of {', '.join(choices)}.")
             if mode == "custom" and self.mode_driver is None:
                 raise ControlError("Custom cannot be selected through the legacy platform_profile file, "
                                    f"and no {GAMEZONE} platform profile was found.")
