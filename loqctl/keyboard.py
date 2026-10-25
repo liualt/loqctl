@@ -18,6 +18,7 @@ class Keyboard:
 
     EFFECTS = ("static", "breath", "wave", "hue", "off")
     ZONES = 4
+    FIELDS = ("effect", "speed", "brightness", "wave_dir", "zones")
 
     def __init__(self, binary=LEGIONAURA, config=LEGIONAURA_CONFIG):
         self.binary = binary
@@ -27,7 +28,8 @@ class Keyboard:
         self.brightness = 2
         self.wave_dir = "ltr"
         self.zones = ["ffffff"] * self.ZONES
-        self.known = set()  # fields holding a real value (from the config or an edit); the rest are placeholders
+        self.from_config = set()  # fields the last load read from the config
+        self.known = set()  # fields set by an edit; fields in neither set are placeholders
         self.problem = ""  # why the config could not be used
         self.dirty = False  # in-memory edits not yet confirmed applied; load() leaves them alone
         self.edits = 0  # bumped per in-memory edit; a job only clears dirty if no edit came after it
@@ -55,54 +57,47 @@ class Keyboard:
     def load(self, force=False):
         if self.dirty and not force:
             return
-        self.known = set()
         try:
             data = json.loads(self.config.read_text())
         except FileNotFoundError:
-            self.problem = "no config yet"
-            return
+            return self._load_failed("no config yet")
         except OSError:
-            self.problem = "config not readable"
-            return
+            return self._load_failed("config not readable")
         except (json.JSONDecodeError, TypeError):
-            self.problem = "config is not valid JSON"
-            return
+            return self._load_failed("config is not valid JSON")
         if not isinstance(data, dict):
-            self.problem = "config is not a JSON object"
-            return
-        self.problem = ""
+            return self._load_failed("config is not a JSON object")
+        found = {}
         if data.get("effect") in self.EFFECTS:
-            self.effect = data["effect"]
-            self.known.add("effect")
-        try:
-            self.speed = int(data["speed"] or 1)
-            self.known.add("speed")
-        except (KeyError, ValueError, TypeError):
-            pass
-        try:
-            self.brightness = int(data["brightness"] or 2)
-            self.known.add("brightness")
-        except (KeyError, ValueError, TypeError):
-            pass
-        if "waveDir" in data:
-            self.wave_dir = "rtl" if data["waveDir"] == "rtl" else "ltr"
-            self.known.add("wave_dir")
+            found["effect"] = data["effect"]
+        for name, key, low, high in (("speed", "speed", 1, 4), ("brightness", "brightness", 1, 2)):
+            value = data.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
+                found[name] = value
+        if data.get("waveDir") in ("ltr", "rtl"):
+            found["wave_dir"] = data["waveDir"]
         zones = data.get("zones")
-        if isinstance(zones, list) and zones:
-            cleaned = []
-            for zone in zones[:self.ZONES]:
-                try:
-                    cleaned.append(rgb_to_hex(*hex_to_rgb(zone)) if isinstance(zone, str) else "ffffff")
-                except ControlError:
-                    cleaned.append("ffffff")
-            while len(cleaned) < self.ZONES:
-                cleaned.append(cleaned[-1])
-            self.zones = cleaned
-            self.known.add("zones")
+        if isinstance(zones, list) and len(zones) >= self.ZONES:
+            try:
+                found["zones"] = [rgb_to_hex(*hex_to_rgb(zone)) for zone in zones[:self.ZONES]]
+            except (ControlError, TypeError, AttributeError):
+                pass
+        missing = [name for name in self.FIELDS if name not in found]
+        with self._cond:
+            for name, value in found.items():
+                setattr(self, name, value)
+            self.from_config = set(found)
+            self.problem = "config is missing: " + ", ".join(missing) if missing else ""
+
+    def _load_failed(self, problem):
+        """Forget what the config said; fields set by edits stay known."""
+        with self._cond:
+            self.from_config = set()
+            self.problem = problem
 
     def status(self):
         def value(name, current):
-            return current if name in self.known else None
+            return current if name in self.known | self.from_config else None
         return {
             "available": self.available,
             "binary": shutil.which(self.binary) or self.binary,
@@ -156,7 +151,7 @@ class Keyboard:
         with self._cond:
             self.edits += 1
             self.dirty = True
-            self.known |= set(fields) or {"effect", "speed", "brightness", "wave_dir", "zones"}
+            self.known |= set(fields) or set(self.FIELDS)
 
     @property
     def busy(self):
@@ -205,7 +200,10 @@ class Keyboard:
             self._thread.join(0.1)
 
     def set_brightness(self, value):
-        self.brightness = clamp(int(value), 1, 2)
+        try:
+            self.brightness = clamp(int(value), 1, 2)
+        except ValueError as exc:
+            raise ControlError(f"brightness must be 1 or 2, not {value!r}.") from exc
         return self._run(["--brightness", str(self.brightness)])
 
 
@@ -225,8 +223,9 @@ def kb_cli(argv):
         kb.mark_dirty("effect")
         return {"result": kb.apply_current(), **kb.status()}
     if action == "brightness" and rest:
+        result = kb.set_brightness(rest[0])
         kb.mark_dirty("brightness")
-        return {"result": kb.set_brightness(rest[0]), **kb.status()}
+        return {"result": result, **kb.status()}
     if action in ("static", "breath"):
         if not rest:
             raise ControlError(f"{action} needs at least one RRGGBB color.")

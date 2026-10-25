@@ -79,6 +79,10 @@ class KbCliTests(unittest.TestCase):
                    if result[k] is not None}
             self.assertEqual(got, fields, argv)
 
+    def test_bad_brightness_is_a_control_error(self):
+        with self.assertRaises(m_common.ControlError):
+            self.run_cli("brightness", "abc")
+
     def test_output_reports_settings_sent_not_config_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.json"
