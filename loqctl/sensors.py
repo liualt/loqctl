@@ -433,7 +433,6 @@ class Sampler:
         self.caps = {}  # last good firmware read
         self.metrics = {}
         self.fw_error = None
-        self.hook_lock = threading.Lock()
         self.next_firmware = None
         self.stop = threading.Event()
         self.force = threading.Event()  # refresh() sets it: read firmware now and wake the wait
@@ -441,12 +440,11 @@ class Sampler:
 
     def tick(self):
         now = time.monotonic()
-        forced = self.force.is_set()
-        self.force.clear()
         # no firmware read while the hook runs: it would wait on Hardware.lock, and the hook then
         # sees the state after its own write on the next read
-        busy = self.hook is not None and self.hook.is_alive()
-        if not busy and (forced or self.next_firmware is None or now >= self.next_firmware):
+        busy = self.busy()
+        if not busy and (self.force.is_set() or self.next_firmware is None or now >= self.next_firmware):
+            self.force.clear()
             self.next_firmware = now + self.FIRMWARE_INTERVAL
             try:
                 self.caps = self.hardware.capabilities()
@@ -464,19 +462,26 @@ class Sampler:
         latest = {**self.caps, "metrics": self.metrics}
         if error:
             latest["error"] = error
+        if busy:
+            latest["stale"] = True  # firmware fields are from before the running hook
         self.latest = latest
 
     def call_hook(self, caps):
-        with self.hook_lock:
-            try:
-                self.on_firmware(caps)
-            except Exception as exc:
-                print(f"firmware hook failed: {exc}", flush=True)
+        try:
+            self.on_firmware(caps)
+        except Exception as exc:
+            print(f"firmware hook failed: {exc}", flush=True)
+
+    def busy(self):
+        return self.hook is not None and self.hook.is_alive()
 
     def run(self):
         while not self.stop.is_set():
             self.tick()
-            self.force.wait(1)
+            if self.busy():  # a pending refresh waits for the hook, not a busy loop
+                self.stop.wait(1)
+            else:
+                self.force.wait(1)
 
     def refresh(self):
         self.force.set()
@@ -484,9 +489,11 @@ class Sampler:
     def halt(self):
         self.stop.set()
         self.force.set()
-        for thread in (self.thread, self.hook):  # let an in-flight fan curve write finish
-            if thread and thread.is_alive() and thread is not threading.current_thread():
-                thread.join(10)
+        # a write in flight finishes, but quitting must not hang: join the sampler, then its hook
+        if self.thread.is_alive() and self.thread is not threading.current_thread():
+            self.thread.join(3)
+        if self.busy() and self.hook is not threading.current_thread():
+            self.hook.join(10)
 
     def start(self):
         self.thread.start()

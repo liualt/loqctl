@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -938,15 +939,58 @@ class ReapplyTests(helpers.SysfsCase):
             self.finish(sampler)
         self.assertEqual(len(applied), 2)
 
-    def test_halt_waits_for_the_running_hook(self):
+    def test_forced_refresh_waits_for_the_hook_and_marks_stale(self):
         release = threading.Event()
-        done = []
         sampler = m_sensors.Sampler(self.hw)
-        sampler.on_firmware = lambda caps: (release.wait(5), done.append(1))
+        sampler.on_firmware = lambda caps: release.wait(5)
         with patch.object(sampler.sensors, "sample", return_value={}):
             sampler.tick()
-        threading.Timer(0.2, release.set).start()
+            self.assertNotIn("stale", sampler.latest)
+            sampler.force.set()
+            sampler.tick()
+            self.assertTrue(sampler.latest["stale"])
+            self.assertTrue(sampler.force.is_set())
+            release.set()
+            self.finish(sampler)
+            sampler.tick()
+        self.assertFalse(sampler.force.is_set())
+        self.assertNotIn("stale", sampler.latest)
+
+    def test_halt_waits_for_the_running_hook(self):
+        release, started, done = threading.Event(), threading.Event(), []
+        sampler = m_sensors.Sampler(self.hw)
+        sampler.on_firmware = lambda caps: (started.set(), release.wait(5), done.append(1))
+        with patch.object(sampler.sensors, "sample", return_value={}):
+            sampler.tick()
+        self.assertTrue(started.wait(5))
+        helper = threading.Thread(target=lambda: (time.sleep(0.2), release.set()))
+        helper.start()
         sampler.halt()
+        helper.join(5)
+        self.assertEqual(done, [1])
+
+    def test_halt_joins_a_hook_started_by_the_last_tick(self):
+        gate, spawned, release = (threading.Event() for _ in range(3))
+        done = []
+        sampler = m_sensors.Sampler(self.hw)
+
+        def last_tick():
+            gate.wait(5)
+            sampler.hook = threading.Thread(target=lambda: (release.wait(5), done.append(1)))
+            sampler.hook.start()
+            spawned.set()
+        sampler.thread = threading.Thread(target=last_tick)
+        sampler.thread.start()
+
+        def helper_run():
+            gate.set()
+            spawned.wait(5)
+            time.sleep(0.2)
+            release.set()
+        helper = threading.Thread(target=helper_run)
+        helper.start()
+        sampler.halt()
+        helper.join(5)
         self.assertEqual(done, [1])
 
 
