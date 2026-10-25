@@ -24,6 +24,13 @@ class Hardware:
     def __init__(self, root=Path("/sys")):
         self.root = Path(root)
         self.lock = threading.RLock()
+        self._discover()
+        self._limits = (None, None)  # (table, reason); static per boot
+        self._limits_tried = False
+        self._static = {}  # key -> display name and limits; dropped when the mode changes
+        self._static_mode = None
+
+    def _discover(self):
         bases = sorted(self.root.glob("class/firmware-attributes/lenovo-wmi-other*/attributes"))
         self.base = bases[0] if bases else None
         # Prefer gamezone's class device, then any other handler. The legacy
@@ -38,10 +45,6 @@ class Hardware:
             self.profile = self.root / "firmware/acpi/platform_profile"
             self.choices = self.root / "firmware/acpi/platform_profile_choices"
             self.mode_driver = None
-        self._limits = (None, None)  # (table, reason); static per boot
-        self._limits_tried = False
-        self._static = {}  # key -> display name and limits; dropped when the mode changes
-        self._static_mode = None
 
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
