@@ -6,6 +6,7 @@ from __future__ import annotations
 import errno
 import os
 from pathlib import Path
+import sys
 import threading
 import time
 
@@ -23,19 +24,28 @@ GAMEZONE_WMI_DRIVER = "lenovo_wmi_gamezone"
 
 
 class Hardware:
-    def __init__(self, root=Path("/sys")):
+    def __init__(self, root=Path("/sys"), clock=time.monotonic):
         self.root = Path(root)
+        self.clock = clock
         self.lock = threading.RLock()
-        self.base = self.profile = self.choices = self.mode_driver = None
+        self.state = (None, None, None, None)  # (base, profile, choices, mode_driver), swapped whole
         self.on_new_base = None  # called when the attributes directory first appears or moves
+        self._hook_pending = False
+        self._hook_logged = False
         self._limits = (None, None)  # (table, reason); static per boot
         self._limits_tried = False
         self._static = {}  # key -> display name and limits; dropped when the mode changes
         self._static_mode = None
-        self._discovered_at = time.monotonic()
+        self._discovered_at = clock()
         self._discover()
 
+    base = property(lambda self: self.state[0])
+    profile = property(lambda self: self.state[1])
+    choices = property(lambda self: self.state[2])
+    mode_driver = property(lambda self: self.state[3])
+
     def _discover(self):
+        """Find the attributes directory and platform profile; the caller holds the lock."""
         bases = sorted(self.root.glob("class/firmware-attributes/lenovo-wmi-other*/attributes"))
         base = bases[0] if bases else None
         # Prefer gamezone's class device, then any other handler. The legacy
@@ -48,24 +58,30 @@ class Hardware:
         else:
             found = (base, self.root / "firmware/acpi/platform_profile",
                      self.root / "firmware/acpi/platform_profile_choices", None)
-        with self.lock:
-            if found == (self.base, self.profile, self.choices, self.mode_driver):
-                return
-            new_base = found[0] != self.base
-            self.base, self.profile, self.choices, self.mode_driver = found
-            if new_base:
-                self._static = {}
-                self._limits, self._limits_tried = (None, None), False
-                if self.on_new_base:
-                    self.on_new_base()
+        if found == self.state:
+            return
+        self._static, self._static_mode = {}, None
+        if found[0] != self.state[0]:
+            self._limits, self._limits_tried = (None, None), False
+            self._hook_pending = True
+        self.state = found
 
     def _rediscover(self, force=False):
         """Look again for files that appeared or moved after start, at most every 5 s unless forced."""
-        now = time.monotonic()
+        if not force and self.clock() - self._discovered_at < REDISCOVER_SECONDS:
+            return
         with self.lock:
-            if force or now - self._discovered_at >= REDISCOVER_SECONDS:
-                self._discovered_at = now
-                self._discover()
+            self._discovered_at = self.clock()
+            self._discover()
+            hook = self.on_new_base if self._hook_pending else None
+        if hook:  # outside the lock: it may do blocking I/O, and a failure is retried next time
+            try:
+                hook()
+                self._hook_pending = False
+            except Exception as exc:
+                if not self._hook_logged:
+                    self._hook_logged = True
+                    print(f"loqctl: reloading mode limits failed: {exc}", file=sys.stderr)
 
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
@@ -80,15 +96,13 @@ class Hardware:
             self._limits, self._limits_tried = (table, None if table else reason), True
 
     def read_mode(self):
-        with self.lock:
-            self._rediscover()
-            return read(self.profile)
+        self._rediscover()
+        return read(self.state[1])
 
     def read_attribute(self, key):
         """One attribute's current_value as int, or None when missing or unreadable."""
-        with self.lock:
-            self._rediscover()
-            base = self.base
+        self._rediscover()
+        base = self.state[0]
         path = base / key / "current_value" if base and key in FIELDS else None
         try:
             return int(read(path)) if path else None
@@ -106,10 +120,10 @@ class Hardware:
                 static[name] = None
         return static, description is not None and None not in static.values()
 
-    def _read_item(self, key, mode, table, fresh=False):
+    def _read_item(self, base, key, mode, table, fresh=False):
         """One attribute; display name and limits are cached once read in full, unless `fresh`."""
         label, unit = FIELDS[key]
-        path = self.base / key if self.base else None
+        path = base / key if base else None
         if path is None or not path.is_dir():
             self._static.pop(key, None)
             return None
@@ -141,19 +155,21 @@ class Hardware:
         return None
 
     def capabilities(self):
+        self._rediscover()
         with self.lock:
+            base, profile, choices, mode_driver = self.state
             attrs = {}
-            mode = self.read_mode()
+            mode = read(profile)
             if mode != self._static_mode:
                 self._static, self._static_mode = {}, mode
             table, reason = self.mode_limits()
             for key in FIELDS:
-                item = self._read_item(key, mode, table)
+                item = self._read_item(base, key, mode, table)
                 if item:
                     attrs[key] = item
             return {"model": read(self.root / "class/dmi/id/product_name", "Lenovo LOQ"),
-                    "mode": mode, "modes": (read(self.choices, "") or "").split(),
-                    "mode_driver": self.mode_driver, "gamezone_holder": self.gamezone_holder(), "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
+                    "mode": mode, "modes": (read(choices, "") or "").split(),
+                    "mode_driver": mode_driver, "gamezone_holder": self.gamezone_holder(), "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
 
     def _write(self, path, value):
         try:
@@ -170,25 +186,27 @@ class Hardware:
         return actual
 
     def set_mode(self, mode):
+        self._rediscover(force=True)
         with self.lock:
-            self._rediscover(force=True)
-            previous = self.read_mode()
-            if not isinstance(mode, str) or mode not in (read(self.choices, "") or "").split():
+            _, profile, choices, mode_driver = self.state
+            previous = read(profile)
+            if not isinstance(mode, str) or mode not in (read(choices, "") or "").split():
                 raise ControlError("Unsupported platform mode.")
-            if mode == "custom" and self.mode_driver is None:
+            if mode == "custom" and mode_driver is None:
                 raise ControlError("Custom cannot be selected through the legacy platform_profile file, "
                                    f"and no {GAMEZONE} platform profile was found.")
             self._static = {}
-            actual = self._write(self.profile, mode)
+            actual = self._write(profile, mode)
             return {"mode": mode, "previous": previous, "current": actual, "verified": True}
 
     def set_value(self, key, value):
+        self._rediscover(force=True)
         with self.lock:
-            self._rediscover(force=True)
-            item = self._read_item(key, None, None, fresh=True) if key in FIELDS else None
+            base, profile = self.state[:2]
+            item = self._read_item(base, key, None, None, fresh=True) if key in FIELDS else None
             if item is None:
                 raise ControlError("Unknown or unavailable control.")
-            if self.read_mode() != "custom":
+            if read(profile) != "custom":
                 raise ControlError("Select custom mode before changing firmware limits.")
             if not item["available"]:
                 raise ControlError("Firmware did not report usable limits for this control.")
@@ -201,7 +219,7 @@ class Hardware:
             step = item["scalar_increment"]
             if step > 0 and (value - lo) % step:
                 raise ControlError(f"Value must advance in steps of {step} from {lo}.")
-            actual = self._write(self.base / key / "current_value", value)
+            actual = self._write(base / key / "current_value", value)
             return {"attribute": key, "value": value, "previous": item["current_value"],
                     "current": int(actual), "verified": True}
 

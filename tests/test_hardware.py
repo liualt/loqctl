@@ -58,14 +58,14 @@ class HardwareTests(helpers.SysfsCase):
             (prof / fname).write_text(text + "\n")
 
     def test_files_that_appear_after_start_are_found(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(m_hardware.time, "monotonic") as clock:
-            clock.return_value = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
             root = Path(tmp)
-            hw = m_hardware.Hardware(root)
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
             self.assertEqual(hw.capabilities()["attributes"], {})
             self._late_files(root)
             self.assertEqual(hw.capabilities()["attributes"], {})  # throttled
-            clock.return_value = 6
+            now[0] = 6
             caps = hw.capabilities()
         self.assertIn("ppt_pl1_spl", caps["attributes"])
         self.assertEqual((caps["mode"], caps["modes"]), ("custom", ["quiet", "custom"]))
@@ -81,16 +81,65 @@ class HardwareTests(helpers.SysfsCase):
             self.assertEqual(hw.set_mode("quiet")["current"], "quiet")
 
     def test_gamezone_profile_replaces_another_handler(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(m_hardware.time, "monotonic") as clock:
-            clock.return_value = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
             root = Path(tmp)
             self._late_files(root, mode="balanced", name="other", profile="a")
-            hw = m_hardware.Hardware(root)
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
             self.assertEqual(hw.mode_driver, "other")
             self._late_files(root, mode="custom", profile="b")
-            clock.return_value = 6
+            now[0] = 6
             self.assertEqual(hw.read_mode(), "custom")
             self.assertEqual(hw.mode_driver, m_hardware.GAMEZONE)
+
+    def test_attributes_directory_disappearing_is_noticed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
+            root = Path(tmp)
+            self._late_files(root)
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
+            self.assertIn("ppt_pl1_spl", hw.capabilities()["attributes"])
+            shutil.rmtree(root / "class/firmware-attributes")
+            now[0] = 6
+            self.assertEqual(hw.capabilities()["attributes"], {})
+            self.assertIsNone(hw.base)
+
+    def test_profile_change_drops_static_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
+            root = Path(tmp)
+            self._late_files(root, mode="balanced", name="other", profile="a")
+            (root / "class/firmware-attributes/lenovo-wmi-other-0/attributes/ppt_pl1_spl/display_name").write_text("Sustained\n")
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
+            hw.capabilities()
+            self.assertTrue(hw._static)
+            self._late_files(root, mode="balanced", profile="b")
+            now[0] = 6
+            hw._rediscover()
+            self.assertEqual((hw._static, hw._static_mode), ({}, None))
+
+    def test_failing_limits_hook_is_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = [0]
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root, clock=lambda: now[0])
+            calls = []
+
+            def hook():
+                calls.append(1)
+                if len(calls) == 1:
+                    raise OSError("boom")
+
+            hw.on_new_base = hook
+            self._late_files(root)
+            now[0] = 6
+            with patch("sys.stderr"):
+                self.assertEqual(hw.read_mode(), "custom")  # the failure does not escape
+            now[0] = 12
+            hw.read_mode()
+            now[0] = 18
+            hw.read_mode()
+        self.assertEqual(len(calls), 2)
 
     def test_new_attributes_directory_reloads_mode_limits(self):
         with tempfile.TemporaryDirectory() as tmp:
