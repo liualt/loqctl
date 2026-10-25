@@ -520,12 +520,21 @@ class UiTests(helpers.SysfsCase):
         dash.put(10, 0, "x")
         self.assertEqual(dash.s.addnstr.call_count, 1)
 
+    def test_help_key_opens_from_every_panel(self):
+        for panel in ("main", "keyboard", "fans"):
+            dash = self.dash()
+            dash.panel = panel
+            dash.handle(ord("?"), {})
+            self.assertTrue(dash.help, panel)
+            dash.handle(ord("?"), {})
+            self.assertFalse(dash.help, panel)
+
     def test_external_mode_change_drops_staged_limits(self):
         dash = self.dash()
         dash.pending = {"ppt_pl1_spl": 60, "mode": "balanced"}
         state = self.hw.capabilities()
         state["mode"] = "performance"
-        dash.handle(ord("?"), state)
+        dash.handle(ord("x"), state)
         self.assertEqual(dash.pending, {"mode": "balanced"})
         self.assertIn("Staged limit edits dropped: mode changed to performance", dash.notice)
 

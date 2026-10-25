@@ -298,9 +298,9 @@ class Dashboard(FanPanel):
             status, warn = "sudo not authenticated · press s to authenticate · edits stay staged", True
         self.put(h - 2, 1, status[: w - 3], self.theme.WARN if warn else self.theme.TEXT)
         if self.panel == "keyboard":
-            keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  Esc back  q quit"
+            keys = "1–4 zone  ←→ value  ↑↓ HSV  e effect  b bright  c copy-all  Space live  Enter apply  ? help  Esc back  q quit"
         elif self.panel == "fans":
-            keys = "Esc back  q quit  ←→ point  ↑↓ speed (Shift x5)  Enter apply  r discard  W save  R stock  p curves  d details"
+            keys = "? help  Esc back  q quit  ←→ point  ↑↓ speed (Shift x5)  Enter apply  r discard  W save  R stock  p curves  d details"
         else:
             keys = "↑↓ select  0-9 type  ←→ adjust  Enter apply  Esc clear  d default  r discard  l keyboard  f fans  t sensors  m modes  Space pause  v results  ? help  q"
         self.put(h - 1, 1, keys[: w - 3], self.theme.ACCENT, dim=True)
@@ -998,6 +998,9 @@ class Dashboard(FanPanel):
             elif ch == ord("q"):
                 self.running = False
             return
+        if ch == ord("?"):
+            self.help = True
+            return
         if getattr(self, "panel", "main") == "keyboard":
             self.handle_keyboard(ch)
             return
@@ -1035,8 +1038,6 @@ class Dashboard(FanPanel):
 
         if ch == ord("q"):
             self.running = False
-        elif ch == ord("?"):
-            self.help = True
         elif ch == ord("m"):
             self.show_limits = True
         elif ch == ord("t"):
