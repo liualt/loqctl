@@ -45,7 +45,7 @@ def move_speed(points, i, steps, scale):
         lo = max(floor, scale.show(before) if before is not None else 0)
         hi = min(scale.top, scale.show(after) if after is not None else scale.top)
         new[field] = scale.pwm(clamp(speed, lo, max(lo, hi)))
-    if all(scale.same(points[i][f], v) for f, v in new.items()):  # a 1 % move reads back unchanged
+    if all(scale.same(points[i][f], v, exact=True) for f, v in new.items()):
         return points, False
     points = copy.deepcopy(points)
     points[i].update(new)

@@ -67,13 +67,12 @@ class Scale:
 
     def next_speed(self, pwm, steps):
         """Display speed `steps` storable speeds above pwm's (below when negative). Speeds that
-        read back as pwm's own are skipped, so on percent curves each step is 2 %. Stops at
-        either end of the range."""
+        Stops at either end of the range."""
         speeds = self.speeds() if steps > 0 else self.speeds()[::-1]
         value = self.show(pwm)
         for _ in range(abs(steps)):
             ahead = [s for s in speeds if (s > value if steps > 0 else s < value)]
-            value = next((s for s in ahead if not self.same(self.pwm(s), self.pwm(value))), value)
+            value = ahead[0] if ahead else value
         return value
 
     def stored(self, pwm):
@@ -100,10 +99,12 @@ class Scale:
             return min(255, int(value) * 255 // 10)
         return min(255, math.ceil(int(value) * 255 / 100))
 
-    def same(self, a, b):
+    def same(self, a, b, exact=False):
+        """Whether two pwm values store alike. Read-back checks allow 1 % on percent curves,
+        which the module rounds both ways; deciding what to write (exact) does not."""
         if type(a) is not int or type(b) is not int:
             return a == b
-        tolerance = 0 if self.unit in ("rpm", "level") else 1  # percent rounds both ways
+        tolerance = 0 if exact or self.unit in ("rpm", "level") else 1
         return abs(self.stored(a) - self.stored(b)) <= tolerance
 
     def floor(self, after_hot, last):
@@ -230,8 +231,8 @@ def merge_curve(current, target):
     return merged
 
 
-def _same(field, a, b, scale):
-    return scale.same(a, b) if field in SPEEDS else a == b
+def _same(field, a, b, scale, exact=False):
+    return scale.same(a, b, exact) if field in SPEEDS else a == b
 
 
 def _path(hwmon, field, n):
@@ -286,7 +287,7 @@ def write_curve(hwmon, target, scale=None):
     if errors:
         raise ControlError(errors[0][2] + (f" ({len(errors) - 1} more problems)" if len(errors) > 1 else ""))
     changes = [(i, f) for fields in (TEMPS, SPEEDS) for f in fields for i in range(len(current))
-               if current[i][f] is not None and not _same(f, current[i][f], merged[i][f], scale)]
+               if current[i][f] is not None and not _same(f, current[i][f], merged[i][f], scale, exact=True)]
     results = [{"key": f"point{i + 1}.{f}", "point": i, "field": f, "requested": merged[i][f],
                 "before": current[i][f], "current": None, "status": "NOT SENT", "error": None}
                for i, f in changes]
