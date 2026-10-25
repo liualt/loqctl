@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import threading
+from threading import Lock
 
 from .api import http_client
 from .common import ControlError, _lazy, clamp
@@ -63,24 +64,28 @@ class FanPanel:
         self.fan_loading = False
         self.fan_gen = 0  # bumped by each fresh read; results from older loads are dropped
         self.fan_result = None  # set by the loader thread, taken by the UI thread
+        self.fan_lock = Lock()  # guards fan_gen, fan_result and fan_loading
 
     # --- loading (a curve read takes about a second on EC models) ---
     def fan_request(self, wait=False):
-        if self.fan_loading and not wait:
-            return
-        self.fan_gen += 1
-        gen = self.fan_gen
-        self.fan_loading = True
+        with self.fan_lock:
+            if self.fan_loading and not wait:
+                return
+            self.fan_gen += 1
+            gen = self.fan_gen
+            self.fan_result = None  # a result stored before this read may predate a write
+            self.fan_loading = True
 
         def work():
             try:
                 data = self.backend.fancurve()
             except FAN_ERRORS as exc:
                 data = {"available": False, "reason": str(exc)}
-            if gen != self.fan_gen:
-                return  # a newer read started meanwhile; this one may predate a write
-            self.fan_result = data
-            self.fan_loading = False
+            with self.fan_lock:
+                if gen != self.fan_gen:
+                    return  # a newer read started meanwhile; this one may predate a write
+                self.fan_result = data
+                self.fan_loading = False
         if wait:
             work()
             self.fan_take()
@@ -89,7 +94,8 @@ class FanPanel:
 
     def fan_take(self):
         """Adopt a finished load. Staged edits survive only if the point count still matches."""
-        data, self.fan_result = self.fan_result, None
+        with self.fan_lock:
+            data, self.fan_result = self.fan_result, None
         if data is None:
             return
         self.fan = data
