@@ -664,7 +664,7 @@ class Dashboard(FanPanel):
         bh = min(len(self.HELP_LINES) + 2, h - 2)
         bx, by = (w - bw) // 2, max(1, (h - bh) // 2)
         self.fill(by, bx, bh, bw)
-        self.box(by, bx, bh, bw, "Help", self.theme.ACCENT)
+        self.box(by, bx, bh, bw, "Help", self.theme.ACCENT, right="? or Esc to close")
         for i, line in enumerate(self.HELP_LINES[: bh - 2]):
             self.put(by + 1 + i, bx + 2, line[: bw - 4], self.theme.TEXT, dim=not line)
 

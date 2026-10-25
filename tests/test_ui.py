@@ -509,7 +509,7 @@ class UiTests(helpers.SysfsCase):
         dash.draw_results()
         self.assertFalse(any("matched firmware" in c for c in calls))
 
-    def test_help_overlay_fits_80x24(self):
+    def test_help_overlay_fits_80x24_and_shows_close_hint(self):
         dash = self.dashboard()
         dash.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
         for size in ((24, 80), (20, 72)):
@@ -519,6 +519,7 @@ class UiTests(helpers.SysfsCase):
             dash.put = lambda y, x, text, *a, **k: calls.append(text)
             dash.fill = Mock()
             dash.draw_help()
+            self.assertTrue(any("? or Esc to close" in c for c in calls))
             if size[0] == 24:
                 self.assertTrue(set(filter(None, m_ui.Dashboard.HELP_LINES)) <= set(calls))
         self.assertLessEqual(max(map(len, m_ui.Dashboard.HELP_LINES)), 72)
