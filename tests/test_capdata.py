@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+from tests import helpers
 
 from loqctl import backend as m_backend, capdata, common as m_common
 from loqctl import hardware as m_hardware, ui as m_ui
@@ -68,10 +69,9 @@ class ParseTests(unittest.TestCase):
 
 class Sim(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / "sys"
-        self.cache = Path(self.temp.name) / "cache"
+        temp = helpers.make_root(self)
+        self.root = temp / "sys"
+        self.cache = temp / "cache"
         patcher = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.cache)})
         patcher.start()
         self.addCleanup(patcher.stop)

@@ -6,7 +6,6 @@ import importlib.util
 import json
 import os
 import sys
-import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -82,9 +81,7 @@ class ImmediateThread:
 
 class FanCurveTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = helpers.make_root(self)
         self.hwmon = make_hwmon(self.root)
         self.pct = m_fan.Scale("percent")
 
@@ -93,9 +90,7 @@ class FanCurveTests(unittest.TestCase):
 
     def test_discovery(self):
         self.assertEqual(m_fan.find_legion_hwmon(self.root), self.hwmon)
-        empty = tempfile.TemporaryDirectory()
-        self.addCleanup(empty.cleanup)
-        self.assertIsNone(m_fan.find_legion_hwmon(empty.name))
+        self.assertIsNone(m_fan.find_legion_hwmon(helpers.make_root(self)))
         (self.hwmon / "name").write_text("k10temp")
         self.assertIsNone(m_fan.find_legion_hwmon(self.root))
 
@@ -269,9 +264,8 @@ class FanCurveTests(unittest.TestCase):
 
 class CheckScriptTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.hwmon = make_hwmon(Path(self.temp.name))
+        self.root = helpers.make_root(self)
+        self.hwmon = make_hwmon(self.root)
         path = Path(__file__).resolve().parent.parent / "scripts/check_fancurve_percent.py"
         spec = importlib.util.spec_from_file_location("check_fancurve_percent", path)
         self.script = importlib.util.module_from_spec(spec)
@@ -308,7 +302,7 @@ class CheckScriptTests(unittest.TestCase):
         self.assertFalse(any(line.startswith("-1 %") for line in self.lines))
 
     def test_log_goes_to_the_sudo_users_home(self):
-        home = Path(self.temp.name)
+        home = self.root
         with patch.dict(os.environ, {"SUDO_UID": "1000"}), \
                 patch.object(self.script.pwd, "getpwuid", return_value=SimpleNamespace(pw_dir=str(home))):
             self.assertEqual(self.script.log_path(), home / "loqctl-fancurve-check.log")
@@ -625,9 +619,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
 
 class CurveStoreTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = helpers.make_root(self)
         self.config = self.root / "config"
         env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
         env.start()

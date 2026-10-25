@@ -5,10 +5,12 @@ import os
 import socket
 import threading
 import time
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch, Mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import helpers
 from loqctl import api as m_api
 from loqctl import backend as m_backend

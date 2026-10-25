@@ -2,12 +2,13 @@
 import os
 import shutil
 import subprocess
-import tempfile
 import time
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch, Mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import helpers
 from loqctl import common as m_common
 from loqctl import hardware as m_hardware
@@ -37,9 +38,7 @@ class SensorsTests(helpers.SysfsCase):
             self.assertIsNone(m_common.number(value))
 
     def test_smt_siblings_counted_once(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        root = Path(tmp.name)
+        root = helpers.make_root(self)
         s = m_sensors.Sensors(root, root / "proc", root / "dev")
         def counts(core):
             for i, core_id in ((0, "0"), (1, "0"), (2, "1")):

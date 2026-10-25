@@ -15,6 +15,9 @@ import time
 import unittest
 from unittest.mock import patch, Mock
 
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import helpers
 from loqctl import backend as m_backend
 from loqctl import cli as m_cli

@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import errno
 import shutil
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import helpers
 from loqctl import common as m_common
 from loqctl import hardware as m_hardware

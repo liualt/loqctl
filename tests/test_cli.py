@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import helpers
 from tests.helpers import REPO
 import loqctl
@@ -37,12 +38,11 @@ class KbCliTests(unittest.TestCase):
     def run_cli(self, *argv):
         """kb_cli with a missing config; returns the legionaura argv it would run."""
         calls = []
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
+        tmp = helpers.make_root(self)
 
         class KB(m_keyboard.Keyboard):
             def __init__(self):
-                super().__init__(binary="legionaura", config=Path(tmp.name) / "none.json")
+                super().__init__(binary="legionaura", config=tmp / "none.json")
 
             def _run(self, args):
                 calls.append(list(args))
