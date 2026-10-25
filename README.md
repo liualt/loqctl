@@ -213,7 +213,7 @@ loqctl kb off
 loqctl kb apply
 ```
 
-`loqctl kb` and `loqctl kb status` print the settings in `~/.config/legionaura/config.json`. The other subcommands print the settings they sent to LegionAura.
+`loqctl kb` and `loqctl kb status` print the settings in `~/.config/legionaura/config.json`. Fields the config does not hold show as null, with the reason in `problem`. `kb apply` runs `legionaura apply` to re-apply LegionAura's saved settings. The other subcommands print the fields they set.
 
 ## Local HTTP API
 

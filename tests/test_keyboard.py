@@ -26,7 +26,7 @@ class KeyboardWorkerTests(unittest.TestCase):
         kb.zones = ["ff0000", "00ff00", "0000ff", "ffffff"]
         kb.speed, kb.brightness, kb.wave_dir = 2, 1, "rtl"
         expected = {
-            "off": ["off"], "apply": ["apply"],
+            "off": ["off"],
             "static": ["static", *kb.zones, "--brightness", "1"],
             "breath": ["breath", *kb.zones, "--speed", "2", "--brightness", "1"],
             "wave": ["wave", "rtl", "--speed", "2", "--brightness", "1"],
@@ -195,6 +195,33 @@ class KeyboardConfigTests(helpers.SysfsCase):
             self.assertTrue(status["problem"])
         kb.mark_dirty()
         self.assertEqual(kb.status()["effect"], "static")
+        self.assertTrue(kb.status()["problem"])
+
+    def test_status_reports_only_fields_the_config_holds(self):
+        config = self.root / "kb.json"
+        config.write_text("{}")
+        kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
+        self.assertEqual(kb.known, set())
+        config.write_text('{"effect": "nope", "zones": [], "brightness": 1}')
+        kb.load()
+        status = kb.status()
+        self.assertEqual(status["brightness"], 1)
+        for key in ("effect", "speed", "wave_dir", "zones"):
+            self.assertIsNone(status[key])
+
+    def test_status_problem_is_short_and_follows_the_latest_load(self):
+        config = self.root / "kb.json"
+        kb = m_keyboard.Keyboard(binary="/usr/bin/false", config=config)
+        self.assertEqual(kb.status()["problem"], "no config yet")
+        config.write_text('{"effect": "wave"}')
+        kb.load()
+        self.assertEqual((kb.status()["effect"], kb.status()["problem"]), ("wave", ""))
+        config.unlink()
+        kb.load()
+        status = kb.status()
+        self.assertIsNone(status["effect"])
+        self.assertEqual(status["problem"], "no config yet")
+        self.assertNotIn(str(self.root), status["problem"])
 
     def test_kb_apply_runs_legionaura_apply(self):
         kb = m_keyboard.Keyboard(binary="legionaura", config=self.root / "none.json")

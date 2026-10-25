@@ -67,6 +67,18 @@ class KbCliTests(unittest.TestCase):
         self.assertIsNone(args)
         self.assertIsNone(result["zones"])
 
+    def test_status_without_config_lists_only_fields_sent(self):
+        sent = {
+            ("brightness", "1"): {"brightness": 1},
+            ("off",): {"effect": "off"},
+            ("wave", "rtl"): {"effect": "wave", "wave_dir": "rtl", "speed": 1, "brightness": 2},
+        }
+        for argv, fields in sent.items():
+            result = self.run_cli(*argv)[1]
+            got = {k: result[k] for k in ("effect", "wave_dir", "speed", "brightness", "zones")
+                   if result[k] is not None}
+            self.assertEqual(got, fields, argv)
+
     def test_output_reports_settings_sent_not_config_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.json"

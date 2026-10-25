@@ -27,7 +27,7 @@ class Keyboard:
         self.brightness = 2
         self.wave_dir = "ltr"
         self.zones = ["ffffff"] * self.ZONES
-        self.loaded = False  # True once a config file parsed; until then the values above are placeholders
+        self.known = set()  # fields holding a real value (from the config or an edit); the rest are placeholders
         self.problem = ""  # why the config could not be used
         self.dirty = False  # in-memory edits not yet confirmed applied; load() leaves them alone
         self.edits = 0  # bumped per in-memory edit; a job only clears dirty if no edit came after it
@@ -55,50 +55,64 @@ class Keyboard:
     def load(self, force=False):
         if self.dirty and not force:
             return
+        self.known = set()
         try:
             data = json.loads(self.config.read_text())
-        except (OSError, json.JSONDecodeError, TypeError) as exc:
-            self.problem = f"Cannot read {self.config}: {exc}"
+        except FileNotFoundError:
+            self.problem = "no config yet"
+            return
+        except OSError:
+            self.problem = "config not readable"
+            return
+        except (json.JSONDecodeError, TypeError):
+            self.problem = "config is not valid JSON"
             return
         if not isinstance(data, dict):
-            self.problem = f"{self.config} is not a JSON object."
+            self.problem = "config is not a JSON object"
             return
-        self.loaded = True
         self.problem = ""
         if data.get("effect") in self.EFFECTS:
             self.effect = data["effect"]
+            self.known.add("effect")
         try:
-            self.speed = int(data.get("speed", self.speed) or 1)
-        except (ValueError, TypeError):
+            self.speed = int(data["speed"] or 1)
+            self.known.add("speed")
+        except (KeyError, ValueError, TypeError):
             pass
         try:
-            self.brightness = int(data.get("brightness", self.brightness) or 2)
-        except (ValueError, TypeError):
+            self.brightness = int(data["brightness"] or 2)
+            self.known.add("brightness")
+        except (KeyError, ValueError, TypeError):
             pass
-        self.wave_dir = "rtl" if data.get("waveDir") == "rtl" else "ltr"
+        if "waveDir" in data:
+            self.wave_dir = "rtl" if data["waveDir"] == "rtl" else "ltr"
+            self.known.add("wave_dir")
         zones = data.get("zones")
-        cleaned = []
-        for zone in (zones if isinstance(zones, list) else [])[:self.ZONES]:
-            try:
-                cleaned.append(rgb_to_hex(*hex_to_rgb(zone)) if isinstance(zone, str) else "ffffff")
-            except ControlError:
-                cleaned.append("ffffff")
-        while len(cleaned) < self.ZONES:
-            cleaned.append(cleaned[-1] if cleaned else "ffffff")
-        self.zones = cleaned
+        if isinstance(zones, list) and zones:
+            cleaned = []
+            for zone in zones[:self.ZONES]:
+                try:
+                    cleaned.append(rgb_to_hex(*hex_to_rgb(zone)) if isinstance(zone, str) else "ffffff")
+                except ControlError:
+                    cleaned.append("ffffff")
+            while len(cleaned) < self.ZONES:
+                cleaned.append(cleaned[-1])
+            self.zones = cleaned
+            self.known.add("zones")
 
     def status(self):
-        known = self.loaded or self.dirty
+        def value(name, current):
+            return current if name in self.known else None
         return {
             "available": self.available,
             "binary": shutil.which(self.binary) or self.binary,
             "config": str(self.config),
-            "effect": self.effect if known else None,
-            "speed": self.speed if known else None,
-            "brightness": self.brightness if known else None,
-            "wave_dir": self.wave_dir if known else None,
-            "zones": list(self.zones) if known else None,
-            "problem": "" if known else self.problem,
+            "effect": value("effect", self.effect),
+            "speed": value("speed", self.speed),
+            "brightness": value("brightness", self.brightness),
+            "wave_dir": value("wave_dir", self.wave_dir),
+            "zones": value("zones", list(self.zones)),
+            "problem": self.problem,
         }
 
     def _run(self, args):
@@ -118,8 +132,6 @@ class Keyboard:
         effect = self.effect
         if effect == "off":
             return ["off"]
-        if effect == "apply":
-            return ["apply"]
         brightness = ["--brightness", str(clamp(self.brightness, 1, 2))]
         speed = ["--speed", str(clamp(self.speed, 1, 4))]
         if effect == "static":
@@ -135,10 +147,16 @@ class Keyboard:
     def apply_current(self):
         return self._run(self.command())
 
-    def mark_dirty(self):
+    def apply_saved(self):
+        """Re-apply the settings LegionAura saved, without sending any from here."""
+        return self._run(["apply"])
+
+    def mark_dirty(self, *fields):
+        """Note an in-memory edit; no fields means every field now holds a real value."""
         with self._cond:
             self.edits += 1
             self.dirty = True
+            self.known |= set(fields) or {"effect", "speed", "brightness", "wave_dir", "zones"}
 
     @property
     def busy(self):
@@ -201,12 +219,13 @@ def kb_cli(argv):
     if action == "status":
         return kb.status()
     if action == "apply":
-        return {"result": kb._run(["apply"]), **kb.status()}
-    kb.mark_dirty()  # the commands below set values, so status() reports them
+        return {"result": kb.apply_saved(), **kb.status()}
     if action == "off":
         kb.effect = "off"
+        kb.mark_dirty("effect")
         return {"result": kb.apply_current(), **kb.status()}
     if action == "brightness" and rest:
+        kb.mark_dirty("brightness")
         return {"result": kb.set_brightness(rest[0]), **kb.status()}
     if action in ("static", "breath"):
         if not rest:
@@ -227,6 +246,7 @@ def kb_cli(argv):
             colors.append(colors[-1])
         kb.zones = colors[:Keyboard.ZONES]
         kb.effect = action
+        kb.mark_dirty("effect", "zones", "brightness", *(("speed",) if action == "breath" else ()))
         kb.brightness = clamp(brightness, 1, 2)
         kb.speed = clamp(speed, 1, 4)
         return {"result": kb.apply_current(), **kb.status()}
@@ -244,6 +264,7 @@ def kb_cli(argv):
                 speed = int(rest[i + 1]); i += 2; continue
             raise ControlError(f"Unexpected wave argument: {token}")
         kb.effect, kb.wave_dir = "wave", direction
+        kb.mark_dirty("effect", "wave_dir", "speed", "brightness")
         kb.brightness, kb.speed = clamp(brightness, 1, 2), clamp(speed, 1, 4)
         return {"result": kb.apply_current(), **kb.status()}
     if action == "hue":
@@ -257,6 +278,7 @@ def kb_cli(argv):
                 speed = int(rest[i + 1]); i += 2; continue
             raise ControlError(f"Unexpected hue argument: {token}")
         kb.effect = "hue"
+        kb.mark_dirty("effect", "speed", "brightness")
         kb.brightness, kb.speed = clamp(brightness, 1, 2), clamp(speed, 1, 4)
         return {"result": kb.apply_current(), **kb.status()}
     raise ControlError("kb usage: status|apply|off|brightness|static|breath|wave|hue …")
