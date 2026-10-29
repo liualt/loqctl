@@ -161,7 +161,7 @@ def main(argv=None):
                     states = {"on": 1, "off": 0}
                     if args.state in states:
                         value = states[args.state]
-                    elif args.state is not None and args.state.isdigit():
+                    elif args.state is not None and args.state.isascii() and args.state.isdigit():
                         value = int(args.state)
                     else:
                         raise ControlError("Give on, off or a number after the switch name.")

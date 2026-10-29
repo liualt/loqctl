@@ -36,6 +36,8 @@ class CliTests(helpers.SysfsCase):
             self.assertEqual(m_cli.main(["toggle"]), 0)
             self.assertEqual(m_cli.main(["toggle", "fn_lock", "on"]), 0)
         backend.write_toggle.assert_called_once_with("fn_lock", 1)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(m_cli.main(["toggle", "fn_lock", "\u00b2"]), 1)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             m_cli.main(["toggle", "touchpad", "on"])
         backend = unittest.mock.Mock(remote=False, notice="")

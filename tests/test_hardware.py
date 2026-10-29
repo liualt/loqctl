@@ -212,6 +212,13 @@ class HardwareTests(helpers.SysfsCase):
         self.assertEqual([(t["name"], t["value"], t["max"]) for t in self.hw.toggles()],
                          [("fn_lock", 0, 1), ("winkey", 1, 1), ("port_light", 0, 2)])
 
+    def test_toggle_led_without_max_brightness_is_hidden(self):
+        self.add_toggles()
+        (self.root / "class/leds/platform::ioport/max_brightness").unlink()
+        self.assertNotIn("port_light", [t["name"] for t in self.hw.toggles()])
+        with self.assertRaises(m_common.ControlError):
+            self.hw.set_toggle("port_light", 1)
+
     def test_toggle_write_is_bounded_allowlisted_and_verified(self):
         self.add_toggles()
         self.assertTrue(self.hw.set_toggle("port_light", 2)["verified"])

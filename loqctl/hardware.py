@@ -232,7 +232,8 @@ class Hardware:
         return list_toggles(self.root)
 
     def set_toggle(self, name, value):
-        return set_toggle(self.root, name, value)
+        with self.lock:
+            return set_toggle(self.root, name, value)
 
     def fancurve(self):
         """Fan curve and RPM from the legion_laptop hwmon, or {"available": False, "reason": ...}.
