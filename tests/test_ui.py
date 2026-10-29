@@ -732,37 +732,36 @@ class ViewTests(unittest.TestCase):
                                                       ("gpu_nv_ctgp", 115))}
         return {"attributes": attrs}
 
-    def test_summary_view_with_markers(self):
+    def test_summary_numbers_in_titles_and_one_graph_per_box(self):
         dash, calls = self.stub_dash(45)
         dash.history["cpu_w"].extend([20, 45, 60])
         dash.history["gpu_w"].extend([30, 80])
-        metrics = {"cpu": {"utilization_pct": 5, "power_w": 45.2, "cores": {}},
+        metrics = {"cpu": {"temperature_c": 72, "power_w": 45.2, "clock_mhz": 4100},
                    "gpu": {"devices": [{"name": "G", "power_w": 80.1, "power_limit_w": 140,
                                         "throttle": ["sw_power_cap"]}]},
                    "throttle": {"cpu": {"active": True}}}
+        dash.chart_rows = Mock()
         dash.draw_telemetry(self.state(), metrics, 1, 40, 42, 60)
         text = "\n".join(t for _, _, t in calls)
-        self.assertIn("W 45.2 · PL1 55 · PL2 115", text)
-        self.assertIn("W 80.1 · cTGP 115 · limit 140", text)
-        self.assertIn("THROTTLE", text)
+        self.assertIn("THROTTLE · 72°C · 45.2 W · 4.1 GHz", text)
+        self.assertIn("80.1 W · N/A", text)  # missing GPU temperature and clock
         self.assertIn("throttle: sw_power_cap", text)
-        self.assertIn("┄", text)
+        self.assertNotIn("PL1", text)
+        self.assertEqual([c.args[4] for c in dash.chart_rows.call_args_list], ["cpu_w", "gpu_w"])
         self.assertTrue(all(0 <= y < 45 and x + len(t) <= 100 for y, x, t in calls))
         calls.clear()
         dash.draw_telemetry({}, {"cpu": {}}, 1, 40, 22, 60)  # no limits, small box
-        self.assertIn("PL1 N/A", "\n".join(t for _, _, t in calls))
+        self.assertIn("N/A · N/A · N/A", "\n".join(t for _, _, t in calls))
 
     def test_cpu_power_reason_at_box_heights(self):
         reason = "RAPL needs root: run sudo loqctl serve"
-        for height, cpu_h in ((18, 7), (22, 8), (27, 10), (29, 11)):
-            with self.subTest(cpu_h=cpu_h):
+        for height in (18, 22, 27, 29):
+            with self.subTest(height=height):
                 dash, calls = self.stub_dash(height, 80)
-                dash.chart, dash.chart_rows = Mock(), Mock()
+                dash.chart_rows = Mock()
                 dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": reason}}, 0, 0, height, 80)
-                shown = [(y, t) for y, _, t in calls if reason in t]
+                shown = [t for _, _, t in calls if reason in t]
                 self.assertEqual(len(shown), 1)
-                self.assertLessEqual(shown[0][0], cpu_h - 2)
-                dash.chart.assert_any_call(3, 2, 76, "cpu", color=dash.theme.OK)
         dash, calls = self.stub_dash(22, 80)
         dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": "Waiting for RAPL samples"}}, 0, 0, 22, 80)
         self.assertNotIn("Waiting", "\n".join(t for _, _, t in calls))
