@@ -70,7 +70,10 @@ class Theme:
             curses.init_pair(pair, fg, -1)
 
     def attr(self, color=0, bold=False, dim=False):
-        if not self.enabled or not color:
+        if not self.enabled:
+            # No colors: mark state by attribute so warnings stay visible.
+            base = {self.BAD: curses.A_BOLD | curses.A_REVERSE, self.WARN: curses.A_BOLD}.get(color, 0)
+        elif not color:
             base = 0
         else:
             base = curses.color_pair(color)
@@ -145,7 +148,7 @@ class Dashboard(FanPanel):
         self.paused = False
         self.panel = "overview"  # overview | main (Power) | fans | keyboard
         self.view = "summary"  # summary | details (overview only)
-        self.theme = Theme(curses.has_colors())
+        self.theme = Theme(curses.has_colors() and not os.environ.get("NO_COLOR"))
         self.keyboard = Keyboard()
         self.kb_zone = 0
         self.kb_channel = 0  # 0=H 1=S 2=V
@@ -711,7 +714,8 @@ class Dashboard(FanPanel):
             zx = ix + zi * max(12, iw // 4)
             border = "▶" if chosen else " "
             self.put(y + 5, zx, f"{border}Z{zi + 1}", self.theme.GPU if chosen else self.theme.TEXT, bold=chosen)
-            self.put(y + 6, zx, "████", pair, True)
+            if self.theme.enabled:
+                self.put(y + 6, zx, "████", pair, True)
             self.put(y + 7, zx, f"#{hexcolor}", self.theme.TEXT, dim=not chosen)
 
         # HSV channels for selected zone
