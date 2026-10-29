@@ -779,6 +779,25 @@ class ViewTests(unittest.TestCase):
         for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle", "CPU", "GPU"):
             self.assertIn(needle, text)
 
+    def test_details_grid_keeps_throttle_and_whole_numbers(self):
+        metrics = {"throttle": {"cpu": {"active": True, "core_events": 3, "package_events": 12}, "gpu": ["power cap"]},
+                   "cpu": {"utilization_pct": 12, "clock_mhz": 3100, "max_clock_mhz": 4500, "cores": {"0": 5, "1": 90},
+                           "power_source": "RAPL energy counters from sysfs"},
+                   "gpu": {"devices": [{"name": "NVIDIA GeForce RTX 4050 Laptop GPU", "memory_clock_mhz": 8000,
+                                        "memory_used_mib": 405, "memory_total_mib": 6144, "clock_mhz": 2100}]},
+                   "voltages": [{"label": f"Vcore {i}", "v": 1.0} for i in range(6)],
+                   "temperatures": [{"group": "cpu", "label": f"Core {i}", "c": 50} for i in range(12)]}
+        for h, w in ((20, 72), (24, 80)):
+            with self.subTest(size=(h, w)):
+                dash, calls = self.stub_dash(h, w)
+                dash.draw_details(metrics, 1, 14, h - 3, w - 14)
+                rows = {y: t for y, x, t in calls if x == 16}
+                self.assertTrue(any("Throttle" in t and "cpu yes" in t for t in rows.values()))
+                self.assertTrue(all(y < h - 2 for y in rows))
+                for t in rows.values():
+                    self.assertLessEqual(len(t), w - 14 - 4)
+                    self.assertNotRegex(t, r"\b(max|memory|vram) \d*$")
+
     def test_details_view_shows_secondary_readings(self):
         dash, calls = self.stub_dash()
         dash.draw_details({"cpu": {"utilization_pct": 12, "cores": {"0": 0, "1": 100}, "max_clock_mhz": 4500},

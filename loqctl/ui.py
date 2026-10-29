@@ -360,6 +360,7 @@ class Dashboard(FanPanel):
             self.open_keyboard()
         else:
             self.panel = name
+            self.view = "summary"
             self.notice = "Ready."
 
     def leave_section(self, state):
@@ -368,6 +369,7 @@ class Dashboard(FanPanel):
 
     def open_keyboard(self):
         self.panel = "keyboard"
+        self.view = "summary"
         self.keyboard.recheck()
         self.keyboard.load()
         self.notice = "Keyboard lighting. Esc returns."
@@ -586,54 +588,54 @@ class Dashboard(FanPanel):
         na = lambda v, unit="", d=1: fmt(v, unit, d)
         cpu = metrics.get("cpu") or {}
         gpu = next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
-        memory = metrics.get("memory") or {}
-        dim = self.theme.TEXT
-        cores = list((cpu.get("cores") or {}).values())
-        spark = "".join("·" if c is None else SPARK[min(7, round(c * 7 / 100))] for c in cores) or "N/A"
-        lines = [("CPU", self.theme.ACCENT, True),
-                 (f"  utilization {na(cpu.get('utilization_pct'), '%', 0)}   clock avg {na(cpu.get('clock_mhz'), ' MHz', 0)}"
-                  f"   max {na(cpu.get('max_clock_mhz'), ' MHz', 0)}", dim, False),
-                 (f"  cores {spark}", self.theme.OK, False),
-                 (f"  power source {cpu.get('power_source') or 'N/A'}", dim, False),
-                 ("GPU", self.theme.ACCENT, True)]
-        if gpu:
-            lines += [(f"  {gpu.get('name') or 'N/A'}", self.theme.GPU, False),
-                      (f"  utilization {na(gpu.get('utilization_pct'), '%', 0)}   core {na(gpu.get('clock_mhz'), ' MHz', 0)}"
-                       f"   memory {na(gpu.get('memory_clock_mhz'), ' MHz', 0)}", dim, False),
-                      (f"  vram {na(gpu.get('memory_used_mib'), '', 0)}/{na(gpu.get('memory_total_mib'), ' MiB', 0)}"
-                       f"   limit {na(gpu.get('power_limit_w'), ' W')}", dim, False)]
-        else:
-            lines.append(("  N/A", dim, False))
-        lines += [("Voltages", self.theme.ACCENT, True)]
-        lines += [(f"  {v['label'][:30]:<30} {na(v['v'], ' V', 3)}", self.theme.TEXT, False)
-                  for v in metrics.get("voltages") or []] or [("  N/A", self.theme.TEXT, False)]
-        lines.append(("Temperatures", self.theme.ACCENT, True))
-        temps = metrics.get("temperatures") or []
-        lines += [(f"  {t['group']:<6} {t['label']:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)
-                  for t in temps] or [("  N/A", self.theme.TEXT, False)]
-        power = metrics.get("power") or {}
-        lines.append(("Power", self.theme.ACCENT, True))
-        for name, watts in (power.get("rapl") or {}).items():
-            lines.append((f"  {name:<24} {na(watts, ' W')}", self.theme.TEXT, False))
-        if "battery_w" in power:
-            lines.append((f"  {'battery':<24} {na(power.get('battery_w'), ' W')}  {power.get('battery_status') or 'N/A'}",
-                          self.theme.TEXT, False))
-        for u in power.get("usbc") or []:
-            lines.append((f"  {u['name'][:24]:<24} {na(u['watts'], ' W')}  {na(u['volts'], ' V', 2)}  "
-                          f"{na(u['amps'], ' A', 2)}", self.theme.TEXT, False))
+        text = self.theme.TEXT
+        head = self.theme.ACCENT
+
+        def row(label, parts, color=text, bold=False):
+            "One row: a label, then parts that drop from the end rather than cut a number."
+            return (f"{label:<9}" + fit_parts(parts, iw - 9, "  "), color, bold)
+
+        # Throttle first: an active throttle is the row to see on a short terminal.
         throttle = metrics.get("throttle") or {}
         cpu_t, gpu_t = throttle.get("cpu") or {}, throttle.get("gpu")
-        lines.append(("Throttle", self.theme.ACCENT, True))
-        lines.append((f"  cpu core {na(cpu_t.get('core_events'), '', 0)}  package {na(cpu_t.get('package_events'), '', 0)}"
-                      f"  active {'N/A' if cpu_t.get('active') is None else 'yes' if cpu_t['active'] else 'no'}",
-                      self.theme.BAD if cpu_t.get("active") else self.theme.TEXT, False))
-        lines.append(("  gpu " + ("N/A" if gpu_t is None else ", ".join(gpu_t) or "none"),
-                      self.theme.BAD if gpu_t else self.theme.TEXT, False))
+        active = cpu_t.get("active")
+        lines = [row("Throttle", [f"cpu {'N/A' if active is None else 'yes' if active else 'no'}",
+                                  f"core {na(cpu_t.get('core_events'), '', 0)}",
+                                  f"package {na(cpu_t.get('package_events'), '', 0)}"],
+                     self.theme.BAD if active else text, bool(active)),
+                 row("", ["gpu " + ("N/A" if gpu_t is None else ", ".join(gpu_t) or "none")],
+                     self.theme.BAD if gpu_t else text, bool(gpu_t))]
+        cores = list((cpu.get("cores") or {}).values())
+        spark = "".join("·" if c is None else SPARK[min(7, round(c * 7 / 100))] for c in cores)
+        lines += [row("CPU", [f"{na(cpu.get('utilization_pct'), '%', 0)}", f"avg {na(cpu.get('clock_mhz'), ' MHz', 0)}",
+                              f"max {na(cpu.get('max_clock_mhz'), ' MHz', 0)}", cpu.get("power_source") or "N/A"]),
+                  row("", [f"cores {spark or 'N/A'}"], self.theme.OK)]
+        if gpu:
+            lines += [row("GPU", [gpu.get("name") or "N/A"], self.theme.GPU),
+                      row("", [na(gpu.get("utilization_pct"), "%", 0), f"core {na(gpu.get('clock_mhz'), ' MHz', 0)}",
+                               f"memory {na(gpu.get('memory_clock_mhz'), ' MHz', 0)}"]),
+                      row("", [f"vram {na(gpu.get('memory_used_mib'), '', 0)}/{na(gpu.get('memory_total_mib'), ' MiB', 0)}",
+                               f"limit {na(gpu.get('power_limit_w'), ' W')}"])]
+        else:
+            lines.append(row("GPU", ["N/A"]))
+        lines.append(("Voltages", head, True))
+        lines += [(f"  {v['label'][:30]:<30} {na(v['v'], ' V', 3)}", text, False)
+                  for v in (metrics.get("voltages") or [])[:3]] or [("  N/A", text, False)]
+        lines.append(("Temperatures", head, True))
+        lines += [(f"  {t['group']:<6} {t['label'][:24]:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)
+                  for t in (metrics.get("temperatures") or [])[:4]] or [("  N/A", text, False)]
+        power = metrics.get("power") or {}
+        lines.append(("Power", head, True))
+        lines += [(f"  {name:<24} {na(watts, ' W')}", text, False) for name, watts in (power.get("rapl") or {}).items()]
+        if "battery_w" in power:
+            lines.append(row("  battery", [na(power.get("battery_w"), " W"), power.get("battery_status") or "N/A"]))
+        for u in power.get("usbc") or []:
+            lines.append(row(f"  {u['name'][:6]}", [na(u["watts"], " W"), na(u["volts"], " V", 2), na(u["amps"], " A", 2)]))
         room = height - 2
         if len(lines) > room:
-            lines = lines[:max(0, room - 1)] + [("…", self.theme.TEXT, False)]
-        for i, (text, color, bold) in enumerate(lines):
-            self.put(y + 1 + i, ix, text[:iw], color, bold)
+            lines = lines[:max(0, room - 1)] + [("…", text, False)]
+        for i, (line, color, bold) in enumerate(lines):
+            self.put(y + 1 + i, ix, line, color, bold)
 
     def draw_keyboard(self, y, x, height, width):
         kb = self.keyboard
