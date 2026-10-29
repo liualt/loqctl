@@ -95,6 +95,21 @@ class CliTests(helpers.SysfsCase):
             self.assertEqual(m_cli.main(["metrics", "--watch"]), 0)
         self.assertEqual(sensors.return_value.sample.call_count, 2)
 
+    def test_metrics_watch_exits_cleanly_when_the_reader_closes(self):
+        root = REPO
+        proc = subprocess.Popen([sys.executable, str(root / "loqctl.py"), "metrics", "--watch", "1"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            proc.stdout.readline()
+            proc.stdout.close()
+            err = proc.stderr.read()
+            code = proc.wait(timeout=5)
+        finally:
+            proc.kill()
+            proc.stderr.close()
+        self.assertEqual(code, 0)
+        self.assertNotIn("Exception ignored", err)
+
     def test_metrics_watch_reports_any_sample_exception_and_continues(self):
         sensors = unittest.mock.Mock()
         sensors.return_value.sample.side_effect = [None, IndexError("bad"), {"n": 2}, KeyboardInterrupt]
