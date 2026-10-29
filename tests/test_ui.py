@@ -768,19 +768,28 @@ class ViewTests(unittest.TestCase):
         dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": "Waiting for RAPL samples"}}, 0, 0, 22, 80)
         self.assertNotIn("Waiting", "\n".join(t for _, _, t in calls))
 
-    def test_sensors_view_draws_na(self):
+    def test_details_view_draws_na(self):
         dash, calls = self.stub_dash()
-        dash.draw_sensors({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
+        dash.draw_details({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
                            "power": {"rapl": {"psys": None}, "battery_w": None, "battery_status": None,
                                      "usbc": []},
                            "voltages": [{"label": "CPU 0 Vcore", "v": None}],
                            "throttle": {"cpu": {"core_events": None}, "gpu": None}}, 1, 0, 30, 60)
         text = "\n".join(t for _, _, t in calls)
-        for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle"):
+        for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle", "CPU", "GPU"):
+            self.assertIn(needle, text)
+
+    def test_details_view_shows_secondary_readings(self):
+        dash, calls = self.stub_dash()
+        dash.draw_details({"cpu": {"utilization_pct": 12, "cores": {"0": 0, "1": 100}, "max_clock_mhz": 4500},
+                           "gpu": {"devices": [{"name": "RTX 4050", "memory_total_mib": 6144,
+                                                "memory_clock_mhz": 8000}]}}, 1, 0, 30, 70)
+        text = "\n".join(t for _, _, t in calls)
+        for needle in ("12%", "▁█", "4500 MHz", "RTX 4050", "8000 MHz", "6144 MiB"):
             self.assertIn(needle, text)
         self.assertGreaterEqual(text.count("N/A"), 6)
         calls.clear()
-        dash.draw_sensors({"temperatures": [{"group": "cpu", "label": str(i), "c": 1} for i in range(40)]},
+        dash.draw_details({"temperatures": [{"group": "cpu", "label": str(i), "c": 1} for i in range(40)]},
                           1, 0, 8, 60)
         self.assertEqual(calls[-1][2], "…")
         self.assertTrue(all(y <= 8 for y, _, _ in calls))
@@ -793,7 +802,13 @@ class ViewTests(unittest.TestCase):
         dash.locked = lambda state: True
         dash.fields, dash.invalid = {}, set()
         dash.handle(ord("t"), {})
-        self.assertEqual(dash.view, "sensors")
+        self.assertEqual(dash.view, "summary")  # only Overview has details
+        dash.panel = "overview"
+        dash.handle(ord("t"), {})
+        self.assertEqual(dash.view, "details")
+        dash.handle(27, {})
+        self.assertEqual(dash.view, "summary")
+        dash.handle(ord("t"), {})
         dash.handle(ord("t"), {})
         self.assertEqual(dash.view, "summary")
 
