@@ -135,6 +135,33 @@ def battery_health(p):
             "design_wh": design if energy else None, "health_percent": full / design * 100 if ok else None}
 
 
+BATTERY_SMOOTH_S = 30
+BATTERY_MAX_MIN = 48 * 60
+
+
+def battery_time(p, status, rate, avg_rate):
+    """(minutes, "to empty" or "to full") for one battery, (None, None) when unknown.
+
+    rate is the raw power_now or current_now, avg_rate its smoothed value. Kernel time_to_* files win."""
+    kind, name = {"Discharging": ("to empty", "empty"), "Charging": ("to full", "full")}.get(status, (None, None))
+    if kind is None:
+        return None, None
+    kernel = scaled(p / f"time_to_{name}_now")
+    if kernel:
+        minutes = kernel / 60
+    elif not rate or not avg_rate:
+        return None, None
+    else:
+        for now_f, full_f in (("energy_now", "energy_full"), ("charge_now", "charge_full")):
+            now_v, full_v = scaled(p / now_f), scaled(p / full_f)
+            if now_v is not None and (name == "empty" or full_v is not None):
+                minutes = (now_v if name == "empty" else full_v - now_v) / avg_rate * 60
+                break
+        else:
+            return None, None
+    return (minutes, kind) if 0 <= minutes <= BATTERY_MAX_MIN else (None, None)
+
+
 GPU_MODES = {("0", "0"): "dGPU only", ("1", "0"): "Hybrid", ("1", "1"): "iGPU only", ("1", "2"): "Hybrid (auto)"}
 
 
@@ -154,6 +181,7 @@ class Sensors:
         self.throttle_events = []  # (time, core delta, package delta) within SLOW_INTERVAL
         self.slow = None
         self.slow_at = None
+        self.battery_rates = {}  # battery name -> [(time, power_now or current_now)] within BATTERY_SMOOTH_S
         self.found = {}  # discovery cache: name -> (paths, monotonic time of the scan)
 
     def discover(self, name, scan):
@@ -163,6 +191,19 @@ class Sensors:
         if cached is None or now - cached[1] >= DISCOVERY_INTERVAL:
             cached = self.found[name] = (scan(), now)
         return cached[0]
+
+    def battery_rate(self, p, now):
+        "Raw and 30 s smoothed power_now (current_now when absent); smoothed is None when 0 or missing."
+        rate = scaled(p / "power_now")
+        if rate is None:
+            rate = scaled(p / "current_now")
+        samples = self.battery_rates.setdefault(p.name, [])
+        if not rate:
+            samples.clear()
+            return rate, None
+        samples.append((now, abs(rate)))
+        samples[:] = [x for x in samples if now - x[0] <= BATTERY_SMOOTH_S]
+        return rate, sum(x[1] for x in samples) / len(samples)
 
     def cpu_usage(self):
         result = {}
@@ -426,9 +467,14 @@ class Sensors:
                 threshold = scaled(p / "charge_control_end_threshold")
                 limit = (f"{threshold:.0f}%" if threshold is not None
                          else None if conservation is None else "on" if conservation == "1" else "off")
+                status = read(p / "status")
+                rate, avg = self.battery_rate(p, now)
+                minutes, kind = battery_time(p, status, rate, avg)
+                power = scaled(p / "power_now", 1e6)
                 battery.append({"charge_limit": limit, "name": p.name, "percent": scaled(p / "capacity"),
-                                "status": read(p / "status"), "power_w": scaled(p / "power_now", 1e6),
-                                **battery_health(p)})
+                                "status": status, "power_w": power,
+                                "power_avg_w": avg / 1e6 if avg is not None and power is not None else None,
+                                "time_remaining_min": minutes, "time_kind": kind, **battery_health(p)})
             elif (online := read(p / "online")) is not None:
                 ac.append(online == "1")
         gpu = self.gpu()

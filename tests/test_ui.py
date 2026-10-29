@@ -764,7 +764,8 @@ class UiTests(helpers.SysfsCase):
 
     def test_battery_health_fits_summary_and_details(self):
         battery = [{"name": "BAT1", "percent": 90, "status": "Discharging", "charge_limit": "80%",
-                    "health_percent": 98.13, "cycles": 77, "full_wh": 58.88, "design_wh": 60.0}]
+                    "health_percent": 98.13, "cycles": 77, "full_wh": 58.88, "design_wh": 60.0,
+                    "time_remaining_min": 135, "time_kind": "to empty"}]
         for h, w in ((20, 72), (24, 80)):
             for view in ("summary", "details"):
                 puts = []
@@ -778,10 +779,16 @@ class UiTests(helpers.SysfsCase):
                 dash.draw({"metrics": {"battery": battery, "ac_online": False}, "attributes": {}, "modes": []})
                 texts = [t for _, _, t in puts]
                 if view == "summary":
-                    self.assertTrue(any("health 98%" in t for t in texts), (h, w))
+                    self.assertTrue(any("2 h 15 min left" in t for t in texts), (h, w))
                 else:
                     self.assertTrue(any(t.strip().startswith("BAT1") and "cycles 77" in t for t in texts), (h, w))
                 self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w, view))
+
+    def test_battery_left_text(self):
+        left = m_ui.battery_left
+        self.assertEqual(left({"time_remaining_min": 40, "time_kind": "to full"}), "40 min to full")
+        self.assertEqual(left({"time_remaining_min": 135, "time_kind": "to empty"}), "2 h 15 min left")
+        self.assertEqual(left({"time_remaining_min": None}), "")
 
     def test_keyboard_page_never_cuts_a_line_mid_word_at_72x20(self):
         grid = [[" "] * 72 for _ in range(20)]

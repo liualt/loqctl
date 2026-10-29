@@ -290,6 +290,41 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(bat()["health_percent"], 80.0)
         self.assertIsNone(bat()["full_wh"])
 
+    def test_battery_time_remaining(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Discharging"), ("energy_now", "30000000"),
+                        ("energy_full", "60000000"), ("power_now", "15000000")):
+            self.put(d + name, v)
+        s = self.sensors()
+        bat = lambda now: s.sample(now)["battery"][0]
+        b = bat(0)
+        self.assertEqual((b["time_remaining_min"], b["time_kind"]), (120, "to empty"))
+        self.put(d + "power_now", "45000000")
+        b = bat(10)  # smoothed over 15 W and 45 W
+        self.assertEqual((b["power_w"], b["power_avg_w"], b["time_remaining_min"]), (45.0, 30.0, 60))
+        self.assertEqual(bat(100)["time_remaining_min"], 40)  # old samples left the 30 s window
+        self.put(d + "status", "Charging")
+        b = bat(200)
+        self.assertEqual((b["time_remaining_min"], b["time_kind"]), (40, "to full"))
+        self.put(d + "time_to_full_now", "1800")
+        self.assertEqual(bat(210)["time_remaining_min"], 30)
+        (self.root / d / "time_to_full_now").unlink()
+        for status, power in (("Not charging", "15000000"), ("Full", "15000000"), ("Charging", "0")):
+            self.put(d + "status", status)
+            self.put(d + "power_now", power)
+            b = bat(300)
+            self.assertEqual((b["time_remaining_min"], b["time_kind"]), (None, None), status)
+        self.put(d + "status", "Discharging")
+        self.put(d + "power_now", "100000")
+        self.assertIsNone(bat(400)["time_remaining_min"])  # over 48 hours
+
+    def test_battery_time_from_charge_files(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Discharging"), ("charge_now", "2000000"),
+                        ("charge_full", "4000000"), ("current_now", "1000000")):
+            self.put(d + name, v)
+        self.assertEqual(self.sensors().sample(0)["battery"][0]["time_remaining_min"], 120)
+
     def test_temperature_groups(self):
         def hw(n, name, temps):
             self.put(f"class/hwmon/hwmon{n}/name", name)
