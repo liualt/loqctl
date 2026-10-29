@@ -170,7 +170,8 @@ class PortabilityTests(unittest.TestCase):
                 self.put(f"class/hwmon/hwmon{n}/temp{i}_label", label)
 
     def temp_of(self):
-        return m_sensors.Sensors.cpu_temperature(sorted((self.root / "class/hwmon").glob("hwmon*")))
+        return m_sensors.Sensors(self.root, self.root / "proc").cpu_temperature(
+            sorted((self.root / "class/hwmon").glob("hwmon*")))
 
     def test_cpu_temperature_labels(self):
         self.assertEqual(self.temp_of(), (None, None))
@@ -185,6 +186,21 @@ class PortabilityTests(unittest.TestCase):
         shutil.rmtree(self.root / "class")
         self.hwmon(0, "zenpower", [("Tdie", 55), ("Tctl", 75)])
         self.assertEqual(self.temp_of(), (55, "Tdie"))
+
+    def test_cpu_temperature_paths_cached_until_rescan(self):
+        self.hwmon(0, "coretemp", [("Package id 0", 60)])
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        hwmons = sorted((self.root / "class/hwmon").glob("hwmon*"))
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
+            self.assertEqual(sensors.cpu_temperature(hwmons), (60, "Package id"))
+            self.put("class/hwmon/hwmon0/temp2_input", "90000")
+            self.assertEqual(sensors.cpu_temperature(hwmons), (60, "Package id"))
+            clock[0] += m_sensors.DISCOVERY_INTERVAL
+            self.assertEqual(sensors.cpu_temperature(hwmons), (60, "Package id"))
+            self.put("class/hwmon/hwmon0/temp2_label", "Package id 1")
+            clock[0] += m_sensors.DISCOVERY_INTERVAL
+            self.assertEqual(sensors.cpu_temperature(hwmons)[0], 90)
 
     def test_amd_rapl_package_power(self):
         self.hwmon(0, "k10temp", [("Tctl", 50)])
