@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
+import time
 
 from . import VERSION
 from .api import http_client
@@ -15,6 +17,7 @@ from .backend import Backend
 from .capdata import limits_report
 from .common import FIELDS, ControlError, _lazy, owner_uid
 from .hardware import Hardware, apply_batch
+from .sensors import Sensors
 
 argparse = _lazy("argparse")
 curses = _lazy("curses")
@@ -52,6 +55,7 @@ def main(argv=None):
     commands.add_parser("tui", help="Open the dashboard (default)")
     for cmd in ("status", "metrics", "capabilities"):
         commands.add_parser(cmd, help="Print " + cmd + " as JSON")
+    commands.choices["metrics"].add_argument("--watch", nargs="?", type=float, const=1, metavar="SECONDS", help="Print one JSON line every SECONDS (default 1, minimum 1) until interrupted")
     commands.add_parser("limits", help="Print per-mode firmware limits as JSON")
     commands.add_parser("fan", help="Print the fan curve and RPM as JSON")
     mode = commands.add_parser("mode", help="Read or set the platform mode")
@@ -108,6 +112,22 @@ def main(argv=None):
                 backend.load_mode_limits(allow_sudo=sudo_ok)
                 curses.wrapper(lambda screen: Dashboard(screen, backend, sudo_ok=sudo_ok).run())
                 return 0
+            elif args.command == "metrics" and args.watch is not None:
+                from .api import request
+                if not (math.isfinite(args.watch) and args.watch >= 1):
+                    raise ControlError("--watch interval must be at least 1 second.")
+                sensors = None if backend.remote else Sensors()
+                if sensors:
+                    sensors.sample()  # prime so the first rates cover one interval
+                deadline = time.monotonic()
+                while True:
+                    deadline += args.watch
+                    time.sleep(max(0, deadline - time.monotonic()))
+                    try:
+                        metrics = sensors.sample() if sensors else request(backend.path, "GET", "/v1/status").get("metrics", {})
+                        print(json.dumps(metrics, allow_nan=False), flush=True)
+                    except (OSError, ControlError, ValueError, http_client.HTTPException) as exc:
+                        print("loqctl: " + str(exc), file=sys.stderr)
             elif args.command in ("status", "metrics"):
                 if args.command == "status":
                     backend.load_mode_limits()
