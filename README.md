@@ -202,6 +202,8 @@ Every source appears only when the system exposes it; anything else shows `N/A` 
 - Temperatures: CPU cores (coretemp, k10temp, zenpower), ACPI, NVMe, RAM (spd5118, jc42), Wi-Fi, GPU (NVML or amdgpu) and the EC when the `legion_laptop` module provides it.
 - Voltages: battery and hwmon `in*` inputs. CPU 0 Vcore (read from CPU 0 only; N/A outside 0.3 to 2.0 V) needs root (run `loqctl serve` as root) on Intel with the `msr` module loaded; it is N/A on AMD. GPU voltage is not available from NVML.
 - Throttling: Intel thermal-throttle event counts and NVML clocks-event reasons.
+- Battery: cycle count, health in % and capacity in Wh, plus the charge limit (read-only).
+- GPU mode: the firmware GPU mode (shown read-only).
 
 ### Keyboard CLI
 
@@ -255,6 +257,8 @@ Use `--socket PATH` to point the CLI or dashboard at a specific socket. Without 
 - CPU: Intel and AMD Ryzen are supported. Temperature comes from `coretemp` (Package id), `k10temp` or `zenpower` (Tdie, else Tctl). Power: powercap RAPL package energy deltas (needs root; AMD Zen uses the same driver). AMD is tested with simulated sysfs only. Clocks: cpufreq. Utilization: `/proc/stat`.
 - GPU: NVML (`libnvidia-ml`) when present, else `nvidia-smi`. While the GPU is runtime-suspended it is not queried, so loqctl does not wake it; the panel shows `asleep`. The dashboard shows the first GPU; JSON lists all.
 - RAM: `/proc/meminfo`. Battery, AC and fans: sysfs, when present.
+- Battery health: `cycle_count`, and health from `energy_full` over `energy_full_design`. Wh is shown only when the battery has energy files.
+- GPU mode: `/sys/devices/platform/legion/gsync` and `igpumode`. Only Hybrid is checked on hardware.
 - Missing readings show as `N/A` / `null`.
 
 Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/next/wmi/devices/lenovo-wmi-other.html) and [Gamezone](https://www.kernel.org/doc/html/next/wmi/devices/lenovo-wmi-gamezone.html) drivers. loqctl makes no raw EC writes and only writes the attributes listed above.
@@ -291,9 +295,32 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 
 ## Changelog
 
+### Unreleased
+
+Added:
+
+- A section list (Overview, Power, Fans, Keyboard) around the existing panels.
+- One graph per Overview box, with the numbers in the title.
+- The mode selector on top of Power, with limits grouped by CPU and GPU.
+- A slimmer Fans section: a graph box, one point line and a details table.
+- `t` opens a details view in place of the sensors toggle.
+- Battery cycle count and health, and the charge limit (read-only).
+- The firmware GPU mode (read-only).
+- `loqctl metrics --watch` streams JSON samples.
+- `loqctl doctor` shows which features this laptop supports.
+- `make install`, `make uninstall` and `make test`.
+
+Fixed:
+
+- Limit details drop whole parts instead of cutting a number in half.
+- The mode table, apply results and header fit 72x20.
+- `metrics --watch` stops on a broken pipe.
+- An invalid `LegionAura` config or a foreign capdata table no longer breaks loqctl.
+- The API replies 500 on unexpected errors, and curve saves in the same second no longer overwrite each other.
+
 ### 0.5.0
 
-- Simpler fan panel: the graph is a normal fan curve (straight segments between the points, one marker each, the live CPU temperature as a tick on the axis), with one line for the selected point. GPU/IC temperatures, hysteresis and the per-point table move behind `d`, and the footer no longer lists every saved curve.
+- Simpler fan panel: the graph is a normal fan curve (straight segments between the points, one marker each, the live CPU temperature as a tick on the axis), with one line for the selected point. GPU/IC temperatures, hysteresis and the per-point table move behind `d` (now `t`), and the footer no longer lists every saved curve.
 - `↑`/`↓` move a point to the next speed the module stores (100 RPM, one level, or 2 % on percent curves) instead of fixed 5 % or 500 RPM steps; `Shift` moves five steps. `←`/`→` select a point.
 
 ### 0.4.1
