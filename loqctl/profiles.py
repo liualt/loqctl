@@ -154,19 +154,25 @@ def apply_profile(backend, name):
     caps = backend.controls()
     curve = backend.fancurve() if "fancurve" in data else {}
     check_against_hardware(data, caps, curve)
-    report = {"profile": name, "applied": False, "results": [], "fancurve": []}
+    report = {"profile": name, "applied": False, "previous_mode": caps.get("mode"), "results": [], "fancurve": []}
     stages = []
     if caps.get("mode") != data["mode"]:
         stages.append([["mode", data["mode"]]])
     if data.get("limits"):
         stages.append([[k, v] for k, v in data["limits"].items()])
     for changes in stages:
-        results = write_changes(backend, changes)
+        try:
+            results = write_changes(backend, changes)
+        except ERRORS as exc:
+            results = [{"key": k, "requested": v, "status": "FAILED", "error": str(exc)} for k, v in changes]
         report["results"] += results
         if any(r["status"] != "APPLIED" for r in results):
             return report
     if "fancurve" in data:
-        report["fancurve"] = write_points(backend, data["fancurve"])
+        try:
+            report["fancurve"] = write_points(backend, data["fancurve"])
+        except ERRORS as exc:
+            report["fancurve"] = [{"key": "fancurve", "status": "FAILED", "error": str(exc)}]
         if any(r["status"] != "APPLIED" for r in report["fancurve"]):
             return report
     report["applied"] = True

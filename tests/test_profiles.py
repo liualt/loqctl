@@ -88,6 +88,31 @@ class ProfileTests(helpers.SysfsCase):
         self.assertEqual(report["results"][0]["status"], "FAILED")
         self.assertEqual([k for k, _ in self.backend.writes], ["ppt_pl1_spl"])
 
+    def test_fan_curve_stage_applies_after_limits(self):
+        self.put("p", {"version": 1, "mode": "custom", "limits": {"ppt_pl1_spl": 60},
+                       "fancurve": [{"fan1": 255}]})
+        self.backend.curve = {"available": True, "points": [{"fan1": 200}], "unit": None, "max_rpm": None}
+        report = profiles.apply_profile(self.backend, "p")
+        self.assertTrue(report["applied"])
+        self.assertEqual(self.backend.writes, [("ppt_pl1_spl", 60), ("fancurve", [{"fan1": 255}])])
+
+    def test_stage_error_keeps_earlier_results_and_previous_mode(self):
+        (self.root / "class/platform-profile/platform-profile-0/profile").write_text("balanced")
+        self.put("p", {"version": 1, "mode": "custom", "limits": {"ppt_pl1_spl": 60}})
+        real = self.backend.write
+
+        def write(key, value):
+            if key == "ppt_pl1_spl":
+                raise ControlError("denied")
+            return real(key, value)
+
+        self.backend.write = write
+        report = profiles.apply_profile(self.backend, "p")
+        self.assertFalse(report["applied"])
+        self.assertEqual(report["previous_mode"], "balanced")
+        self.assertEqual([(r["key"], r["status"]) for r in report["results"]],
+                         [("mode", "APPLIED"), ("ppt_pl1_spl", "FAILED")])
+
     def test_profile_name_is_restricted(self):
         for name in ("../x", ".hidden", "a/b", ""):
             with self.subTest(name=name), self.assertRaises(ControlError):
