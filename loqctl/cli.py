@@ -48,7 +48,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Lenovo LOQ firmware controls and live terminal telemetry")
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--socket", help="Connect to an existing loqctl Unix socket")
-    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,fan,mode,set,kb,serve}")
+    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,fan,mode,set,kb,doctor,serve}")
     commands.add_parser("tui", help="Open the dashboard (default)")
     for cmd in ("status", "metrics", "capabilities"):
         commands.add_parser(cmd, help="Print " + cmd + " as JSON")
@@ -61,6 +61,7 @@ def main(argv=None):
     setting.add_argument("value", type=int)
     kb_parser = commands.add_parser("kb", help="Keyboard RGB via LegionAura")
     kb_parser.add_argument("args", nargs=argparse.REMAINDER, help="status|apply|off|static|breath|wave|hue|brightness …")
+    commands.add_parser("doctor", help="Check which features this laptop supports")
     server = commands.add_parser("serve", help="Serve the local HTTP API; run with sudo")
     server.add_argument("--uid", type=int, default=owner_uid(), help="UID permitted to connect; defaults to SUDO_UID")
     internal = commands.add_parser("_apply")
@@ -73,6 +74,10 @@ def main(argv=None):
         if args.command == "serve":
             from .api import serve
             serve(args.uid)
+            return 0
+        if args.command == "doctor":
+            from .doctor import doctor
+            print("\n".join(doctor()))
             return 0
         if args.command == "_apply":
             result = apply_batch(Hardware(), json.loads(args.changes))
