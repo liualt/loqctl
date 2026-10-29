@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -61,6 +62,9 @@ class ParseTests(unittest.TestCase):
             table, reason = capdata.read_mode_table(tmp)
             self.assertIsNone(reason)
             self.assertEqual(table["performance"]["gpu_nv_ctgp"], 90)
+            (guid / "capdata").write_text(re.sub(r"dev:\s*\d+", "dev: 99", FIXTURE))
+            self.assertEqual(capdata.read_mode_table(tmp), (None, capdata.NOT_FOUND))  # foreign IDs
+            (guid / "capdata").write_text(FIXTURE)
             with patch.object(Path, "read_text", side_effect=PermissionError):
                 self.assertEqual(capdata.read_mode_table(tmp), (None, "needs root"))
             with patch.object(os, "listdir", side_effect=PermissionError):

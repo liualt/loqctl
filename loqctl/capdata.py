@@ -84,7 +84,10 @@ def read_mode_table(root=Path("/sys")):
             continue
     if not entries:
         return None, NOT_FOUND
-    return mode_table(entries), None
+    table = mode_table(entries)
+    if not any(table.values()):
+        return None, NOT_FOUND  # rows from another model, no known field IDs
+    return table, None
 
 
 def effective_value(mode, key, current, table):
