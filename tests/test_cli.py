@@ -17,6 +17,7 @@ import loqctl
 from loqctl import cli as m_cli
 from loqctl import common as m_common
 from loqctl import keyboard as m_keyboard
+from loqctl.doctor import doctor
 
 
 class CliTests(helpers.SysfsCase):
@@ -25,6 +26,44 @@ class CliTests(helpers.SysfsCase):
         with patch.object(m_cli, "Hardware", return_value=self.hw), contextlib.redirect_stdout(out):
             self.assertEqual(m_cli.main(["_apply", json.dumps([["ppt_pl1_spl", 60]])]), 0)
         self.assertEqual(json.loads(out.getvalue())[0]["status"], "APPLIED")
+
+    def test_doctor_reports_each_check_without_writes(self):
+        proc = self.root / "proc"
+        proc.mkdir()
+        (proc / "cpuinfo").write_text("vendor_id\t: AuthenticAMD\n")
+        (self.root / "class/dmi/id").mkdir(parents=True)
+        (self.root / "class/dmi/id/product_name").write_text("LOQ 15IRX9")
+        lines = doctor(self.root, proc=proc, dev=self.root / "dev")
+        states = {}
+        for line in lines:
+            state, _, rest = line.partition(" ")
+            if state in ("ok", "missing", "n/a"):
+                states[rest.strip().split(" (")[0]] = state
+        self.assertIn("product: LOQ 15IRX9", lines)
+        self.assertEqual(states["firmware-attributes"], "ok")
+        self.assertEqual(states["platform-profile custom"], "ok")
+        self.assertEqual(states["legion_laptop hwmon"], "missing")
+        self.assertEqual(states["debugfs capdata"], "missing")
+        self.assertEqual(states["msr"], "n/a")
+        self.assertEqual(len(states), 10)
+
+    def test_doctor_msr_unreadable_is_missing(self):
+        proc = self.root / "proc"
+        proc.mkdir()
+        (proc / "cpuinfo").write_text("vendor_id\t: GenuineIntel\n")
+        msr = self.root / "dev/cpu/0/msr"
+        msr.parent.mkdir(parents=True)
+        msr.write_text("")
+        with patch("loqctl.doctor.os.access", return_value=False):
+            lines = doctor(self.root, proc=proc, dev=self.root / "dev")
+        self.assertTrue(any(l.startswith("missing") and "msr needs root" in l for l in lines))
+
+    def test_doctor_subcommand_prints_lines(self):
+        out = io.StringIO()
+        with patch("loqctl.doctor.doctor", return_value=["x ok"]), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(m_cli.main(["doctor"]), 0)
+        self.assertEqual(out.getvalue(), "x ok\n")
 
     def test_entry_script_runs_isolated(self):
         with tempfile.TemporaryDirectory() as cwd:

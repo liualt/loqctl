@@ -155,6 +155,7 @@ loqctl metrics
 loqctl capabilities
 loqctl limits                        # per-mode firmware limits as JSON
 loqctl fan                           # fan curve, speed unit and RPM as JSON
+loqctl doctor                        # which features this laptop supports, with hints
 loqctl mode                          # current mode and available modes
 sudo loqctl mode custom
 sudo loqctl set ppt_pl1_spl 50
