@@ -222,6 +222,10 @@ class TelemetryTests(unittest.TestCase):
         s.gpu = lambda: {"available": False}
         return s
 
+    def test_empty_uptime_is_none(self):
+        self.put("proc/uptime", "")
+        self.assertIsNone(self.sensors().sample()["uptime_s"])
+
     def rapl(self, d, name, uj):
         self.put(f"class/powercap/{d}/name", name)
         self.put(f"class/powercap/{d}/energy_uj", str(uj))
