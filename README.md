@@ -202,7 +202,7 @@ Every source appears only when the system exposes it; anything else shows `N/A` 
 - Temperatures: CPU cores (coretemp, k10temp, zenpower), ACPI, NVMe, RAM (spd5118, jc42), Wi-Fi, GPU (NVML or amdgpu) and the EC when the `legion_laptop` module provides it.
 - Voltages: battery and hwmon `in*` inputs. CPU 0 Vcore (read from CPU 0 only; N/A outside 0.3 to 2.0 V) needs root (run `loqctl serve` as root) on Intel with the `msr` module loaded; it is N/A on AMD. GPU voltage is not available from NVML.
 - Throttling: Intel thermal-throttle event counts and NVML clocks-event reasons.
-- Battery: cycle count, health in % and capacity in Wh, plus the charge limit (read-only).
+- Battery: cycle count, health in % and capacity in Wh, plus the charge limit (read-only). Wh only on batteries with energy files.
 - GPU mode: the firmware GPU mode (shown read-only).
 
 ### Keyboard CLI
@@ -257,7 +257,7 @@ Use `--socket PATH` to point the CLI or dashboard at a specific socket. Without 
 - CPU: Intel and AMD Ryzen are supported. Temperature comes from `coretemp` (Package id), `k10temp` or `zenpower` (Tdie, else Tctl). Power: powercap RAPL package energy deltas (needs root; AMD Zen uses the same driver). AMD is tested with simulated sysfs only. Clocks: cpufreq. Utilization: `/proc/stat`.
 - GPU: NVML (`libnvidia-ml`) when present, else `nvidia-smi`. While the GPU is runtime-suspended it is not queried, so loqctl does not wake it; the panel shows `asleep`. The dashboard shows the first GPU; JSON lists all.
 - RAM: `/proc/meminfo`. Battery, AC and fans: sysfs, when present.
-- Battery health: `cycle_count`, and health from `energy_full` over `energy_full_design`. Wh is shown only when the battery has energy files.
+- Battery health: `cycle_count`, and health from `energy_full` over `energy_full_design`, or `charge_full` over `charge_full_design` when the energy files are missing. Wh comes only from the energy files (charge files are in Ah), so it is N/A on charge-only batteries.
 - GPU mode: `/sys/devices/platform/legion/gsync` and `igpumode`. Only Hybrid is checked on hardware.
 - Missing readings show as `N/A` / `null`.
 
@@ -312,6 +312,17 @@ Added:
 
 Fixed:
 
+- Help opens with `?` from the fan and keyboard panels, and fits 80x24 with the close hint visible.
+- Footer key hints fit 72 columns.
+- Small CPU boxes say why CPU power is N/A.
+- CPU throttle counters are read on every sample.
+- The firmware hook runs on its own thread.
+- Firmware files that appear after start are found.
+- The keyboard shows N/A without a config, and no longer sends made-up settings.
+- A rejected mode names the valid ones.
+- A fan curve load that starts before a fresh read is dropped.
+- `active.json` is pinned to the user's home by uid.
+- Percent fan curves write and step 1 % at a time.
 - Limit details drop whole parts instead of cutting a number in half.
 - The mode table, apply results and header fit 72x20.
 - `metrics --watch` stops on a broken pipe.
