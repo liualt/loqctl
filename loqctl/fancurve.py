@@ -165,12 +165,13 @@ def min_speed(points, i, scale=None):
     return scale.floor(hot, i == len(points) - 1)
 
 
-def validate_curve(points, scale=None):
+def validate_curve(points, scale=None, loaded=None):
     """List of (point index, field, message); empty when the curve may be written.
 
     Rules: values in range; each sensor's up temperature and each fan speed never drop from
     one point to the next; a point's down temperature is not above its up temperature; the
-    safety floors. The stock LOQ curve has down temperatures above the previous point's up
+    safety floors. A speed equal to the one in `loaded` (the curve the firmware runs) skips
+    the floors: writing it back is no less safe than leaving it. The stock LOQ curve has down temperatures above the previous point's up
     temperature, so that is allowed.
     """
     scale = scale or Scale()
@@ -213,7 +214,8 @@ def validate_curve(points, scale=None):
         need = min_speed(pts, i, scale)
         for field in SPEEDS:
             value = num(i, field)
-            if value is not None and need and scale.stored(value) < scale.stored(need):
+            if (value is not None and need and scale.stored(value) < scale.stored(need)
+                    and not (loaded and i < len(loaded) and scale.same(value, loaded[i].get(field), exact=True))):
                 errors.append((i, field, f"Point {i + 1} {LABELS[field]} needs at least {scale.text(need)} here."))
     return errors
 
@@ -287,7 +289,7 @@ def write_curve(hwmon, target, scale=None):
         for f in WRITABLE:
             if want.get(f) is not None and current[i][f] is None and _path(hwmon, f, i + 1).exists():
                 raise ControlError(f"Cannot read point {i + 1} {LABELS[f]}, so it cannot be changed.")
-    errors = validate_curve(merged, scale)
+    errors = validate_curve(merged, scale, current)
     if errors:
         raise ControlError(errors[0][2] + (f" ({len(errors) - 1} more problems)" if len(errors) > 1 else ""))
     changes = [(i, f) for fields in (TEMPS, SPEEDS) for f in fields for i in range(len(current))

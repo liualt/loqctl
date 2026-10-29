@@ -138,6 +138,10 @@ class FanCurveTests(unittest.TestCase):
         low = edit(NECN_STOCK, {(9, "fan1"): RPM.pwm(2900), (9, "fan2"): RPM.pwm(3000)})
         floors = [(i, f) for i, f, m in m_fan.validate_curve(low, RPM) if "needs at least 3000 RPM" in m]
         self.assertEqual(floors, [(9, "fan1")])
+        # A speed already loaded from firmware skips the floor; a changed one does not.
+        self.assertNotIn("needs at least", " ".join(m for *_, m in m_fan.validate_curve(low, RPM, low)))
+        moved = edit(low, {(9, "fan1"): RPM.pwm(2800)})
+        self.assertIn((9, "fan1"), self.fields(m_fan.validate_curve(moved, RPM, low)))
 
     def test_scale_matches_module_rounding(self):
         # The module stores ceil(pwm * max_rpm / 25500) and reads back floor(byte * 25500 / max_rpm).

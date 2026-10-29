@@ -181,7 +181,7 @@ class FanPanel:
         if self.fan_edit is None:
             self.notice = "No pending changes."
             return
-        errors = validate_curve(self.fan_edit, self.fan_scale())
+        errors = validate_curve(self.fan_edit, self.fan_scale(), self.fan_points())
         if errors:
             self.fan_sel = errors[0][0]
             self.notice = errors[0][2]
@@ -502,7 +502,7 @@ class FanPanel:
         lines = []
         if self.fan_locked(state):
             lines.append((f"Fan curves are locked in {state.get('mode')} mode. Select custom to edit.", self.theme.WARN))
-        errors = validate_curve(target, scale)
+        errors = validate_curve(target, scale, self.fan_points())
         if self.fan_edit is not None and errors:
             lines.append((errors[0][2], self.theme.BAD))
         for k, (text, color) in enumerate(lines[-2:]):
