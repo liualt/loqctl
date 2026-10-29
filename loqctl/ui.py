@@ -611,10 +611,11 @@ class Dashboard(FanPanel):
         battery = next(iter(metrics.get("battery") or []), {})
         ac = metrics.get("ac_online")
         power = "AC" if ac else "Battery" if ac is False else "Power N/A"
-        bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}  limit {battery.get('charge_limit') or 'N/A'}".strip()
+        bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}".strip()
         health = battery.get("health_percent")
         left = battery_left(battery)
-        parts = [f"{power}  {bat}"] + ([left] if left else []) + ([f"health {health:.0f}%"] if health is not None else [])
+        parts = ([f"{power}  {bat}"] + ([left] if left else []) + ([f"health {health:.0f}%"] if health is not None else [])
+                 + [f"limit {battery.get('charge_limit') or 'N/A'}"])
         self.put(sy + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
         if sys_h >= 6:
             fans = metrics.get("fans") or []

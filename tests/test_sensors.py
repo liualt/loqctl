@@ -318,6 +318,26 @@ class TelemetryTests(unittest.TestCase):
         self.put(d + "power_now", "100000")
         self.assertIsNone(bat(400)["time_remaining_min"])  # over 48 hours
 
+    def test_battery_average_restarts_when_status_flips(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Discharging"), ("energy_now", "30000000"),
+                        ("energy_full", "60000000"), ("power_now", "45000000")):
+            self.put(d + name, v)
+        s = self.sensors()
+        s.sample(0)
+        self.put(d + "status", "Charging")
+        self.put(d + "power_now", "5000000")
+        b = s.sample(1)["battery"][0]
+        self.assertEqual((b["power_avg_w"], b["time_remaining_min"]), (5.0, 360))
+
+    def test_battery_time_needs_matching_files(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Discharging"), ("energy_now", "30000000"),
+                        ("current_now", "1000000")):
+            self.put(d + name, v)
+        b = self.sensors().sample(0)["battery"][0]
+        self.assertEqual((b["time_remaining_min"], b["time_kind"]), (None, None))
+
     def test_battery_time_from_charge_files(self):
         d = "class/power_supply/BAT1/"
         for name, v in (("type", "Battery"), ("status", "Discharging"), ("charge_now", "2000000"),

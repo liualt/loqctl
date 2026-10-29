@@ -780,9 +780,25 @@ class UiTests(helpers.SysfsCase):
                 texts = [t for _, _, t in puts]
                 if view == "summary":
                     self.assertTrue(any("2 h 15 min left" in t for t in texts), (h, w))
+                    self.assertTrue(any("health 98%" in t for t in texts) or w == 72, (h, w))
                 else:
                     self.assertTrue(any(t.strip().startswith("BAT1") and "cycles 77" in t for t in texts), (h, w))
                 self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w, view))
+
+    def test_battery_health_shows_when_plugged_in(self):
+        battery = [{"name": "BAT1", "percent": 90, "status": "Not charging", "charge_limit": "80%",
+                    "health_percent": 98.13, "time_remaining_min": None, "time_kind": None}]
+        for h, w in ((20, 72), (24, 80)):
+            puts = []
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append(text[:n])
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            dash.panel, dash.view = "overview", "summary"
+            dash.draw({"metrics": {"battery": battery, "ac_online": True}, "attributes": {}, "modes": []})
+            self.assertTrue(any("health 98%" in t for t in puts), (h, w))
 
     def test_battery_left_text(self):
         left = m_ui.battery_left

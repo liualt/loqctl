@@ -210,6 +210,7 @@ Every source appears only when the system exposes it; anything else shows `N/A` 
 - Voltages: battery and hwmon `in*` inputs. CPU 0 Vcore (read from CPU 0 only; N/A outside 0.3 to 2.0 V) needs root (run `loqctl serve` as root) on Intel with the `msr` module loaded; it is N/A on AMD. GPU voltage is not available from NVML.
 - Throttling: Intel thermal-throttle event counts and NVML clocks-event reasons.
 - Battery: cycle count, health in % and capacity in Wh, plus the charge limit (read-only). Wh only on batteries with energy files.
+- Battery time: per battery in `metrics`, `power_w` is the raw reading in W, `power_avg_w` the 30 s average in W, `time_remaining_min` is in minutes (N/A when unknown or over 48 hours) and `time_kind` is "to empty" or "to full".
 - GPU mode: the firmware GPU mode (shown read-only).
 
 ### Keyboard CLI
