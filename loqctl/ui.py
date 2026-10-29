@@ -481,6 +481,22 @@ class Dashboard(FanPanel):
                                 f"default {fmt(item['default_value'])}", f"step {step_txt}"], width - 4),
                      self.theme.TEXT, dim=True)
 
+    def telemetry_box(self, y, x, height, width, name, color, parts, key, ceiling, chart_color, marks,
+                      note="", alert=None):
+        """One box: the numbers go in the title, one power graph fills the inside, an optional note takes the last row."""
+        self.box(y, x, height, width, name, color)
+        room = width - len(name) - 8
+        text = fit_parts(parts, room) if room > 0 and len(parts[0]) <= room else ""
+        if text:
+            self.put(y, x + len(name) + 4, f"{text} ", alert if alert is not None else color, alert is not None)
+        ix, iw = x + 2, width - 4
+        rows = height - 2
+        if note and rows > 1 and len(note) <= iw:
+            self.put(y + height - 2, ix, note, self.theme.TEXT, dim=True)
+            rows -= 1
+        if key and rows > 0:
+            self.chart_rows(y + 1, ix, iw, rows, key, ceiling, chart_color, marks)
+
     def draw_telemetry(self, state, metrics, y, x, height, width):
         cpu = metrics.get("cpu") or {}
         gpu = next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
@@ -503,90 +519,37 @@ class Dashboard(FanPanel):
             gpu_h = max(5, height - cpu_h - sys_h)
 
         # CPU
-        cpu_right = " · ".join(filter(None, [
-            fmt(cpu.get("utilization_pct"), "%"),
-            fmt(cpu.get("temperature_c"), "°C"),
-            fmt(cpu.get("power_w"), "W", 1),
-        ]))
         throttled = bool((throttle.get("cpu") or {}).get("active"))
-        if throttled:
-            cpu_right = (cpu_right + " · " if cpu_right else "") + "THROTTLE"
-        self.box(y, x, cpu_h, width, "CPU", self.theme.OK, cpu_right)
-        if throttled:
-            self.put(y, x + width - 11, "THROTTLE", self.theme.BAD, True)
-        ix, iw = x + 2, width - 4
-        self.bar(y + 1, ix, iw, cpu.get("utilization_pct"), self.theme.load(cpu.get("utilization_pct")))
-        temp_c = cpu.get("temperature_c")
-        self.put(y + 2, ix,
-                 f"avg {fmt(cpu.get('clock_mhz'), ' MHz')}   max {fmt(cpu.get('max_clock_mhz'), ' MHz')}   "
-                 f"{fmt(temp_c, '°C')}"[:iw],
-                 self.theme.heat(temp_c))
-        # Short boxes have no reason line, so a real reason goes in a spare row or the label.
+        # Short boxes have no spare row for "Waiting"; a real reason replaces the graph's bottom row.
         source = cpu.get("power_source") or ""
-        tall = cpu_h >= 11
-        reason = source if cpu.get("power_w") is None and not tall and not source.startswith("Waiting") else ""
-        if cpu_h >= 7:
-            self.chart(y + 3, ix, iw, "cpu", color=self.theme.OK)
+        reason = source if cpu.get("power_w") is None and not source.startswith("Waiting") else ""
         pl1, pl2 = limit("ppt_pl1_spl"), limit("ppt_pl2_sppt")
-        cpu_label = f"W {fmt(cpu.get('power_w'), '', 1)} · PL1 {fmt(pl1)} · PL2 {fmt(pl2)}"
-        cpu_ceiling = max(pl2 or 0, max((v for v in self.history["cpu_w"] if v is not None), default=0), 1)
-        cpu_marks = [(v, c) for v, c in ((pl1, self.theme.WARN), (pl2, self.theme.BAD)) if v is not None]
-        if reason and cpu_h >= 9:
-            cpu_label = f"W N/A · {reason}"
-        if cpu_h >= 9:
-            self.put(y + 4, ix, cpu_label[:iw], self.theme.WARN, dim=True)
-            self.chart_rows(y + 5, ix, iw, 3, "cpu_w", cpu_ceiling, self.theme.WARN, cpu_marks)
-            if cpu_h >= 10:
-                cores = list((cpu.get("cores") or {}).values())
-                spark = "".join("·" if c is None else SPARK[min(7, round((c or 0) * 7 / 100))] for c in cores)
-                self.put(y + 8, ix, f"cores {spark}"[:iw], self.theme.OK)
-            if tall:
-                self.put(y + 9, ix, (source or "Sampling")[:iw], self.theme.TEXT, dim=True)
-        elif cpu_h >= 8:
-            self.put(y + 4, ix, cpu_label[:iw], self.theme.WARN, dim=True)
-            self.chart(y + 4, ix + len(cpu_label) + 1, iw - len(cpu_label) - 1, "cpu_w", cpu_ceiling, self.theme.WARN)
-        if reason and cpu_h < 9:
-            self.put(y + 4 + (cpu_h - 7), ix, reason[:iw], self.theme.TEXT, dim=True)
+        self.telemetry_box(
+            y, x, cpu_h, width, "CPU", self.theme.OK,
+            (["THROTTLE"] if throttled else []) + [fmt(cpu.get("temperature_c"), "°C"), fmt(cpu.get("power_w"), "W", 1),
+                                                 fmt(None if cpu.get("clock_mhz") is None else cpu["clock_mhz"] / 1000, "GHz", 1)],
+            "cpu_w", max(pl2 or 0, max((v for v in self.history["cpu_w"] if v is not None), default=0), 1), self.theme.WARN,
+            [(v, c) for v, c in ((pl1, self.theme.WARN), (pl2, self.theme.BAD)) if v is not None],
+            reason, self.theme.BAD if throttled else None)
 
         # GPU
         gy = y + cpu_h
-        gpu_right = " · ".join(filter(None, [
-            fmt(gpu.get("utilization_pct"), "%"),
-            fmt(gpu.get("temperature_c"), "°C"),
-            fmt(gpu.get("power_w"), "W", 1),
-        ])) if gpu else "Asleep" if gpu_meta.get("suspended") else "Offline"
-        self.box(gy, x, gpu_h, width, "GPU", self.theme.GPU, gpu_right)
-        name = gpu.get("name") or gpu_meta.get("error") or "Sampling"
-        self.put(gy + 1, ix, name[:iw], self.theme.GPU, True)
         if gpu:
-            self.bar(gy + 2, ix, iw, gpu.get("utilization_pct"), self.theme.load(gpu.get("utilization_pct")))
-            self.put(gy + 3, ix,
-                     f"core {fmt(gpu.get('clock_mhz'), ' MHz')}  mem {fmt(gpu.get('memory_clock_mhz'), ' MHz')}"[:iw],
-                     self.theme.TEXT, dim=True)
-            r, last = gy + 4, gy + gpu_h - 2
-            if r <= last and gpu_h >= 7:
-                self.put(r, ix,
-                         f"vram {fmt(gpu.get('memory_used_mib'))}/{fmt(gpu.get('memory_total_mib'), ' MiB')}  "
-                         f"limit {fmt(gpu.get('power_limit_w'), ' W')}"[:iw],
-                         self.theme.TEXT, dim=True)
-                r += 1
-            reasons = gpu.get("throttle") or []
-            if reasons and r <= last:
-                self.put(r, ix, ("throttle: " + ", ".join(reasons))[:iw], self.theme.BAD)
-                r += 1
-            if r <= last and gpu_h >= 8:
-                self.chart(r, ix, iw, "gpu", color=self.theme.GPU)
-                r += 1
             ctgp, plimit = limit("gpu_nv_ctgp"), gpu.get("power_limit_w")
-            gpu_label = f"W {fmt(gpu.get('power_w'), '', 1)} · cTGP {fmt(ctgp)} · limit {fmt(plimit)}"
-            gpu_ceiling = max(ctgp or 0, plimit or 0, max((v for v in self.history["gpu_w"] if v is not None), default=0), 1)
-            gpu_marks = [(v, c) for v, c in ((ctgp, self.theme.WARN), (plimit, self.theme.BAD)) if v is not None]
-            if gpu_h >= 9 and last - r + 1 >= 4:
-                self.put(r, ix, gpu_label[:iw], self.theme.WARN, dim=True)
-                self.chart_rows(r + 1, ix, iw, min(3, last - r), "gpu_w", gpu_ceiling, self.theme.WARN, gpu_marks)
-            elif gpu_h >= 9 and r <= last:
-                self.put(r, ix, gpu_label[:iw], self.theme.WARN, dim=True)
-                self.chart(r, ix + len(gpu_label) + 1, iw - len(gpu_label) - 1, "gpu_w", gpu_ceiling, self.theme.WARN)
+            reasons = gpu.get("throttle") or []
+            self.telemetry_box(
+                gy, x, gpu_h, width, "GPU", self.theme.GPU,
+                (["THROTTLE"] if reasons else []) + [fmt(gpu.get("temperature_c"), "°C"), fmt(gpu.get("power_w"), "W", 1),
+                                                   fmt(None if gpu.get("clock_mhz") is None else gpu["clock_mhz"] / 1000, "GHz", 1)],
+                "gpu_w", max(ctgp or 0, plimit or 0, max((v for v in self.history["gpu_w"] if v is not None), default=0), 1), self.theme.WARN,
+                [(v, c) for v, c in ((ctgp, self.theme.WARN), (plimit, self.theme.BAD)) if v is not None],
+                ("throttle: " + ", ".join(reasons)) if reasons else "", self.theme.BAD if reasons else None)
+        else:
+            self.telemetry_box(gy, x, gpu_h, width, "GPU", self.theme.GPU,
+                               ["Asleep" if gpu_meta.get("suspended") else "Offline"], None, 1, 0, (),
+                               gpu_meta.get("error") or "", None)
+
+        ix, iw = x + 2, width - 4
 
         # System
         sy = gy + gpu_h
