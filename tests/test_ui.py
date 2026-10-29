@@ -683,6 +683,22 @@ class UiTests(helpers.SysfsCase):
         dash.handle(27, {})
         self.assertEqual(dash.panel, "overview")
 
+    def test_details_gpu_row_shows_mode_and_fits_the_screen(self):
+        for h, w in ((20, 72), (24, 80)):
+            puts = []
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            dash.panel, dash.view = "overview", "details"
+            gpu = {"name": "NVIDIA GeForce RTX 4060 Laptop GPU"}
+            dash.draw({"metrics": {"gpu": {"devices": [gpu]}, "gpu_mode": "Hybrid (auto)"},
+                       "attributes": {}, "modes": []})
+            self.assertTrue(any(t.startswith("GPU") and "mode Hybrid (auto)" in t for _, _, t in puts), (h, w))
+            self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
+
     def test_keyboard_page_never_cuts_a_line_mid_word_at_72x20(self):
         grid = [[" "] * 72 for _ in range(20)]
 

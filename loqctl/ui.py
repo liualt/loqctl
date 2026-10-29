@@ -637,7 +637,7 @@ class Dashboard(FanPanel):
                   row("", [f"cores {spark or 'N/A'}"], self.theme.OK)]
         mode = f"mode {metrics.get('gpu_mode') or 'N/A'}"
         if gpu:
-            lines += [row("GPU", [gpu.get("name") or "N/A", mode], self.theme.GPU),
+            lines += [row("GPU", [mode, gpu.get("name") or "N/A"], self.theme.GPU),
                       row("", [f"util {na(gpu.get('utilization_pct'), '%', 0)}", f"core {na(gpu.get('clock_mhz'), ' MHz', 0)}",
                                f"memory {na(gpu.get('memory_clock_mhz'), ' MHz', 0)}"]),
                       row("", [f"vram {na(gpu.get('memory_used_mib'), '', 0)}/{na(gpu.get('memory_total_mib'), ' MiB', 0)}",

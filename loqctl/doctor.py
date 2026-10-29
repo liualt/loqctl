@@ -49,6 +49,8 @@ def check_hwmon(root, **_):
 
 
 def check_gpu_mode(root, **_):
+    if not (Path(root) / "devices/platform/legion").is_dir():
+        return NA, "legion_laptop not loaded"
     mode = gpu_mode(root)
     if mode:
         return OK, mode
