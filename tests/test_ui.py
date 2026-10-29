@@ -1003,6 +1003,37 @@ class AnsiColorTests(unittest.TestCase):
             self.assertTrue(-1 <= fg <= 15 and -1 <= bg <= 15, (fg, bg))
 
 
+class NoColorTests(unittest.TestCase):
+    def test_no_color_marks_state_by_attribute(self):
+        t = m_ui.Theme(False)
+        self.assertEqual(t.attr(t.BAD), curses.A_BOLD | curses.A_REVERSE)
+        self.assertEqual(t.attr(t.WARN), curses.A_BOLD)
+        self.assertEqual(t.attr(t.OK), 0)
+        self.assertEqual(t.attr(t.ACCENT, bold=True), curses.A_BOLD)
+
+    def test_no_color_env_disables_theme(self):
+        for env, enabled in (({"NO_COLOR": "1"}, False), ({"NO_COLOR": ""}, True)):
+            screen = Mock()
+            screen.getmaxyx.return_value = (24, 80)
+            with patch.dict(os.environ, env), patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=True), \
+                    patch.object(curses, "start_color"), patch.object(curses, "use_default_colors"), \
+                    patch.object(curses, "init_pair"):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            self.assertEqual(dash.theme.enabled, enabled)
+
+    def test_put_carries_state_attrs_without_colors(self):
+        dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
+        dash.theme = m_ui.Theme(False)
+        dash.s = Mock()
+        dash.s.getmaxyx.return_value = (24, 80)
+        puts = []
+        dash.s.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((text, attr))
+        dash.put(0, 0, "hot", dash.theme.BAD)
+        dash.put(1, 0, "warm", dash.theme.WARN)
+        self.assertEqual(puts, [("hot", curses.A_BOLD | curses.A_REVERSE), ("warm", curses.A_BOLD)])
+
+
 class FitPartsTests(unittest.TestCase):
     def test_drops_trailing_parts_instead_of_cutting_a_number(self):
         parts = ["custom default 95", "low-power limit from firmware table"]
