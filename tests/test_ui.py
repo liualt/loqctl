@@ -200,7 +200,7 @@ class UiTests(helpers.SysfsCase):
             visited.append(rows[dashboard.selected])
             dashboard.handle(curses.KEY_DOWN, state)
         self.assertEqual(visited[0], "mode")
-        self.assertEqual(visited[1:], ["ppt_pl1_spl", "ppt_pl2_sppt", "mode", "ppt_pl1_spl"])
+        self.assertEqual(visited[1:], ["ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp", "mode"])
 
     def test_limit_detail_shows_na_for_unreadable_limits(self):
         self.hw.set_mode("custom")
