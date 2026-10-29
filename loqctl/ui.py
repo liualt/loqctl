@@ -595,7 +595,9 @@ class Dashboard(FanPanel):
         ac = metrics.get("ac_online")
         power = "AC" if ac else "Battery" if ac is False else "Power N/A"
         bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}  limit {battery.get('charge_limit') or 'N/A'}".strip()
-        self.put(sy + 2, ix, f"{power}  {bat}"[:iw], self.theme.OK if ac else self.theme.WARN)
+        health = battery.get("health_percent")
+        parts = [f"{power}  {bat}"] + ([f"health {health:.0f}%"] if health is not None else [])
+        self.put(sy + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
         if sys_h >= 6:
             fans = metrics.get("fans") or []
             fan_txt = "  ".join(f"{f['name']} {fmt(f['rpm'], 'RPM')}" for f in fans) if fans else "Fans N/A"
@@ -648,6 +650,10 @@ class Dashboard(FanPanel):
         items = [(f"  {name:<24} {na(watts, ' W')}", text, False) for name, watts in (power.get("rapl") or {}).items()]
         if "battery_w" in power:
             items.append(row("  battery", [na(power.get("battery_w"), " W"), power.get("battery_status") or "N/A"]))
+        for b in metrics.get("battery") or []:
+            wh = [f"{b['full_wh']:.1f}/{b['design_wh']:.1f} Wh"] if None not in (b.get("full_wh"), b.get("design_wh")) else []
+            items.append(row(f"  {b['name'][:8]}", [f"health {na(b.get('health_percent'), '%', 0)}",
+                                                    f"cycles {na(b.get('cycles'), '', 0)}"] + wh))
         for u in power.get("usbc") or []:
             items.append(row(f"  {u['name'][:6]}", [na(u["watts"], " W"), na(u["volts"], " V", 2), na(u["amps"], " A", 2)]))
         temps = [(f"  {t['group']:<6} {t['label'][:24]:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)

@@ -699,6 +699,27 @@ class UiTests(helpers.SysfsCase):
             self.assertTrue(any(t.startswith("GPU") and "mode Hybrid (auto)" in t for _, _, t in puts), (h, w))
             self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
 
+    def test_battery_health_fits_summary_and_details(self):
+        battery = [{"name": "BAT1", "percent": 90, "status": "Discharging", "charge_limit": "80%",
+                    "health_percent": 98.13, "cycles": 77, "full_wh": 58.88, "design_wh": 60.0}]
+        for h, w in ((20, 72), (24, 80)):
+            for view in ("summary", "details"):
+                puts = []
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+                dash.panel, dash.view = "overview", view
+                dash.draw({"metrics": {"battery": battery, "ac_online": False}, "attributes": {}, "modes": []})
+                texts = [t for _, _, t in puts]
+                if view == "summary":
+                    self.assertTrue(any("health 98%" in t for t in texts), (h, w))
+                else:
+                    self.assertTrue(any(t.strip().startswith("BAT1") and "cycles 77" in t for t in texts), (h, w))
+                self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w, view))
+
     def test_keyboard_page_never_cuts_a_line_mid_word_at_72x20(self):
         grid = [[" "] * 72 for _ in range(20)]
 
@@ -854,6 +875,7 @@ class ViewTests(unittest.TestCase):
                    "gpu": {"devices": [{"name": "NVIDIA GeForce RTX 4050 Laptop GPU", "memory_clock_mhz": 8000,
                                         "memory_used_mib": 405, "memory_total_mib": 6144, "clock_mhz": 2100}]},
                    "power": {"rapl": {"package": 21.5, "core": 9.0}, "battery_w": 0.0, "battery_status": "Charging"},
+                   "battery": [{"name": "BAT1", "health_percent": 98.1, "cycles": 77, "full_wh": 58.9, "design_wh": 60.0}],
                    "voltages": [{"label": f"Vcore {i}", "v": 1.0} for i in range(6)],
                    "temperatures": [{"group": "cpu", "label": f"Core {i}", "c": 50} for i in range(12)]}
         for h, w in ((20, 72), (24, 80)):
@@ -865,6 +887,8 @@ class ViewTests(unittest.TestCase):
                 self.assertTrue(any(t == "Power" for t in rows.values()))
                 self.assertTrue(any(t.strip().startswith("package") and "21.5" in t for t in rows.values()))
                 self.assertTrue(any(t.strip().startswith("battery") and "battery0" not in t for t in rows.values()))
+                self.assertTrue(any(t.startswith("  BAT1") and "health 98%" in t and "cycles 77" in t
+                                    for t in rows.values()))
                 self.assertTrue(all(y < h - 2 for y in rows))
                 for t in rows.values():
                     self.assertLessEqual(len(t), w - 14 - 4)

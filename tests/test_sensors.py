@@ -269,6 +269,23 @@ class TelemetryTests(unittest.TestCase):
         self.put("class/power_supply/BAT1/charge_control_end_threshold", "80")
         self.assertEqual(bat(), "80%")
 
+    def test_battery_health(self):
+        self.put("class/power_supply/BAT1/type", "Battery")
+        bat = lambda: self.sensors().sample()["battery"][0]
+        self.assertEqual([bat()[k] for k in ("cycles", "health_percent", "full_wh", "design_wh")], [None] * 4)
+        self.put("class/power_supply/BAT1/cycle_count", "77")
+        self.put("class/power_supply/BAT1/energy_full", "58880000")
+        self.put("class/power_supply/BAT1/energy_full_design", "60000000")
+        b = bat()
+        self.assertEqual((b["cycles"], b["full_wh"], b["design_wh"]), (77, 58.88, 60.0))
+        self.assertAlmostEqual(b["health_percent"], 98.13, 2)
+        self.put("class/power_supply/BAT1/energy_full_design", "0")
+        self.assertIsNone(bat()["health_percent"])
+        self.put("class/power_supply/BAT1/charge_full", "4000000")
+        self.put("class/power_supply/BAT1/charge_full_design", "5000000")
+        self.assertEqual(bat()["health_percent"], 80.0)
+        self.assertIsNone(bat()["full_wh"])
+
     def test_temperature_groups(self):
         def hw(n, name, temps):
             self.put(f"class/hwmon/hwmon{n}/name", name)
