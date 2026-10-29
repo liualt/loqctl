@@ -181,6 +181,27 @@ class UiTests(helpers.SysfsCase):
                         self.assertLessEqual(sum(t.startswith(("▶", " ")) for y, t in calls if y > 1), 4)
                         self.assertTrue(any("select custom" in t.lower() for t in lines.values()))
 
+    def test_stock_mode_cursor_visits_only_drawn_rows(self):
+        self.hw.set_mode("balanced")
+        for key in ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp", "cpu_temp"):
+            self.add_attr(key, 60, 5, 100, 1, 60)
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3, INFO=6, BAD=2)
+        dashboard.box = Mock()
+        rows = dashboard.rows(state)
+        dashboard.selected = rows.index("cpu_temp")  # left over from custom mode
+        visited = []
+        for _ in range(5):
+            calls = []
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append(str(text))
+            dashboard.draw_controls(state, 0, 0, 17, 58)
+            self.assertTrue(any(t.startswith("▶") for t in calls), rows[dashboard.selected])
+            visited.append(rows[dashboard.selected])
+            dashboard.handle(curses.KEY_DOWN, state)
+        self.assertEqual(visited[0], "mode")
+        self.assertEqual(visited[1:], ["ppt_pl1_spl", "ppt_pl2_sppt", "mode", "ppt_pl1_spl"])
+
     def test_limit_detail_shows_na_for_unreadable_limits(self):
         self.hw.set_mode("custom")
         cases = (

@@ -260,6 +260,13 @@ class Dashboard(FanPanel):
         # Gate on the LIVE mode; a staged mode never unlocks limit rows.
         return state.get("mode") != "custom"
 
+    SUMMARY = ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp")
+
+    def shown_rows(self, state):
+        "Rows the Power box draws and the cursor can visit: the mode, then the key limits in stock modes."
+        rows = self.rows(state)
+        return [k for k in rows if k == "mode" or not self.locked(state) or k in self.SUMMARY]
+
     def rows(self, state):
         attrs = state.get("attributes") or {}
         return ["mode"] + [k for k in FIELDS if k in attrs]
@@ -403,6 +410,8 @@ class Dashboard(FanPanel):
             self.put(y + 2, x + 2, "No firmware attributes exposed.", self.theme.WARN)
             return
         self.selected = clamp(self.selected, 0, len(rows) - 1)
+        if rows[self.selected] not in self.shown_rows(state):
+            self.selected = 0
         # Mode selector on top: every mode the firmware offers, the live one in brackets.
         modes, live = state.get("modes") or [], state.get("mode")
         staged_mode = self.pending.get("mode")
@@ -416,10 +425,9 @@ class Dashboard(FanPanel):
                  self.theme.WARN if staged_mode is not None else (self.theme.ACCENT if chosen else self.theme.TEXT),
                  bold=chosen)
         # Limits grouped by subsystem; a group name is a row in the list, not part of the selection.
-        entries, group = [], None
-        summary = ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp")
+        shown, entries, group = self.shown_rows(state), [], None
         for row, key in enumerate(rows[1:], 1):
-            if self.locked(state) and key not in summary:
+            if key not in shown:
                 continue  # stock modes show the few key limits, not the whole list
             name = "GPU" if key.startswith("gpu_") else "CPU"
             if name != group:
@@ -433,10 +441,10 @@ class Dashboard(FanPanel):
         start = max(0, at - visible + 1)
         if start and entries[start][0] is not None and entries[start - 1][0] is None and start - 1 + visible > at:
             start -= 1  # keep a group name above its first visible row
-        shown = entries[start:start + visible]
-        if shown and shown[-1][0] is None:
-            shown.pop()
-        for i, (row, key) in enumerate(shown):
+        window = entries[start:start + visible]
+        if window and window[-1][0] is None:
+            window.pop()
+        for i, (row, key) in enumerate(window):
             yy = list_top + i
             if row is None:
                 self.put(yy, x + 2, key, self.theme.INFO, bold=True)
@@ -468,7 +476,7 @@ class Dashboard(FanPanel):
             self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], color, dim=staged is None)
 
         if self.locked(state):
-            self.put(list_top + len(shown), x + 2, "Select custom on the mode row to edit.", self.theme.TEXT, dim=True)
+            self.put(list_top + len(window), x + 2, "Select custom on the mode row to edit.", self.theme.TEXT, dim=True)
 
         # Detail footer inside the box
         detail_y = y + height - detail_h
@@ -1135,6 +1143,9 @@ class Dashboard(FanPanel):
                 self.open_fans()
             return
         self.selected = clamp(self.selected, 0, len(rows) - 1)
+        visit = self.shown_rows(state)
+        if rows[self.selected] not in visit:
+            self.selected = 0  # the mode changed to a stock mode; the cursor was on a row that is no longer drawn
         key = rows[self.selected]
 
         stale_staged = any(k != "mode" for k in self.pending)
@@ -1173,9 +1184,9 @@ class Dashboard(FanPanel):
             if not self.apply_results:
                 self.notice = "No apply results yet. Edit a row and press Enter."
         elif ch in (curses.KEY_DOWN, ord("j")):
-            self.selected = (self.selected + 1) % len(rows)
+            self.selected = rows.index(visit[(visit.index(key) + 1) % len(visit)])
         elif ch in (curses.KEY_UP, ord("k")):
-            self.selected = (self.selected - 1) % len(rows)
+            self.selected = rows.index(visit[(visit.index(key) - 1) % len(visit)])
         elif ch == ord("r"):
             self.pending.clear()
             self.fields.clear()
