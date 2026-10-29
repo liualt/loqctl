@@ -148,7 +148,7 @@ class UiTests(helpers.SysfsCase):
         dashboard.draw_controls(state, 0, 0, 20, 50)
         row = next(c for c in calls if "CPU sustained" in c[0] or "PL1" in c[0] or c[0].startswith("▶"))
         self.assertEqual(row[1:], (7, True))
-        self.assertTrue(any("locked in balanced mode" in c[0] for c in calls))
+        self.assertTrue(any("Locked in balanced mode" in c[0] for c in calls))
 
     def test_limit_detail_shows_na_for_unreadable_limits(self):
         self.hw.set_mode("custom")
@@ -744,5 +744,14 @@ class AnsiColorTests(unittest.TestCase):
             self.assertTrue(-1 <= fg <= 15 and -1 <= bg <= 15, (fg, bg))
 
 
+class FitPartsTests(unittest.TestCase):
+    def test_drops_trailing_parts_instead_of_cutting_a_number(self):
+        parts = ["custom default 95", "low-power limit from firmware table"]
+        self.assertEqual(m_ui.fit_parts(parts, 60), "custom default 95 · low-power limit from firmware table")
+        self.assertEqual(m_ui.fit_parts(parts, 30), "custom default 95")
+        self.assertEqual(m_ui.fit_parts(parts, 10), "custom def")
+
+
 if __name__ == "__main__":
     unittest.main()
+
