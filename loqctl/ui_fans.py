@@ -306,7 +306,7 @@ class FanPanel:
             self.running = False
             return
         if ch in (ord("f"), 27):
-            self.panel = "main"
+            self.leave_section(state)
             self.notice = "Back to firmware controls." + (" Fan edits stay staged." if self.fan_edit else "")
             return
         count = len(self.fan_points())

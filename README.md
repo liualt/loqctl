@@ -54,9 +54,12 @@ Or run it in place with `python3 loqctl.py`.
 loqctl
 ```
 
+A section list on the left (Overview, Power, Fans, Keyboard) picks the page on the right. Sections the laptop does not support are hidden. Overview shows telemetry only; Power holds the firmware controls.
+
 | Key | Action |
 | --- | --- |
-| `↑↓` / `j k` | Select a control |
+| `Tab`, `Shift+Tab` | Next or previous section (`↑↓` on Overview). On the fan panel `Tab` keeps selecting curve points |
+| `↑↓` / `j k` | Select a control (Power) |
 | `←→` / `- +` | Stage one step (on the mode row: cycle modes) |
 | `0-9` / `Backspace` | Type into the selected limit (custom mode); the old value is struck through |
 | `Enter` | Apply all staged edits, each write verified (refuses while a value is marked red). On the mode row: `←→` choose, `Enter` applies |

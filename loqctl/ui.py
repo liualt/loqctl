@@ -124,14 +124,18 @@ class Dashboard(FanPanel):
     MIN_W, MIN_H = 72, 20
     # Footer entries in priority order. footer_hint() drops from the end to fit.
     HINTS = {
-        "main": ("↑↓ select", "←→ adjust", "Enter apply", "l keyboard", "f fans", "0-9 type", "Esc clear",
-                 "d default", "r discard", "t sensors", "m modes", "Space pause", "v results"),
+        "overview": ("Tab section", "↑↓ section", "t sensors", "m modes", "Space pause", "v results"),
+        "main": ("Tab section", "↑↓ select", "←→ adjust", "Enter apply", "0-9 type", "Esc clear",
+                 "d default", "r discard", "m modes", "Space pause", "v results"),
         "fans": ("←→ point", "↑↓ speed", "Enter apply", "Esc back", "r discard", "W save", "R stock",
                  "p curves", "d details"),
-        "keyboard": ("1–4 zone", "←→ adjust HSV", "↑↓ channel", "Enter apply", "Esc back", "e effect",
+        "keyboard": ("Tab section", "1–4 zone", "←→ adjust HSV", "↑↓ channel", "Enter apply", "Esc back", "e effect",
                      "b bright", "c copy-all", "Space live"),
     }
     show_limits = False
+    panel = "main"  # instances built without __init__ (tests) act as Power
+    NAV_W = 13
+    SECTION_LABELS = {"overview": "Overview", "main": "Power", "fans": "Fans", "keyboard": "Keyboard"}
 
     def __init__(self, screen, backend, sudo_ok=True):
         self.s, self.backend = screen, backend
@@ -148,8 +152,8 @@ class Dashboard(FanPanel):
         self.help = False
         self.running = True
         self.paused = False
-        self.panel = "main"  # main | keyboard | fans
-        self.view = "summary"  # summary | sensors (main panel only)
+        self.panel = "overview"  # overview | main (Power) | fans | keyboard
+        self.view = "summary"  # summary | sensors (overview only)
         self.theme = Theme(curses.has_colors())
         self.keyboard = Keyboard()
         self.kb_zone = 0
@@ -301,12 +305,16 @@ class Dashboard(FanPanel):
         self.put(0, max(len(title) + 2, (w - len(mid)) // 2), mid, self.theme.OK)
         self.put(0, w - len(access) - 3, f" {access} ", self.theme.GPU if access == "API" else self.theme.WARN)
 
+        self.draw_nav(state, 1, 0, h - 3, self.NAV_W)
+        cx, cw = self.NAV_W + 1, w - self.NAV_W - 1
         if self.panel == "keyboard":
-            self.draw_keyboard(1, 0, h - 3, w)
+            self.draw_keyboard(1, cx, h - 3, cw)
         elif self.panel == "fans":
-            self.draw_fans(state, metrics, 1, 0, h - 3, w)
+            self.draw_fans(state, metrics, 1, cx, h - 3, cw)
+        elif self.panel == "overview":
+            self.draw_overview(state, metrics, 1, cx, h - 3, cw)
         else:
-            self.draw_main(state, metrics, 1, 0, h - 3, w)
+            self.draw_main(state, metrics, 1, cx, h - 3, cw)
 
         # Status + keys
         stamp = metrics.get("timestamp")
@@ -327,15 +335,56 @@ class Dashboard(FanPanel):
             self.draw_limits(state)
         self.s.refresh()
 
-    def draw_main(self, state, metrics, y, x, height, width):
-        left_w = clamp(width * 42 // 100, 34, 58)
-        right_x = x + left_w + 1
-        right_w = width - left_w - 1
-        self.draw_controls(state, y, x, height, left_w)
-        if self.view == "sensors":
-            self.draw_sensors(metrics, y, right_x, height, right_w)
+    def sections(self, state):
+        "Section ids the laptop supports. Fans stay listed so a missing curve can explain itself there."
+        found = ["overview"]
+        if self.rows(state):
+            found.append("main")
+        found.append("fans")
+        if self.keyboard.available:
+            found.append("keyboard")
+        return found
+
+    def draw_nav(self, state, y, x, height, width):
+        self.box(y, x, height, width, "", self.theme.ACCENT)
+        for i, name in enumerate(self.sections(state)[: max(0, height - 2)]):
+            current = name == self.panel
+            label = ("▶ " if current else "  ") + self.SECTION_LABELS[name]
+            self.put(y + 1 + i, x + 1, label[: width - 2], self.theme.ACCENT if current else self.theme.TEXT,
+                     current, not current)
+
+    def goto_section(self, name):
+        if name == "fans":
+            self.open_fans()
+        elif name == "keyboard":
+            self.open_keyboard()
         else:
-            self.draw_telemetry(state, metrics, y, right_x, height, right_w)
+            self.panel = name
+            self.notice = "Ready."
+
+    def leave_section(self, state):
+        "Back from Fans or Keyboard to Power, or to Overview when Power is hidden."
+        self.panel = "main" if self.rows(state) else "overview"
+
+    def open_keyboard(self):
+        self.panel = "keyboard"
+        self.keyboard.recheck()
+        self.keyboard.load()
+        self.notice = "Keyboard lighting. Esc returns."
+
+    def step_section(self, state, direction):
+        found = self.sections(state)
+        at = found.index(self.panel) if self.panel in found else 0
+        self.goto_section(found[(at + direction) % len(found)])
+
+    def draw_overview(self, state, metrics, y, x, height, width):
+        if self.view == "sensors":
+            self.draw_sensors(metrics, y, x, height, width)
+        else:
+            self.draw_telemetry(state, metrics, y, x, height, width)
+
+    def draw_main(self, state, metrics, y, x, height, width):
+        self.draw_controls(state, y, x, height, width)
 
     def draw_controls(self, state, y, x, height, width):
         pending_n = len(self.pending)
@@ -607,8 +656,9 @@ class Dashboard(FanPanel):
         self.box(y, x, height, width, "Keyboard (LegionAura)", self.theme.GPU, status)
         ix, iw = x + 2, width - 4
         if not kb.available:
-            self.put(y + 2, ix, "Install LegionAura (AUR: legionaura) for 4-zone RGB control.", self.theme.WARN)
-            self.put(y + 4, ix, "Esc returns to firmware controls.", self.theme.TEXT, dim=True)
+            self.put(y + 2, ix, "Install LegionAura (AUR: legionaura)", self.theme.WARN)
+            self.put(y + 3, ix, "for 4-zone RGB control.", self.theme.WARN)
+            self.put(y + 5, ix, "Esc returns to firmware controls.", self.theme.TEXT, dim=True)
             return
 
         # Effect row
@@ -616,10 +666,10 @@ class Dashboard(FanPanel):
         for name in kb.EFFECTS:
             tag = f"[{name}]" if name == kb.effect else f" {name} "
             effects.append(tag)
-        self.put(y + 1, ix, "effect  " + " ".join(effects), self.theme.ACCENT)
+        self.put(y + 1, ix, fit_parts(["effect  " + " ".join(effects)], iw, ""), self.theme.ACCENT)
         bright = "low" if kb.brightness == 1 else "high"
         wave = f"  wave {kb.wave_dir}" if kb.effect == "wave" else ""
-        self.put(y + 2, ix, f"brightness  {bright}   speed {kb.speed}/4{wave}", self.theme.TEXT, dim=True)
+        self.put(y + 2, ix, fit_parts([f"brightness  {bright}", f"speed {kb.speed}/4", wave.strip()], iw, "   "), self.theme.TEXT, dim=True)
 
         # Zones
         self.put(y + 4, ix, "zones", self.theme.TEXT, dim=True)
@@ -644,7 +694,7 @@ class Dashboard(FanPanel):
         h_deg, s_pct, v_pct = rgb_to_hsv(*rgb)
         channels = (("H", h_deg, 360, "°"), ("S", s_pct, 100, "%"), ("V", v_pct, 100, "%"))
         cy = y + 9
-        self.put(cy, ix, f"zone {self.kb_zone + 1}  HSV picker  (terminal swatch ≈ nearest ANSI)", self.theme.ACCENT)
+        self.put(cy, ix, fit_parts([f"zone {self.kb_zone + 1}  HSV picker", "(terminal swatch ≈ nearest ANSI)"], iw, "  "), self.theme.ACCENT)
         for i, (name, value, ceiling, unit) in enumerate(channels):
             yy = cy + 1 + i
             chosen = i == self.kb_channel
@@ -656,11 +706,11 @@ class Dashboard(FanPanel):
             self.put(yy, ix + 5 + bar_w, f" {value:5.1f}{unit}", self.theme.TEXT, dim=not chosen)
 
         tip_y = min(y + height - 3, cy + 5)
-        self.put(tip_y, ix, "Hardware shows the true color. UI uses your terminal theme only.", self.theme.TEXT, dim=True)
+        self.put(tip_y, ix, fit_parts(["Hardware shows the true color.", "UI uses your terminal theme only."], iw, " "), self.theme.TEXT, dim=True)
         self.put(tip_y + 1, ix, f"config {kb.config}"[:iw], self.theme.TEXT, dim=True)
 
     HELP_LINES = (
-        "Global    t sensors   Space pause   ? help   q quit",
+        "Global    Tab section t sensors  Space pause  ? help  q quit",
         "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
         "          0-9 type a value   Backspace delete   Esc clear",
         "          Enter apply all   d custom default   r discard all",
@@ -938,10 +988,10 @@ class Dashboard(FanPanel):
         self.kb_set_hsv(h, s, v)
         self.notice = f"Zone {self.kb_zone + 1} → #{self.keyboard.zones[self.kb_zone]}"
 
-    def handle_keyboard(self, ch):
+    def handle_keyboard(self, ch, state):
         kb = self.keyboard
         if ch in (27, ord("l")):
-            self.panel = "main"
+            self.leave_section(state)
             self.notice = "Back to firmware controls."
             return
         if ch == ord("q"):
@@ -1032,16 +1082,24 @@ class Dashboard(FanPanel):
             elif ch == ord("q"):
                 self.running = False
             return
-        if ch == ord("?") and getattr(self, "panel", "main") != "main":
+        if ch == ord("?") and getattr(self, "panel", "main") not in ("main", "overview"):
             self.help = True
             return
+        if ch in (9, curses.KEY_BTAB) and self.panel != "fans":  # the fan panel keeps Tab for curves
+            self.step_section(state, -1 if ch == curses.KEY_BTAB else 1)
+            return
+        if self.panel == "overview" and ch in (curses.KEY_UP, curses.KEY_DOWN, ord("j"), ord("k")):
+            self.step_section(state, 1 if ch in (curses.KEY_DOWN, ord("j")) else -1)
+            return
         if getattr(self, "panel", "main") == "keyboard":
-            self.handle_keyboard(ch)
+            self.handle_keyboard(ch, state)
             return
         if getattr(self, "panel", "main") == "fans":
             self.handle_fans(ch, state)
             return
 
+        if self.panel == "overview" and ch not in map(ord, "q?tmlf sv"):
+            return  # the overview is read-only; edits belong to Power
         rows = self.rows(state)
         if not rows:
             if ch == ord("q"):
@@ -1051,10 +1109,7 @@ class Dashboard(FanPanel):
             elif ch == ord("t"):
                 self.view = "sensors" if self.view == "summary" else "summary"
             elif ch == ord("l"):
-                self.panel = "keyboard"
-                self.keyboard.recheck()
-                self.keyboard.load()
-                self.notice = "Keyboard lighting."
+                self.open_keyboard()
             elif ch == ord("f"):
                 self.open_fans()
             return
@@ -1081,10 +1136,7 @@ class Dashboard(FanPanel):
         elif ch == ord("t"):
             self.view = "sensors" if self.view == "summary" else "summary"
         elif ch == ord("l"):
-            self.panel = "keyboard"
-            self.keyboard.recheck()
-            self.keyboard.load()
-            self.notice = "Keyboard lighting. Esc returns."
+            self.open_keyboard()
         elif ch == ord("f"):
             self.open_fans()
         elif ch == ord(" "):
