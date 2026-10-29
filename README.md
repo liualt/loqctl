@@ -30,19 +30,17 @@ If the first command fails, loqctl can still show telemetry but cannot change fi
 
 ```sh
 git clone <this repository> && cd loqctl
-install -d ~/.local/lib/loqctl && cp -r loqctl loqctl.py ~/.local/lib/loqctl/ \
-  && python3 -m compileall -q ~/.local/lib/loqctl \
-  && ln -sf ~/.local/lib/loqctl/loqctl.py ~/.local/bin/loqctl   # make sure ~/.local/bin is on PATH
+make install PREFIX=$HOME/.local   # user install; make sure ~/.local/bin is on PATH
 loqctl --version
 ```
 
 This user install is for the dashboard only. If you run loqctl with sudo (including for the dashboard's writes), install it to a root-owned path instead:
 
 ```sh
-sudo install -d /usr/local/lib/loqctl && sudo cp -r loqctl loqctl.py /usr/local/lib/loqctl/ \
-  && sudo python3 -m compileall -q /usr/local/lib/loqctl \
-  && sudo ln -sf /usr/local/lib/loqctl/loqctl.py /usr/local/bin/loqctl
+sudo make install                  # PREFIX defaults to /usr/local
 ```
+
+`make uninstall` (same `PREFIX`) removes it. Packagers can set `DESTDIR` and `PREFIX`. Autostart at login is a separate step that `make install` does not do.
 
 When sudo runs a user-writable file, any process running as you can gain root by editing it.
 
