@@ -63,7 +63,7 @@ class Keyboard:
             return self._load_failed("no config yet")
         except OSError:
             return self._load_failed("config not readable")
-        except (json.JSONDecodeError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             return self._load_failed("config is not valid JSON")
         if not isinstance(data, dict):
             return self._load_failed("config is not a JSON object")
