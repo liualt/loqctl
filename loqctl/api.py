@@ -83,7 +83,20 @@ def _api_classes():
                 self.end_headers()
                 self.wfile.write(data)
 
+            def fail(self, exc):
+                print(f"loqctl: {self.command} {self.path} failed: {type(exc).__name__}", file=sys.stderr, flush=True)
+                try:
+                    self.reply(500, {"error": type(exc).__name__})
+                except OSError:
+                    pass
+
             def do_GET(self):
+                try:
+                    self.get()
+                except Exception as exc:
+                    self.fail(exc)
+
+            def get(self):
                 if self.path == "/v1/status":
                     self.reply(200, self.server.sampler.latest)
                 elif self.path == "/v1/metrics":
@@ -118,6 +131,8 @@ def _api_classes():
                         refresh()
                 except (ControlError, ValueError, TypeError) as exc:
                     self.reply(400, {"error": str(exc)})
+                except Exception as exc:
+                    self.fail(exc)
         _API = {"UnixHTTP": UnixHTTP, "APIServer": APIServer, "Handler": Handler}
     return _API
 

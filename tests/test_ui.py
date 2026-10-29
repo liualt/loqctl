@@ -740,6 +740,28 @@ class UiTests(helpers.SysfsCase):
                     self.assertIn("CUSTOM", text[0], (h, w))
                     self.assertIn("API", text[0], (h, w))
 
+    def test_failed_poll_shows_error_and_na_readings(self):
+        backend = m_backend.Backend(str(self.root / "none.sock"))
+        backend.stop = Mock(is_set=Mock(side_effect=[False, True]))
+        backend.wake = Mock()
+        backend.latest = {"mode": "custom", "metrics": {"cpu": {"temp_c": 61}}}
+        with patch.object(m_backend, "request", side_effect=OSError("gone")), \
+                patch.object(m_backend.threading, "Thread", lambda target, daemon: Mock(start=target)):
+            backend.remote = True
+            backend.start()
+        self.assertNotIn("metrics", backend.latest)
+        self.assertEqual(backend.latest["mode"], "custom")
+        puts = []
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 80)
+        screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append(text[:n])
+        with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                patch.object(curses, "has_colors", return_value=False):
+            dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+        dash.draw(backend.latest)
+        self.assertTrue(any("API connection failed" in t for t in puts))
+        self.assertFalse(any("61" in t for t in puts))
+
     def test_battery_health_fits_summary_and_details(self):
         battery = [{"name": "BAT1", "percent": 90, "status": "Discharging", "charge_limit": "80%",
                     "health_percent": 98.13, "cycles": 77, "full_wh": 58.88, "design_wh": 60.0}]

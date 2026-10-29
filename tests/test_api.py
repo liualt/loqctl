@@ -41,6 +41,29 @@ class ApiTests(helpers.SysfsCase):
             worker.join()
 
 
+class HandlerErrorTests(helpers.SysfsCase):
+    def test_unexpected_error_gets_500_without_message(self):
+        sampler = type("Sampler", (), {"latest": {"metrics": {"x": float("nan")}}})()
+        path = str(self.root / "err.sock")
+        server = m_api.APIServer(path, self.hw, sampler, os.getuid())
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            err = io.StringIO()
+            with patch.object(sys, "stderr", err), self.assertRaises(m_common.ControlError) as cm:
+                m_api.request(path, "GET", "/v1/status")
+            self.assertEqual(str(cm.exception), "ValueError")
+            with patch.object(self.hw, "set_mode", side_effect=OSError("secret path")), \
+                    patch.object(sys, "stderr", err), self.assertRaises(m_common.ControlError) as cm:
+                m_api.request(path, "POST", "/v1/mode", {"mode": "custom"})
+            self.assertEqual(str(cm.exception), "OSError")
+            self.assertNotIn("secret", err.getvalue())
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
+
+
 class ServerSamplerTests(unittest.TestCase):
     def setUp(self):
         self.root = helpers.make_root(self)
