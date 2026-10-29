@@ -1293,7 +1293,8 @@ class Dashboard(FanPanel):
                 stamp = (state.get("metrics") or {}).get("timestamp")
                 seen = (stamp, state.get("error"), state.get("mode"), self.keyboard.last_seq, self.notice,
                         self.s.getmaxyx(), stamp is not None and time.time() - stamp > 5,
-                        self.paused, self.sudo_expired)
+                        self.paused, self.sudo_expired, state.get("stale"),
+                        getattr(self, "fan_loading", None), getattr(self, "fan_result", None) is not None)
                 if seen != drawn:
                     self.draw(state)
                     drawn = seen

@@ -81,6 +81,30 @@ class UiTests(helpers.SysfsCase):
         # First frame, then one redraw after the key press; idle timeouts draw nothing.
         self.assertEqual(dashboard.draw.call_count, 2)
 
+    def test_frozen_timestamp_still_adopts_fan_result(self):
+        dashboard = self.dashboard()
+        dashboard.running = True
+        dashboard.paused = False
+        dashboard.notice = "Ready."
+        dashboard.fan_result = None
+        dashboard.keyboard = Mock(last_seq=0)
+        dashboard.backend.start = dashboard.backend.close = lambda: None
+        stamp = time.time()
+        dashboard.backend.state = lambda: {"mode": "custom", "metrics": {"timestamp": stamp}}
+        passes = []
+        def getch():
+            passes.append(1)
+            if len(passes) == 2:
+                dashboard.fan_result = {"curve": []}  # the loader thread finished
+            if len(passes) == 4:
+                dashboard.running = False
+            return -1
+        dashboard.s = Mock(getch=getch, getmaxyx=lambda: (40, 120))
+        dashboard.MIN_H = dashboard.MIN_W = 1
+        dashboard.draw = Mock()
+        dashboard.run()
+        self.assertEqual(dashboard.draw.call_count, 2)
+
     def test_dashboard_mode_lock(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()
