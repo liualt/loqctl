@@ -57,6 +57,30 @@ class UiTests(helpers.SysfsCase):
         self.assertEqual(dashboard.pending, {"cpu_temp": 90})
         self.assertEqual([r["status"] for r in dashboard.apply_results], ["APPLIED", "FAILED"])
 
+    def test_idle_run_loop_draws_only_on_change(self):
+        dashboard = self.dashboard()
+        dashboard.running = True
+        dashboard.paused = False
+        dashboard.notice = "Ready."
+        dashboard.keyboard = Mock(last_seq=0)
+        dashboard.backend.start = dashboard.backend.close = lambda: None
+        stamp = time.time()
+        dashboard.backend.state = lambda: {"mode": "custom", "metrics": {"timestamp": stamp}}
+        keys = iter([-1, -1, -1, ord("x"), -1])
+        def getch():
+            try:
+                return next(keys)
+            except StopIteration:
+                dashboard.running = False
+                return -1
+        dashboard.s = Mock(getch=getch, getmaxyx=lambda: (40, 120))
+        dashboard.MIN_H = dashboard.MIN_W = 1
+        dashboard.draw = Mock()
+        dashboard.handle = Mock()
+        dashboard.run()
+        # First frame, then one redraw after the key press; idle timeouts draw nothing.
+        self.assertEqual(dashboard.draw.call_count, 2)
+
     def test_dashboard_mode_lock(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()
