@@ -637,14 +637,15 @@ class Dashboard(FanPanel):
         lines += [row("CPU", [f"util {na(cpu.get('utilization_pct'), '%', 0)}", f"avg {na(cpu.get('clock_mhz'), ' MHz', 0)}",
                               f"max {na(cpu.get('max_clock_mhz'), ' MHz', 0)}", cpu.get("power_source") or "N/A"]),
                   row("", [f"cores {spark or 'N/A'}"], self.theme.OK)]
+        mode = f"mode {metrics.get('gpu_mode') or 'N/A'}"
         if gpu:
-            lines += [row("GPU", [gpu.get("name") or "N/A"], self.theme.GPU),
+            lines += [row("GPU", [mode, gpu.get("name") or "N/A"], self.theme.GPU),
                       row("", [f"util {na(gpu.get('utilization_pct'), '%', 0)}", f"core {na(gpu.get('clock_mhz'), ' MHz', 0)}",
                                f"memory {na(gpu.get('memory_clock_mhz'), ' MHz', 0)}"]),
                       row("", [f"vram {na(gpu.get('memory_used_mib'), '', 0)}/{na(gpu.get('memory_total_mib'), ' MiB', 0)}",
                                f"limit {na(gpu.get('power_limit_w'), ' W')}"])]
         else:
-            lines.append(row("GPU", ["N/A"]))
+            lines.append(row("GPU", ["N/A", mode]))
         power = metrics.get("power") or {}
         items = [(f"  {name:<24} {na(watts, ' W')}", text, False) for name, watts in (power.get("rapl") or {}).items()]
         if "battery_w" in power:

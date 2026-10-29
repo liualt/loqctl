@@ -103,7 +103,8 @@ class CliTests(helpers.SysfsCase):
         self.assertEqual(states["legion_laptop hwmon"], "missing")
         self.assertEqual(states["debugfs capdata"], "missing")
         self.assertEqual(states["msr"], "n/a")
-        self.assertEqual(len(states), 10)
+        self.assertEqual(len(states), 11)
+        self.assertEqual(states["GPU mode"], "n/a")
 
     def test_doctor_msr_unreadable_is_missing(self):
         proc = self.root / "proc"

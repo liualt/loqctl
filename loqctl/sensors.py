@@ -137,6 +137,15 @@ def battery_health(p):
             "design_wh": design or None, "health_percent": full / design * 100 if design else None}
 
 
+GPU_MODES = {("0", "0"): "dGPU only", ("1", "0"): "Hybrid", ("1", "1"): "iGPU only", ("1", "2"): "Hybrid (auto)"}
+
+
+def gpu_mode(root):
+    """Firmware GPU mode from legion_laptop's gsync and igpumode (read-only); None when unknown."""
+    base = Path(root) / "devices/platform/legion"
+    return GPU_MODES.get((read(base / "gsync"), read(base / "igpumode")))
+
+
 class Sensors:
     def __init__(self, root=Path("/sys"), proc=Path("/proc"), dev=Path("/dev")):
         self.root, self.proc, self.dev = Path(root), Path(proc), Path(dev)
@@ -438,7 +447,7 @@ class Sensors:
                         "power_w": power, "power_source": power_source,
                         "clock_mhz": sum(mhz) / len(mhz) if mhz else None,
                         "max_clock_mhz": max(mhz) if mhz else None},
-                "gpu": gpu, "memory": {"total_mib": total,
+                "gpu": gpu, "gpu_mode": gpu_mode(self.root), "memory": {"total_mib": total,
                     "used_mib": total - available if total is not None and available is not None else None},
                 "battery": battery, "ac_online": any(ac) if ac else None, "fans": fans,
                 "power": {"rapl": rapl, "battery_w": slow["battery_w"],
