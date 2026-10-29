@@ -4,6 +4,10 @@ PREFIX ?= /usr/local
 LIBDIR  = $(PREFIX)/lib/loqctl
 BINDIR  = $(PREFIX)/bin
 NEWDIR  = $(DESTDIR)$(LIBDIR).new
+SHAREDIR = $(DESTDIR)$(PREFIX)/share
+BASHCOMP = $(SHAREDIR)/bash-completion/completions/loqctl
+ZSHCOMP  = $(SHAREDIR)/zsh/site-functions/_loqctl
+FISHCOMP = $(SHAREDIR)/fish/vendor_completions.d/loqctl.fish
 
 install:
 	@case "$(PREFIX)" in /*) ;; *) echo "PREFIX must be an absolute path, got '$(PREFIX)'" >&2; exit 1;; esac
@@ -16,6 +20,9 @@ install:
 	rm -rf "$(DESTDIR)$(LIBDIR)"
 	mv "$(NEWDIR)" "$(DESTDIR)$(LIBDIR)"
 	ln -sf "$(LIBDIR)/loqctl.py" "$(DESTDIR)$(BINDIR)/loqctl"
+	install -D -m 644 contrib/completions/loqctl.bash "$(BASHCOMP)"
+	install -D -m 644 contrib/completions/_loqctl "$(ZSHCOMP)"
+	install -D -m 644 contrib/completions/loqctl.fish "$(FISHCOMP)"
 
 uninstall:
 	@if [ -L "$(DESTDIR)$(BINDIR)/loqctl" ] && [ "$$(readlink "$(DESTDIR)$(BINDIR)/loqctl")" = "$(LIBDIR)/loqctl.py" ]; then \
@@ -24,6 +31,7 @@ uninstall:
 		echo "$(DESTDIR)$(BINDIR)/loqctl is not loqctl's symlink, leaving it" >&2; \
 	fi
 	rm -rf "$(DESTDIR)$(LIBDIR)"
+	rm -f "$(BASHCOMP)" "$(ZSHCOMP)" "$(FISHCOMP)"
 
 test:
 	python3 -m unittest discover -s tests
