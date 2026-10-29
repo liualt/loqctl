@@ -40,6 +40,16 @@ def limit_note(state, items):
     where = "not bound to any driver" if holder == "no driver" else f"held by {holder}"
     return f"Gamezone WMI device {where}, limits can't be read; see README"
 
+def fit_parts(parts, width, sep=" · "):
+    """Join parts most important first, dropping trailing ones that do not fit, so a number is never cut mid-way."""
+    out = ""
+    for part in parts:
+        joined = f"{out}{sep}{part}" if out else part
+        if len(joined) > width:
+            break
+        out = joined
+    return out or parts[0][:width]
+
 class Theme:
     """UI colors from the terminal palette only. Never redefines RGB."""
 
@@ -397,14 +407,15 @@ class Dashboard(FanPanel):
         elif self.locked(state):
             item, mode = state["attributes"][key], state.get("mode") or "N/A"
             if item.get("effective_value") is not None:
-                note = f"{mode} limit from firmware table · custom default {fmt(item['default_value'])}"
+                note = fit_parts([f"custom default {fmt(item['default_value'])}", f"{mode} limit from firmware table"],
+                                 width - 4)
             else:
                 reason = state.get("mode_limits_error")
                 note = limit_note(state, {key: item}) or (
                     reason if reason and not reason.startswith("needs root") else
                     "Stock-mode limits need root: press s or run sudo loqctl serve")
             self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
-            self.put(detail_y + 2, x + 2, f"Limits are locked in {mode} mode; select custom on the mode row."[: width - 4],
+            self.put(detail_y + 2, x + 2, fit_parts([f"Locked in {mode} mode", "select custom on the mode row"], width - 4, "; "),
                      self.theme.TEXT, dim=True)
         else:
             item = state["attributes"][key]
@@ -417,8 +428,9 @@ class Dashboard(FanPanel):
             else:
                 self.put(detail_y + 1, x + 2, key, self.theme.ACCENT)
             self.put(detail_y + 2, x + 2,
-                     f"{fmt(item['min_value'])}–{fmt(item['max_value'])} {item['unit']}  ·  step {step_txt}  ·  default {fmt(item['default_value'])}"
-                     [: width - 4], self.theme.TEXT, dim=True)
+                     fit_parts([f"{fmt(item['min_value'])}–{fmt(item['max_value'])} {item['unit']}",
+                                f"default {fmt(item['default_value'])}", f"step {step_txt}"], width - 4),
+                     self.theme.TEXT, dim=True)
 
     def draw_telemetry(self, state, metrics, y, x, height, width):
         cpu = metrics.get("cpu") or {}

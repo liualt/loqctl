@@ -241,7 +241,7 @@ class UiTests(Sim):
         dash.draw_controls(m_hardware.Hardware(self.root).capabilities(), 0, 0, 20, 70)
         text = self.text(dash)
         self.assertIn("CPU sustained / PL1  60 W", text)
-        self.assertIn("balanced limit from firmware table · custom default 60", text)
+        self.assertIn("custom default 60 · balanced limit from firmware table", text)
 
     def test_stock_row_without_table_is_na(self):
         dash = self.dash()
