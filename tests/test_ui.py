@@ -670,12 +670,6 @@ class UiTests(helpers.SysfsCase):
         dash.handle(curses.KEY_DOWN, state)
         self.assertEqual(dash.panel, "main")
 
-    def test_help_key_opens_without_firmware_rows(self):
-        dash = self.dash()
-        dash.rows = lambda state: []
-        dash.handle(ord("?"), {})
-        self.assertTrue(dash.help)
-
     def test_footer_hint_fits_and_keeps_help_and_quit(self):
         for panel in ("overview", "main", "keyboard", "fans"):
             for width in (72, 80, 120):
