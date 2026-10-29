@@ -44,6 +44,11 @@ def writable_points(points):
 
 def write_atomic(path, points):
     """{"version": 1, "points": ...} via tmp + os.replace, mode 0600."""
+    return write_json_atomic(path, {"version": 1, "points": writable_points(points)})
+
+
+def write_json_atomic(path, data):
+    """`data` as JSON via tmp + os.replace, mode 0600."""
     path = Path(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -51,7 +56,7 @@ def write_atomic(path, points):
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as handle:
             os.fchmod(handle.fileno(), 0o600)
-            json.dump({"version": 1, "points": writable_points(points)}, handle)
+            json.dump(data, handle)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
@@ -110,8 +115,8 @@ def save_named(points):
     return write_atomic(config_dir() / "curves" / (time.strftime("saved-%Y%m%d-%H%M%S") + ".json"), points)
 
 
-def read_curve_file(path, uid=None):
-    """Points from a curve file. With `uid`, the file must belong to that user and not be
+def read_json_file(path, uid=None):
+    """The parsed JSON of a small regular file. With `uid`, the file must belong to that user and not be
     group/world-writable (the check runs on the opened descriptor). Errors name only the file,
     since the server logs them."""
     name = os.path.basename(path)
@@ -123,19 +128,26 @@ def read_curve_file(path, uid=None):
     with os.fdopen(fd) as handle:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE:
-            raise ControlError(f"{name} is not a regular curve file.")
+            raise ControlError(f"{name} is not a regular file.")
         os.set_blocking(handle.fileno(), True)
         if uid is not None and (info.st_uid != uid or info.st_mode & 0o022):
             raise ControlError(f"{name} must be owned by uid {uid} and not group/world-writable.")
         try:
             raw = handle.buffer.read(MAX_FILE + 1)
             if len(raw) > MAX_FILE:
-                raise ControlError(f"{name} is not a regular curve file.")
+                raise ControlError(f"{name} is not a regular file.")
             data = json.loads(raw.decode())
         except ControlError:
             raise
         except ValueError as exc:  # UnicodeDecodeError is one
             raise ControlError(f"{name} is not valid JSON.") from exc
+    return data
+
+
+def read_curve_file(path, uid=None):
+    """Points from a curve file; `uid` is passed to read_json_file."""
+    name = os.path.basename(path)
+    data = read_json_file(path, uid)
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("points"), list):
         raise ControlError(f"{name} is not a version 1 fan curve.")
     return data["points"]
