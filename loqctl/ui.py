@@ -27,6 +27,16 @@ def strike(text):
     return "".join(c + "\u0336" for c in str(text))
 
 
+def battery_left(b):
+    "Time text for one battery metrics dict, such as '2 h 15 min left' or '40 min to full'; '' when unknown."
+    minutes = b.get("time_remaining_min")
+    if minutes is None:
+        return ""
+    h, m = divmod(round(minutes), 60)
+    span = f"{h} h {m:02d} min" if h else f"{m} min"
+    return f"{span} {'to full' if b.get('time_kind') == 'to full' else 'left'}"
+
+
 def limit_note(state, items):
     """Why limits read N/A: the first non-EINVAL read error among items, else the gamezone note, else None.
 
@@ -601,9 +611,11 @@ class Dashboard(FanPanel):
         battery = next(iter(metrics.get("battery") or []), {})
         ac = metrics.get("ac_online")
         power = "AC" if ac else "Battery" if ac is False else "Power N/A"
-        bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}  limit {battery.get('charge_limit') or 'N/A'}".strip()
+        bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}".strip()
         health = battery.get("health_percent")
-        parts = [f"{power}  {bat}"] + ([f"health {health:.0f}%"] if health is not None else [])
+        left = battery_left(battery)
+        parts = ([f"{power}  {bat}"] + ([left] if left else []) + ([f"health {health:.0f}%"] if health is not None else [])
+                 + [f"limit {battery.get('charge_limit') or 'N/A'}"])
         self.put(sy + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
         if sys_h >= 6:
             fans = metrics.get("fans") or []
@@ -660,7 +672,7 @@ class Dashboard(FanPanel):
         for b in metrics.get("battery") or []:
             wh = [f"{b['full_wh']:.1f}/{b['design_wh']:.1f} Wh"] if None not in (b.get("full_wh"), b.get("design_wh")) else []
             items.append(row(f"  {b['name'][:8]}", [f"health {na(b.get('health_percent'), '%', 0)}",
-                                                    f"cycles {na(b.get('cycles'), '', 0)}"] + wh))
+                                                    f"cycles {na(b.get('cycles'), '', 0)}"] + ([battery_left(b)] if battery_left(b) else []) + wh))
         for u in power.get("usbc") or []:
             items.append(row(f"  {u['name'][:6]}", [na(u["watts"], " W"), na(u["volts"], " V", 2), na(u["amps"], " A", 2)]))
         temps = [(f"  {t['group']:<6} {t['label'][:24]:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)
