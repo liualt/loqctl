@@ -485,7 +485,8 @@ class Dashboard(FanPanel):
                       note="", alert=None):
         """One box: the numbers go in the title, one power graph fills the inside, an optional note takes the last row."""
         self.box(y, x, height, width, name, color)
-        text = fit_parts(parts, max(0, width - len(name) - 8)) if width - len(name) > 8 else ""
+        room = width - len(name) - 8
+        text = fit_parts(parts, room) if room > 0 and len(parts[0]) <= room else ""
         if text:
             self.put(y, x + len(name) + 4, f"{text} ", alert if alert is not None else color, alert is not None)
         ix, iw = x + 2, width - 4
@@ -527,7 +528,7 @@ class Dashboard(FanPanel):
             y, x, cpu_h, width, "CPU", self.theme.OK,
             (["THROTTLE"] if throttled else []) + [fmt(cpu.get("temperature_c"), "°C"), fmt(cpu.get("power_w"), "W", 1),
                                                  fmt(None if cpu.get("clock_mhz") is None else cpu["clock_mhz"] / 1000, "GHz", 1)],
-            "cpu_w", max(pl2 or 0, 1), self.theme.WARN,
+            "cpu_w", max(pl2 or 0, max((v for v in self.history["cpu_w"] if v is not None), default=0), 1), self.theme.WARN,
             [(v, c) for v, c in ((pl1, self.theme.WARN), (pl2, self.theme.BAD)) if v is not None],
             reason, self.theme.BAD if throttled else None)
 
@@ -540,7 +541,7 @@ class Dashboard(FanPanel):
                 gy, x, gpu_h, width, "GPU", self.theme.GPU,
                 (["THROTTLE"] if reasons else []) + [fmt(gpu.get("temperature_c"), "°C"), fmt(gpu.get("power_w"), "W", 1),
                                                    fmt(None if gpu.get("clock_mhz") is None else gpu["clock_mhz"] / 1000, "GHz", 1)],
-                "gpu_w", max(ctgp or 0, plimit or 0, 1), self.theme.WARN,
+                "gpu_w", max(ctgp or 0, plimit or 0, max((v for v in self.history["gpu_w"] if v is not None), default=0), 1), self.theme.WARN,
                 [(v, c) for v, c in ((ctgp, self.theme.WARN), (plimit, self.theme.BAD)) if v is not None],
                 ("throttle: " + ", ".join(reasons)) if reasons else "", self.theme.BAD if reasons else None)
         else:

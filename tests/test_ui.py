@@ -750,7 +750,9 @@ class ViewTests(unittest.TestCase):
         self.assertEqual([c.args[4] for c in dash.chart_rows.call_args_list], ["cpu_w", "gpu_w"])
         self.assertTrue(all(0 <= y < 45 and x + len(t) <= 100 for y, x, t in calls))
         calls.clear()
+        dash.chart_rows.reset_mock()
         dash.draw_telemetry({}, {"cpu": {}}, 1, 40, 22, 60)  # no limits, small box
+        self.assertEqual([c.args[5] for c in dash.chart_rows.call_args_list], [60])  # history max, not 1
         self.assertIn("N/A · N/A · N/A", "\n".join(t for _, _, t in calls))
 
     def test_cpu_power_reason_at_box_heights(self):
