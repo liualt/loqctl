@@ -299,7 +299,10 @@ class Dashboard(FanPanel):
         title = f" loqctl {VERSION} "
         self.put(0, 0, "━" * (w - 1), self.theme.ACCENT, dim=True)
         self.put(0, 1, title, self.theme.ACCENT, True)
-        mid = f"{model}  ·  {mode}"
+        room = w - len(access) - 4 - (len(title) + 2) - len(mode) - 5
+        if len(model) > room:
+            model = (model[: max(room - 1, 0)].rsplit(" ", 1)[0] or model[: max(room - 1, 0)]) + "…" if room > 1 else ""
+        mid = f"{model}  ·  {mode}" if model else mode
         self.put(0, max(len(title) + 2, (w - len(mid)) // 2), mid, self.theme.OK)
         self.put(0, w - len(access) - 3, f" {access} ", self.theme.GPU if access == "API" else self.theme.WARN)
 
@@ -788,7 +791,12 @@ class Dashboard(FanPanel):
         self.put(by + 1, bx + 2, "Firmware readback immediately after each attempted change.", self.theme.TEXT, dim=True)
         self.put(by + 3, bx + 2, f"{'Control':<26}{'Before':>12}{'Requested':>12}{'Read back':>12}  Result",
                  self.theme.ACCENT, True)
-        for i, result in enumerate(self.apply_results):
+        room = bh - 9
+        shown = self.apply_results
+        if len(shown) > room:
+            shown = shown[: max(room - 1, 0)]
+            self.put(by + 4 + len(shown), bx + 2, f"… {len(self.apply_results) - len(shown)} more", self.theme.TEXT, dim=True)
+        for i, result in enumerate(shown):
             key = result["key"]
             label, unit = ("Platform mode", "") if key == "mode" else FIELDS[key]
             def display(value):
@@ -812,16 +820,24 @@ class Dashboard(FanPanel):
         bw = min(w - 4, 26 + 13 * len(modes))
         bh = min(h - 2, len(rows) + 6)
         bx, by = (w - bw) // 2, max(0, (h - bh) // 2)
+        inner = bw - 4
+        lw = clamp(inner - 12 * max(len(modes), 1), 14, 23)
+        cw = min(12, (inner - lw) // max(len(modes), 1))
         self.fill(by, bx, bh, bw)
         self.box(by, bx, bh, bw, "Mode limits", self.theme.ACCENT)
         self.put(by + 1, bx + 2, "Control", self.theme.ACCENT, True)
         for col, mode in enumerate(modes):
-            self.put(by + 1, bx + 26 + 13 * col, f"{mode:>12}", self.theme.ACCENT, True)
-        for i, key in enumerate(rows[: bh - 5]):
-            self.put(by + 2 + i, bx + 2, attrs[key]["label"][:23], self.theme.TEXT)
+            self.put(by + 1, bx + 2 + lw + cw * col, f"{mode:>{cw - 1}}", self.theme.ACCENT, True)
+        room = bh - 5
+        shown = rows
+        if len(rows) > room:
+            shown = rows[: max(room - 1, 0)]
+            self.put(by + 2 + len(shown), bx + 2, f"… {len(rows) - len(shown)} more", self.theme.TEXT, dim=True)
+        for i, key in enumerate(shown):
+            self.put(by + 2 + i, bx + 2, attrs[key]["label"][: lw - 1], self.theme.TEXT)
             for col, mode in enumerate(modes):
                 value = effective_value(mode, key, attrs[key].get("current_value"), table)
-                self.put(by + 2 + i, bx + 26 + 13 * col, f"{fmt(value):>12}", self.theme.TEXT,
+                self.put(by + 2 + i, bx + 2 + lw + cw * col, f"{fmt(value):>{cw - 1}}", self.theme.TEXT,
                          bold=mode == state.get("mode"))
         note = "Custom is live; other modes come from the firmware table."
         if table is None:
