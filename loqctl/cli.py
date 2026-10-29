@@ -125,9 +125,16 @@ def main(argv=None):
                     time.sleep(max(0, deadline - time.monotonic()))
                     try:
                         metrics = sensors.sample() if sensors else request(backend.path, "GET", "/v1/status").get("metrics", {})
-                        print(json.dumps(metrics, allow_nan=False), flush=True)
-                    except (OSError, ControlError, ValueError, http_client.HTTPException) as exc:
+                        line = json.dumps(metrics, allow_nan=False)
+                    except Exception as exc:
                         print("loqctl: " + str(exc), file=sys.stderr)
+                        line = None
+                    deadline = max(deadline, time.monotonic())
+                    if line is not None:
+                        try:
+                            print(line, flush=True)
+                        except BrokenPipeError:
+                            return 0
             elif args.command in ("status", "metrics"):
                 if args.command == "status":
                     backend.load_mode_limits()

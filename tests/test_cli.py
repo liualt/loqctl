@@ -43,7 +43,7 @@ class CliTests(helpers.SysfsCase):
         out, err = io.StringIO(), io.StringIO()
         with patch.object(m_cli, "Backend", return_value=backend), patch.object(m_cli, "Sensors", sensors), \
                 patch.object(m_cli.time, "sleep", sleeps.append), \
-                patch.object(m_cli.time, "monotonic", side_effect=[100, 100, 101.2, 102.0]), \
+                patch.object(m_cli.time, "monotonic", side_effect=[100, 100, 100.5, 101.2, 101.5, 102.0]), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = m_cli.main(["metrics", "--watch"] + args)
         return code, out.getvalue().splitlines(), err.getvalue(), sleeps, sensors
@@ -84,6 +84,27 @@ class CliTests(helpers.SysfsCase):
             self.assertEqual(m_cli.main(["metrics", "--watch"]), 130)
         self.assertEqual(json.loads(out.getvalue()), {"n": 2})
         self.assertIn("boom", err.getvalue())
+
+    def test_metrics_watch_stops_quietly_on_a_broken_pipe(self):
+        sensors = unittest.mock.Mock()
+        sensors.return_value.sample.return_value = {"n": 1}
+        err = io.StringIO()
+        with patch.object(m_cli, "Backend", return_value=unittest.mock.Mock(remote=False, notice="")), \
+                patch.object(m_cli, "Sensors", sensors), patch.object(m_cli.time, "sleep"), \
+                patch("builtins.print", side_effect=BrokenPipeError), contextlib.redirect_stderr(err):
+            self.assertEqual(m_cli.main(["metrics", "--watch"]), 0)
+        self.assertEqual(sensors.return_value.sample.call_count, 2)
+
+    def test_metrics_watch_reports_any_sample_exception_and_continues(self):
+        sensors = unittest.mock.Mock()
+        sensors.return_value.sample.side_effect = [None, IndexError("bad"), {"n": 2}, KeyboardInterrupt]
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(m_cli, "Backend", return_value=unittest.mock.Mock(remote=False, notice="")), \
+                patch.object(m_cli, "Sensors", sensors), patch.object(m_cli.time, "sleep"), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(m_cli.main(["metrics", "--watch"]), 130)
+        self.assertEqual(json.loads(out.getvalue()), {"n": 2})
+        self.assertEqual(err.getvalue().strip(), "loqctl: bad")
 
     def test_doctor_reports_each_check_without_writes(self):
         proc = self.root / "proc"
