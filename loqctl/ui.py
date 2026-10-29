@@ -716,8 +716,6 @@ class Dashboard(FanPanel):
             self.put(y + 5, zx, f"{border}Z{zi + 1}", self.theme.GPU if chosen else self.theme.TEXT, bold=chosen)
             if self.theme.enabled:
                 self.put(y + 6, zx, "████", pair, True)
-            else:
-                self.put(y + 6, zx, f"#{hexcolor}", self.theme.TEXT, bold=chosen)
             self.put(y + 7, zx, f"#{hexcolor}", self.theme.TEXT, dim=not chosen)
 
         # HSV channels for selected zone

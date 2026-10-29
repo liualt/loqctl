@@ -1022,6 +1022,39 @@ class NoColorTests(unittest.TestCase):
                 dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
             self.assertEqual(dash.theme.enabled, enabled)
 
+    def test_every_panel_fits_and_marks_state_without_colors(self):
+        modes = ["quiet", "balanced", "performance", "custom"]
+        template = {"label": "x", "unit": "W", "available": True, "current_value": 55, "min_value": 5,
+                    "max_value": 140, "scalar_increment": 1}
+        attrs = {k: {**template, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS}
+        state = {"metrics": {"temperatures": [{"group": "cpu", "label": "Package", "c": 95},
+                                                  {"group": "gpu", "label": "Core", "c": 70}]}, "attributes": attrs, "modes": modes, "mode": "custom",
+                 "mode_limits": None}
+        for h, w in ((20, 72), (24, 80)):
+            for panel, view in (("overview", "summary"), ("overview", "details"), ("main", "summary"),
+                                ("fans", "summary"), ("keyboard", "summary")):
+                cells = []
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, text, n, attr=0: cells.append((x, text[:n], attr))
+                with patch.dict(os.environ, {"NO_COLOR": "1"}), patch.object(curses, "curs_set"), \
+                        patch.object(curses, "meta"), patch.object(curses, "has_colors", return_value=True):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+                dash.panel, dash.view = panel, view
+                dash.show_results = panel == "main"
+                dash.apply_results = [{"key": "ppt_pl1_spl", "before": 1, "requested": 2, "current": 1,
+                                       "status": "FAILED"}]
+                dash.draw(state)
+                self.assertTrue(all(x + len(t) <= w for x, t, _ in cells), (panel, view, h, w))
+                self.assertTrue(all(a & curses.A_COLOR == 0 for _, _, a in cells), (panel, view, h, w))
+                if panel == "main":
+                    self.assertTrue(any("FAILED" in t and a == curses.A_BOLD | curses.A_REVERSE
+                                        for _, t, a in cells), (h, w))
+                if panel == "overview" and view == "details" and h == 24:
+                    self.assertTrue(any("95" in t and a == curses.A_BOLD | curses.A_REVERSE
+                                        for _, t, a in cells), (h, w))
+                    self.assertTrue(any("70" in t and a == curses.A_BOLD for _, t, a in cells), (h, w))
+
     def test_put_carries_state_attrs_without_colors(self):
         dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
         dash.theme = m_ui.Theme(False)
