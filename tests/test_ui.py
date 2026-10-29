@@ -825,6 +825,12 @@ class ViewTests(unittest.TestCase):
         for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle", "CPU", "GPU"):
             self.assertIn(needle, text)
 
+    def test_details_view_shows_gpu_mode(self):
+        for mode, shown in (("Hybrid", "mode Hybrid"), (None, "mode N/A")):
+            dash, calls = self.stub_dash()
+            dash.draw_details({"gpu_mode": mode}, 1, 0, 30, 60)
+            self.assertIn(shown, "\n".join(t for _, _, t in calls))
+
     def test_details_grid_keeps_throttle_and_whole_numbers(self):
         metrics = {"throttle": {"cpu": {"active": True, "core_events": 3, "package_events": 12}, "gpu": ["power cap"]},
                    "cpu": {"utilization_pct": 12, "clock_mhz": 3100, "max_clock_mhz": 4500, "cores": {"0": 5, "1": 90},
