@@ -58,10 +58,21 @@ class CliTests(helpers.SysfsCase):
     def test_metrics_watch_interval_argument_and_minimum(self):
         _, _, _, sleeps, _ = self.run_watch(["3"], [{"n": 1}])
         self.assertEqual(sleeps[0], 3)
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.assertEqual(m_cli.main(["metrics", "--watch", "0.5"]), 1)
-        self.assertIn("at least 1 second", err.getvalue())
+        for bad in ("0.5", "nan", "inf"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(m_cli.main(["metrics", "--watch", bad]), 1)
+            self.assertIn("at least 1 second", err.getvalue())
+
+    def test_metrics_watch_remote_reads_status_metrics(self):
+        backend = unittest.mock.Mock(remote=True, notice="", path="/sock")
+        out = io.StringIO()
+        with patch.object(m_cli, "Backend", return_value=backend), patch.object(m_cli.time, "sleep"), \
+                patch("loqctl.api.request", side_effect=[{"metrics": {"n": 1}}, KeyboardInterrupt]) as req, \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(m_cli.main(["metrics", "--watch"]), 130)
+        req.assert_called_with("/sock", "GET", "/v1/status")
+        self.assertEqual(json.loads(out.getvalue()), {"n": 1})
 
     def test_metrics_watch_survives_a_failed_sample(self):
         sensors = unittest.mock.Mock()

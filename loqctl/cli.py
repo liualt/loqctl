@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -113,7 +114,7 @@ def main(argv=None):
                 return 0
             elif args.command == "metrics" and args.watch is not None:
                 from .api import request
-                if args.watch < 1:
+                if not (math.isfinite(args.watch) and args.watch >= 1):
                     raise ControlError("--watch interval must be at least 1 second.")
                 sensors = None if backend.remote else Sensors()
                 if sensors:
