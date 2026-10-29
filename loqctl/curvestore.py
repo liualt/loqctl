@@ -107,7 +107,14 @@ def save_stock(mode, points):
 
 
 def save_named(points):
-    return write_atomic(config_dir() / "curves" / (time.strftime("saved-%Y%m%d-%H%M%S") + ".json"), points)
+    """Write a new saved-<time>.json, adding -2, -3... when that name is taken."""
+    stem = time.strftime("saved-%Y%m%d-%H%M%S")
+    folder = config_dir() / "curves"
+    path, n = folder / (stem + ".json"), 1
+    while path.exists():
+        n += 1
+        path = folder / f"{stem}-{n}.json"
+    return write_atomic(path, points)
 
 
 def read_curve_file(path, uid=None):

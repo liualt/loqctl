@@ -677,6 +677,14 @@ class CurveStoreTests(unittest.TestCase):
         pw.start()
         self.addCleanup(pw.stop)
 
+    def test_save_named_never_overwrites(self):
+        with patch.object(m_store.time, "strftime", return_value="saved-20260101-000000"):
+            first = m_store.save_named(CURVE)
+            second = m_store.save_named(CURVE)
+        self.assertNotEqual(first, second)
+        self.assertEqual(second.name, "saved-20260101-000000-2.json")
+        self.assertTrue(first.exists())
+
     def test_config_dir_respects_xdg(self):
         self.assertEqual(m_store.config_dir(), self.config / "loqctl")
         with patch.dict(os.environ, {"XDG_CONFIG_HOME": ""}):
