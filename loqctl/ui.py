@@ -651,9 +651,9 @@ class Dashboard(FanPanel):
         if "battery_w" in power:
             items.append(row("  battery", [na(power.get("battery_w"), " W"), power.get("battery_status") or "N/A"]))
         for b in metrics.get("battery") or []:
+            wh = [f"{b['full_wh']:.1f}/{b['design_wh']:.1f} Wh"] if None not in (b.get("full_wh"), b.get("design_wh")) else []
             items.append(row(f"  {b['name'][:8]}", [f"health {na(b.get('health_percent'), '%', 0)}",
-                                                    f"cycles {na(b.get('cycles'), '', 0)}",
-                                                    f"{na(b.get('full_wh'), '', 1)}/{na(b.get('design_wh'), ' Wh', 1)}"]))
+                                                    f"cycles {na(b.get('cycles'), '', 0)}"] + wh))
         for u in power.get("usbc") or []:
             items.append(row(f"  {u['name'][:6]}", [na(u["watts"], " W"), na(u["volts"], " V", 2), na(u["amps"], " A", 2)]))
         temps = [(f"  {t['group']:<6} {t['label'][:24]:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)

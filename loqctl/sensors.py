@@ -125,16 +125,14 @@ class NVML:
 
 
 def battery_health(p):
-    "Cycle count, wear and capacities of one battery; None where sysfs lacks them or design is 0."
-    for full_name, design_name, divisor in (("energy_full", "energy_full_design", 1e6),
-                                            ("charge_full", "charge_full_design", 1e6)):
-        full, design = scaled(p / full_name, divisor), scaled(p / design_name, divisor)
-        if full is not None and design:
-            break
-    else:
-        full, design = None, None
-    return {"cycles": scaled(p / "cycle_count"), "full_wh": full if design else None,
-            "design_wh": design or None, "health_percent": full / design * 100 if design else None}
+    "Cycle count and wear of one battery; Wh only from energy_* files (charge_* is Ah), None when missing."
+    wh = [scaled(p / "energy_full", 1e6), scaled(p / "energy_full_design", 1e6)]
+    full, design = wh if wh[0] is not None and wh[1] else (
+        scaled(p / "charge_full"), scaled(p / "charge_full_design"))
+    ok = full is not None and bool(design)
+    energy = wh[0] is not None and bool(wh[1])
+    return {"cycles": scaled(p / "cycle_count"), "full_wh": full if energy else None,
+            "design_wh": design if energy else None, "health_percent": full / design * 100 if ok else None}
 
 
 GPU_MODES = {("0", "0"): "dGPU only", ("1", "0"): "Hybrid", ("1", "1"): "iGPU only", ("1", "2"): "Hybrid (auto)"}

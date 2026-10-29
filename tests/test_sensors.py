@@ -284,6 +284,7 @@ class TelemetryTests(unittest.TestCase):
         self.put("class/power_supply/BAT1/charge_full", "4000000")
         self.put("class/power_supply/BAT1/charge_full_design", "5000000")
         self.assertEqual(bat()["health_percent"], 80.0)
+        self.assertIsNone(bat()["full_wh"])
 
     def test_temperature_groups(self):
         def hw(n, name, temps):

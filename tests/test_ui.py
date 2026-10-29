@@ -699,6 +699,27 @@ class UiTests(helpers.SysfsCase):
             self.assertTrue(any(t.startswith("GPU") and "mode Hybrid (auto)" in t for _, _, t in puts), (h, w))
             self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
 
+    def test_battery_health_fits_summary_and_details(self):
+        battery = [{"name": "BAT1", "percent": 90, "status": "Discharging", "charge_limit": "80%",
+                    "health_percent": 98.13, "cycles": 77, "full_wh": 58.88, "design_wh": 60.0}]
+        for h, w in ((20, 72), (24, 80)):
+            for view in ("summary", "details"):
+                puts = []
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+                dash.panel, dash.view = "overview", view
+                dash.draw({"metrics": {"battery": battery, "ac_online": False}, "attributes": {}, "modes": []})
+                texts = [t for _, _, t in puts]
+                if view == "summary":
+                    self.assertTrue(any("health 98%" in t for t in texts), (h, w))
+                else:
+                    self.assertTrue(any(t.strip().startswith("BAT1") and "cycles 77" in t for t in texts), (h, w))
+                self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w, view))
+
     def test_keyboard_page_never_cuts_a_line_mid_word_at_72x20(self):
         grid = [[" "] * 72 for _ in range(20)]
 
