@@ -3,7 +3,6 @@
 # This file and the program it runs must be owned by root and not writable by others.
 [Unit]
 Description=loqctl privileged server for UID %i
-After=multi-user.target
 
 [Service]
 Type=simple
