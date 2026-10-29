@@ -66,9 +66,12 @@ def check_rapl(root, **_):
 def check_msr(dev, proc, **_):
     if cpu_vendor(proc) != "GenuineIntel":
         return NA, "CPU voltage is Intel only"
-    if (Path(dev) / "cpu/0/msr").exists():
-        return OK, ""
-    return MISSING, "modprobe msr for CPU voltage"
+    msr = Path(dev) / "cpu/0/msr"
+    if not msr.exists():
+        return MISSING, "modprobe msr for CPU voltage"
+    if not os.access(msr, os.R_OK):
+        return MISSING, "msr needs root; run sudo loqctl serve"
+    return OK, ""
 
 
 def check_nvidia(**_):

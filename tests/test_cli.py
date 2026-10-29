@@ -34,7 +34,11 @@ class CliTests(helpers.SysfsCase):
         (self.root / "class/dmi/id").mkdir(parents=True)
         (self.root / "class/dmi/id/product_name").write_text("LOQ 15IRX9")
         lines = doctor(self.root, proc=proc, dev=self.root / "dev")
-        states = {line[9:].split(" (")[0]: line[:8].strip() for line in lines if line[:8].strip() in ("ok", "missing", "n/a")}
+        states = {}
+        for line in lines:
+            state, _, rest = line.partition(" ")
+            if state in ("ok", "missing", "n/a"):
+                states[rest.strip().split(" (")[0]] = state
         self.assertIn("product: LOQ 15IRX9", lines)
         self.assertEqual(states["firmware-attributes"], "ok")
         self.assertEqual(states["platform-profile custom"], "ok")
@@ -42,6 +46,17 @@ class CliTests(helpers.SysfsCase):
         self.assertEqual(states["debugfs capdata"], "missing")
         self.assertEqual(states["msr"], "n/a")
         self.assertEqual(len(states), 10)
+
+    def test_doctor_msr_unreadable_is_missing(self):
+        proc = self.root / "proc"
+        proc.mkdir()
+        (proc / "cpuinfo").write_text("vendor_id\t: GenuineIntel\n")
+        msr = self.root / "dev/cpu/0/msr"
+        msr.parent.mkdir(parents=True)
+        msr.write_text("")
+        with patch("loqctl.doctor.os.access", return_value=False):
+            lines = doctor(self.root, proc=proc, dev=self.root / "dev")
+        self.assertTrue(any(l.startswith("missing") and "msr needs root" in l for l in lines))
 
     def test_doctor_subcommand_prints_lines(self):
         out = io.StringIO()
