@@ -733,6 +733,8 @@ class UiTests(helpers.SysfsCase):
                     self.assertTrue(any("more" in t and "…" in t for t in text), (h, w))
                 elif case == "results":
                     self.assertTrue(any("… " in t and "more" in t for t in text), (h, w))
+                    drawn = [t for t in text if "ppt" in t.lower() or "APPLIED" in t]
+                    self.assertTrue(drawn and all(t.rstrip(" │").endswith("APPLIED") for t in drawn), (h, w))
                     self.assertTrue(any("Enter / Esc closes" in t for t in text), (h, w))
                 else:
                     self.assertIn("CUSTOM", text[0], (h, w))

@@ -299,11 +299,12 @@ class Dashboard(FanPanel):
         title = f" loqctl {VERSION} "
         self.put(0, 0, "━" * (w - 1), self.theme.ACCENT, dim=True)
         self.put(0, 1, title, self.theme.ACCENT, True)
-        room = w - len(access) - 4 - (len(title) + 2) - len(mode) - 5
+        room = w - len(access) - 4 - (len(title) + 1) - len(mode) - 5
         if len(model) > room:
-            model = (model[: max(room - 1, 0)].rsplit(" ", 1)[0] or model[: max(room - 1, 0)]) + "…" if room > 1 else ""
+            model = model[: max(room - 1, 0)].rsplit(" ", 1)[0]
+            model = model + "…" if model else ""
         mid = f"{model}  ·  {mode}" if model else mode
-        self.put(0, max(len(title) + 2, (w - len(mid)) // 2), mid, self.theme.OK)
+        self.put(0, max(len(title) + 1, (w - len(mid)) // 2), mid, self.theme.OK)
         self.put(0, w - len(access) - 3, f" {access} ", self.theme.GPU if access == "API" else self.theme.WARN)
 
         self.draw_nav(state, 1, 0, h - 3, self.NAV_W)
@@ -789,7 +790,9 @@ class Dashboard(FanPanel):
         self.fill(by, bx, bh, bw)
         self.box(by, bx, bh, bw, "Apply results", self.theme.ACCENT)
         self.put(by + 1, bx + 2, "Firmware readback immediately after each attempted change.", self.theme.TEXT, dim=True)
-        self.put(by + 3, bx + 2, f"{'Control':<26}{'Before':>12}{'Requested':>12}{'Read back':>12}  Result",
+        sw = max([len("Result")] + [len(r["status"]) for r in self.apply_results])
+        lw = max(8, bw - 4 - 33 - 2 - sw)
+        self.put(by + 3, bx + 2, f"{'Control':<{lw}}{'Before':>11}{'Requested':>11}{'Read back':>11}  Result",
                  self.theme.ACCENT, True)
         room = bh - 9
         shown = self.apply_results
@@ -801,8 +804,10 @@ class Dashboard(FanPanel):
             label, unit = ("Platform mode", "") if key == "mode" else FIELDS[key]
             def display(value):
                 return "N/A" if value is None else f"{value}{unit_sep(unit)}{unit}"
-            line = (f"{label:<26}{display(result['before']):>12}{display(result['requested']):>12}"
-                    f"{display(result['current']):>12}  {result['status']}")
+            if len(label) > lw:
+                label = label[: lw - 1].rstrip() + "…"
+            line = (f"{label:<{lw}}{display(result['before']):>11}{display(result['requested']):>11}"
+                    f"{display(result['current']):>11}  {result['status']}")
             color = self.theme.OK if result["status"] == "APPLIED" else (
                 self.theme.WARN if result["status"] == "NOT SENT" else self.theme.BAD)
             self.put(by + 4 + i, bx + 2, line[: bw - 4], color)
@@ -821,8 +826,8 @@ class Dashboard(FanPanel):
         bh = min(h - 2, len(rows) + 6)
         bx, by = (w - bw) // 2, max(0, (h - bh) // 2)
         inner = bw - 4
-        lw = clamp(inner - 12 * max(len(modes), 1), 14, 23)
-        cw = min(12, (inner - lw) // max(len(modes), 1))
+        lw = clamp(inner - 11 * max(len(modes), 1), 14, 26)
+        cw = min(11, (inner - lw) // max(len(modes), 1))
         self.fill(by, bx, bh, bw)
         self.box(by, bx, bh, bw, "Mode limits", self.theme.ACCENT)
         self.put(by + 1, bx + 2, "Control", self.theme.ACCENT, True)
@@ -834,7 +839,10 @@ class Dashboard(FanPanel):
             shown = rows[: max(room - 1, 0)]
             self.put(by + 2 + len(shown), bx + 2, f"… {len(rows) - len(shown)} more", self.theme.TEXT, dim=True)
         for i, key in enumerate(shown):
-            self.put(by + 2 + i, bx + 2, attrs[key]["label"][: lw - 1], self.theme.TEXT)
+            label = attrs[key]["label"]
+            if len(label) >= lw:
+                label = label[: lw - 2].rstrip() + "…"
+            self.put(by + 2 + i, bx + 2, label, self.theme.TEXT)
             for col, mode in enumerate(modes):
                 value = effective_value(mode, key, attrs[key].get("current_value"), table)
                 self.put(by + 2 + i, bx + 2 + lw + cw * col, f"{fmt(value):>{cw - 1}}", self.theme.TEXT,
