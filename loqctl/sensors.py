@@ -302,19 +302,21 @@ class Sensors:
         except (OSError, subprocess.TimeoutExpired):
             return {"available": False, "error": "NVIDIA sensor query unavailable or timed out"}
 
-    @staticmethod
-    def cpu_temperature(hwmon_dirs):
+    def cpu_temperature(self, hwmon_dirs):
         """Headline CPU temperature and the label it came from."""
         best = (None, None)
         for hw in hwmon_dirs:
             name = read(hw / "name", "")
             if name not in ("coretemp", "k10temp", "zenpower"):
                 continue
+            inputs = self.discover(f"cputemp:{hw}:{name}", lambda: [
+                (p, read(p.with_name(p.name.replace("_input", "_label")), "") or "")
+                for p in hw.glob("temp*_input")])
             readings = []
-            for p in hw.glob("temp*_input"):
+            for p, label in inputs:
                 v = scaled(p, 1000)
                 if v is not None:
-                    readings.append((read(p.with_name(p.name.replace("_input", "_label")), "") or "", v))
+                    readings.append((label, v))
             if not readings:
                 continue
             if name == "coretemp":
@@ -444,9 +446,11 @@ class Sensors:
         hwmons = self.discover("hwmon", lambda: sorted(self.root.glob("class/hwmon/hwmon*")))
         for hw in hwmons:
             name = read(hw / "name", "")
-            for p in hw.glob("fan*_input"):
-                fans.append({"name": read(p.with_name(p.name.replace("_input", "_label")), name + "/" + p.stem),
-                             "rpm": scaled(p)})
+            fan_inputs = self.discover(f"fans:{hw}:{name}", lambda: [
+                (p, read(p.with_name(p.name.replace("_input", "_label")), name + "/" + p.stem))
+                for p in hw.glob("fan*_input")])
+            for p, label in fan_inputs:
+                fans.append({"name": label, "rpm": scaled(p)})
         freq_paths = self.discover("cpufreq", lambda: sorted(
             self.root.glob("devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")))
         mhz = [v for p in freq_paths

@@ -1286,11 +1286,21 @@ class Dashboard(FanPanel):
 
     def run(self):
         self.backend.start()
+        drawn = None
         try:
             while self.running:
                 state = self.backend.state() or {}
-                self.draw(state)
+                stamp = (state.get("metrics") or {}).get("timestamp")
+                seen = (stamp, state.get("error"), state.get("mode"), self.keyboard.last_seq, self.notice,
+                        self.s.getmaxyx(), stamp is not None and time.time() - stamp > 5,
+                        self.paused, self.sudo_expired, state.get("stale"),
+                        getattr(self, "fan_loading", None), getattr(self, "fan_result", None) is not None)
+                if seen != drawn:
+                    self.draw(state)
+                    drawn = seen
                 ch = self.s.getch()
+                if ch != -1:
+                    drawn = None  # a key may change anything on screen
                 h, w = self.s.getmaxyx()
                 if (h < self.MIN_H or w < self.MIN_W) and ch != ord("q"):
                     continue
