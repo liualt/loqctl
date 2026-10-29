@@ -144,7 +144,7 @@ def read_curve_file(path, uid=None):
 def check_curve(current, points, scale=None):
     """None when `points` may be staged over `current`, else the reason."""
     try:
-        errors = validate_curve(merge_curve(current, points), scale)
+        errors = validate_curve(merge_curve(current, points), scale, current)
     except ControlError as exc:
         return str(exc)
     return errors[0][2] if errors else None
