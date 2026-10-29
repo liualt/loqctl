@@ -136,5 +136,16 @@ def fmt(value, unit="", decimals=0):
     return "N/A" if value is None else f"{value:.{decimals}f}{unit_sep(unit)}{unit}"
 
 
+def fit_parts(parts, width, sep=" · "):
+    """Join parts most important first, dropping trailing ones that do not fit, so a number is never cut mid-way."""
+    out = ""
+    for part in parts:
+        joined = f"{out}{sep}{part}" if out else part
+        if len(joined) > width:
+            break
+        out = joined
+    return out or parts[0][:width]
+
+
 def clamp(value, lo, hi):
     return max(lo, min(hi, value))

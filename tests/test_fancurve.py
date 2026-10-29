@@ -565,6 +565,26 @@ class FanCurveSurfaceTests(FanPanelFixture):
         self.assertIn("enable_platformprofile=0", text)
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
 
+    def test_fans_fit_small_terminals(self):
+        dash = self.dash()
+        self.keys(dash, {"mode": "custom"}, "f")
+        cells = {}
+        dash.put = lambda y, x, text, *a, **k: cells.update({(y, x + i): c for i, c in enumerate(str(text))})
+        metrics = {"fans": [{"rpm": 2000.0}, {"rpm": 1900.0}], "cpu": {"temperature_c": 67.0}}
+        for height, width in ((17, 57), (21, 66)):
+            for details in (False, True):
+                cells.clear()
+                dash.fan_details = details
+                dash.draw_fans({"mode": "custom"}, metrics, 1, 0, height, width)
+                self.assertTrue(all(0 <= y < height + 1 and 0 <= x < width for y, x in cells), (height, width))
+                text = "".join(cells.get((2, x), " ") for x in range(width))
+                self.assertIn("Point 1/", text)
+                self.assertEqual("Fan 2" in "".join(cells.values()), details)
+        dash.fan_sel = len(dash.fan_target()) - 1  # the table scrolls to the last point
+        cells.clear()
+        dash.draw_fans({"mode": "custom"}, metrics, 1, 0, 17, 24)
+        self.assertEqual("".join(cells.get((4, x), " ") for x in range(24)).split()[-1], str(dash.fan_sel + 1))
+
     def test_graph_draws_rpm_curve_with_cursor(self):
         rpm_root = self.root / "rpm"
         make_hwmon(rpm_root, NECN_STOCK, "rpm", max_rpm=10000)
@@ -577,7 +597,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.draw_fans({"mode": "custom"}, {"cpu": {"temperature_c": 67.4}, "fans": [{"rpm": 2000.0}]}, 1, 0, 30, 110)
         text = {t for t, _ in cells.values()}
         self.assertIn("Point 3/10 · 75°C · 3500 RPM (was 3400 RPM) (fan 2 was 3700 RPM)", text)  # fan 2 is compared too
-        self.assertIn("▲ CPU 67°C", text)
+        self.assertIn("Fans · F1 2000 RPM · CPU 67°C", dash.box.call_args.args[4])
         self.assertTrue({"70°C", " 4000", "RPM"} <= text)
         self.assertFalse(any("GPU" in t or "Curves" in t for t in text))  # details and the curve list stay hidden
         axis = next(y for (y, x), (t, _) in cells.items() if t.startswith("└"))
@@ -587,13 +607,15 @@ class FanCurveSurfaceTests(FanPanelFixture):
         self.assertEqual(len(selected), 1)
         lines = {x for (y, x), (t, _) in cells.items() if "\u2800" < t <= "\u28ff"}
         self.assertTrue(set(range(marks[0] + 1, marks[-1])) <= lines | set(marks))  # segments leave no gaps
-        self.keys(dash, {"mode": "custom"}, "d")
+        self.keys(dash, {"mode": "custom"}, "t")
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 30, 110)
         text = {t for t, _ in cells.values()}
         self.assertIn("Point 3/10 · CPU 75/73°C · GPU 75/73°C · IC 65/59°C · Fan 1 3500 RPM · Fan 2 3500 RPM", text)
         self.assertIn("IC", text)  # the per-point table
         self.assertIn("Unit: RPM", dash.box.call_args.args[6])
-        dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 17, 72)  # small: no table
+        dash.draw_fans({"mode": "balanced"}, {"fans": [{"rpm": 1800.0}, {"rpm": 1700.0}], "cpu": {"temperature_c": 61.0},
+                                              "gpu": {"devices": [{"temperature_c": 55.0}]}}, 1, 0, 17, 72)
+        self.assertEqual(dash.box.call_args.args[4], "Fans · F1 1800 RPM · F2 1700 RPM · CPU 61°C")  # GPU dropped, not cut
         self.assertIn("Fan curves are locked in balanced mode. Select custom to edit.", {t for t, _ in cells.values()})
 
 

@@ -13,7 +13,7 @@ from . import VERSION
 from .api import http_client
 from .capdata import effective_value
 from .colors import hex_to_rgb, hsv_to_rgb, nearest_ansi, rgb_to_hex, rgb_to_hsv
-from .common import (BAR_EMPTY, BAR_FILL, FIELDS, SPARK, ControlError, SudoExpired, _lazy, clamp, fmt,
+from .common import (BAR_EMPTY, BAR_FILL, FIELDS, SPARK, ControlError, SudoExpired, _lazy, clamp, fit_parts, fmt,
                      sudo_run, unit_sep)
 from .hardware import GAMEZONE, check_changes, run_changes
 from .keyboard import Keyboard
@@ -40,15 +40,6 @@ def limit_note(state, items):
     where = "not bound to any driver" if holder == "no driver" else f"held by {holder}"
     return f"Gamezone WMI device {where}, limits can't be read; see README"
 
-def fit_parts(parts, width, sep=" · "):
-    """Join parts most important first, dropping trailing ones that do not fit, so a number is never cut mid-way."""
-    out = ""
-    for part in parts:
-        joined = f"{out}{sep}{part}" if out else part
-        if len(joined) > width:
-            break
-        out = joined
-    return out or parts[0][:width]
 
 class Theme:
     """UI colors from the terminal palette only. Never redefines RGB."""
@@ -128,7 +119,7 @@ class Dashboard(FanPanel):
         "main": ("Tab section", "↑↓ select", "←→ adjust", "Enter apply", "0-9 type", "Esc clear",
                  "d default", "r discard", "m modes", "Space pause", "v results"),
         "fans": ("←→ point", "↑↓ speed", "Enter apply", "Esc back", "r discard", "W save", "R stock",
-                 "p curves", "d details"),
+                 "p curves", "t details"),
         "keyboard": ("Tab section", "1–4 zone", "←→ adjust HSV", "↑↓ channel", "Enter apply", "Esc back", "e effect",
                      "b bright", "c copy-all", "Space live"),
     }
@@ -753,7 +744,7 @@ class Dashboard(FanPanel):
         "Fans      f open fan curves (edits need custom mode)",
         "          ←→ or Tab/[ ] select point",
         "          ↑↓ next speed the fan stores (both fans)",
-        "          Shift+↑↓ five steps   d details",
+        "          Shift+↑↓ five steps   t details",
         "          Enter apply   r discard   R reset to stock",
         "          p next curve   W save   Esc back",
     )
