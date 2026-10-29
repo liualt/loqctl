@@ -150,6 +150,22 @@ class UiTests(helpers.SysfsCase):
         self.assertEqual(row[1:], (7, True))
         self.assertTrue(any("Locked in balanced mode" in c[0] for c in calls))
 
+    def test_power_section_fits_grid_with_mode_selector_and_groups(self):
+        for mode in ("balanced", "custom"):
+            self.hw.set_mode(mode)
+            state = self.hw.capabilities()
+            for h, w in ((20, 58), (24, 66)):
+                dashboard = self.dashboard()
+                dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3, INFO=6, BAD=2)
+                dashboard.box = Mock()
+                calls = []
+                dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((y, str(text)))
+                dashboard.draw_controls(state, 0, 0, h - 3, w)
+                lines = dict(calls)
+                self.assertRegex(lines[1], r"Mode\s+.*\[" + mode + r"\]")
+                self.assertIn("CPU", lines.values())
+                self.assertTrue(all(0 < y < h - 3 and len(t) <= w - 2 for y, t in calls), (mode, h, w))
+
     def test_limit_detail_shows_na_for_unreadable_limits(self):
         self.hw.set_mode("custom")
         cases = (
@@ -790,6 +806,7 @@ class ViewTests(unittest.TestCase):
                 self.assertTrue(any("Throttle" in t and "cpu yes" in t for t in rows.values()))
                 self.assertTrue(any(t == "Power" for t in rows.values()))
                 self.assertTrue(any(t.strip().startswith("package") and "21.5" in t for t in rows.values()))
+                self.assertTrue(any(t.strip().startswith("battery") and "battery0" not in t for t in rows.values()))
                 self.assertTrue(all(y < h - 2 for y in rows))
                 for t in rows.values():
                     self.assertLessEqual(len(t), w - 14 - 4)
