@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 
+from .battery import read_battery, write_battery
 from .capdata import effective_value, read_mode_table
 from .common import FIELDS, ControlError, read, scaled
 from .fancurve import curve_scale, find_legion_hwmon, read_curve, write_curve
@@ -243,6 +244,13 @@ class Hardware:
                 return {"available": False, "reason": "legion_hwmon exposes no fan curve points"}
             return {"available": True, "mode": mode, "hwmon": str(hwmon), "unit": scale.unit, "max_rpm": scale.max_rpm,
                     "points": points, "rpm": [scaled(hwmon / f"fan{n}_input") for n in (1, 2)]}
+
+    def battery(self):
+        return read_battery(self.root)
+
+    def write_battery(self, mode):
+        with self.lock:
+            return write_battery(self.root, mode)
 
     def write_fancurve(self, points):
         with self.lock:

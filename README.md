@@ -158,6 +158,8 @@ loqctl fan                           # fan curve, speed unit and RPM as JSON
 loqctl doctor                        # which features this laptop supports, with hints
 loqctl mode                          # current mode and available modes
 sudo loqctl mode custom
+loqctl battery                       # charging mode: normal, conservation or rapid
+loqctl battery conservation          # sets it (through sudo or the server)
 sudo loqctl set ppt_pl1_spl 50
 ```
 

@@ -27,6 +27,16 @@ class CliTests(helpers.SysfsCase):
             self.assertEqual(m_cli.main(["_apply", json.dumps([["ppt_pl1_spl", 60]])]), 0)
         self.assertEqual(json.loads(out.getvalue())[0]["status"], "APPLIED")
 
+    def test_battery_subcommand_goes_through_the_sudo_helper_when_not_root(self):
+        out = io.StringIO()
+        reply = ('{"mode": "rapid"}', "")
+        with patch("loqctl.backend.os.geteuid", return_value=1000), \
+                patch("loqctl.backend.sudo_run", return_value=reply) as run, \
+                patch("loqctl.backend.socket_alive", return_value=False), contextlib.redirect_stdout(out):
+            self.assertEqual(m_cli.main(["battery", "rapid"]), 0)
+        run.assert_called_once_with(["_battery", "rapid"])
+        self.assertEqual(json.loads(out.getvalue()), {"mode": "rapid"})
+
     def test_doctor_reports_each_check_without_writes(self):
         proc = self.root / "proc"
         proc.mkdir()

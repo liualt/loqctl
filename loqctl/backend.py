@@ -3,13 +3,14 @@
 """Local or remote data source for the CLI and dashboard."""
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
 
 from .api import http_client, request, socket_alive
 from .capdata import fetch_via_sudo, load_cache, save_cache
-from .common import ControlError, socket_path
+from .common import ControlError, socket_path, sudo_run
 from .hardware import Hardware
 from .sensors import Sampler, Sensors
 
@@ -90,6 +91,17 @@ class Backend:
         if self.remote:
             return request(self.path, "POST", "/v1/fancurve", {"points": points})
         return self.hardware.write_fancurve(points)
+
+    def battery(self):
+        return request(self.path, "GET", "/v1/battery") if self.remote else self.hardware.battery()
+
+    def write_battery(self, mode):
+        if self.remote:
+            return request(self.path, "POST", "/v1/battery", {"mode": mode})
+        if os.geteuid() != 0:
+            stdout, _ = sudo_run(["_battery", str(mode)])
+            return json.loads(stdout)
+        return self.hardware.write_battery(mode)
 
     def close(self):
         self.stop.set()
