@@ -42,6 +42,13 @@ sudo make install                  # PREFIX defaults to /usr/local
 
 `make uninstall` (same `PREFIX`) removes it. Packagers can set `DESTDIR` and `PREFIX`. Autostart at login is a separate step that `make install` does not do.
 
+`make install` also installs shell completions under `$(PREFIX)/share`:
+- bash: `bash-completion/completions/loqctl`
+- zsh: `zsh/site-functions/_loqctl` (the directory must be on `fpath`)
+- fish: `fish/vendor_completions.d/loqctl.fish`
+
+The completions are static files; Tab never runs loqctl or sudo.
+
 When sudo runs a user-writable file, any process running as you can gain root by editing it.
 
 loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_capdata`, `_fancurve`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.

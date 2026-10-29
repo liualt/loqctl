@@ -1,0 +1,23 @@
+#compdef loqctl
+# SPDX-License-Identifier: GPL-3.0-or-later
+# zsh completion for loqctl. Static: never runs loqctl.
+local -a modes
+modes=(low-power balanced performance max-power custom)
+[[ -r /sys/firmware/acpi/platform_profile_choices ]] && modes=(${=$(< /sys/firmware/acpi/platform_profile_choices)})
+
+_arguments -C \
+    '--socket[connect to an existing loqctl Unix socket]:socket:_files' \
+    '--version[show the version]' \
+    '(-h --help)'{-h,--help}'[show help]' \
+    '1: :(tui status metrics capabilities limits fan mode set kb doctor serve)' \
+    '*:: :->args'
+
+case $state in
+    args)
+        case $words[1] in
+            metrics) _arguments '--watch=[print one JSON line every SECONDS]:seconds' ;;
+            mode) _values mode $modes ;;
+            set) (( CURRENT == 2 )) && _values attribute ppt_pl1_spl ppt_pl2_sppt ppt_cpu_cl ppt_pl1_spl_cl ppt_pl2_sppt_cl ppt_pl3_fppt ppt_pl3_fppt_cl ppt_pl4_ipl ppt_pl4_ipl_cl ppt_pl1_apu_spl ppt_pl1_tau cpu_temp gpu_nv_ctgp gpu_nv_ppab gpu_nv_ac_offset gpu_nv_bpl gpu_nv_cpu_boost gpu_temp ;;
+            kb) (( CURRENT == 2 )) && _values action status apply off static breath wave hue brightness ;;
+        esac ;;
+esac

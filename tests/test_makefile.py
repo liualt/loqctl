@@ -28,6 +28,19 @@ class MakefileTests(unittest.TestCase):
         self.assertEqual(self.make("install").returncode, 0)
         self.assertFalse(os.path.exists(self.lib + ".new"))
 
+    def completions(self):
+        share = os.path.join(self.prefix, "share")
+        return [os.path.join(share, p) for p in ("bash-completion/completions/loqctl",
+                "zsh/site-functions/_loqctl", "fish/vendor_completions.d/loqctl.fish")]
+
+    def test_install_and_uninstall_completions(self):
+        self.make("install")
+        for path in self.completions():
+            self.assertTrue(os.path.isfile(path), path)
+        self.make("uninstall")
+        for path in self.completions():
+            self.assertFalse(os.path.lexists(path), path)
+
     def test_relative_prefix_rejected(self):
         r = self.make("install", "rel")
         self.assertNotEqual(r.returncode, 0)
