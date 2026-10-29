@@ -180,6 +180,10 @@ class KeyboardConfigTests(helpers.SysfsCase):
             kb.load(force=True)
             self.assertEqual((kb.effect, kb.speed, kb.brightness), ("static", 1, 2))
             self.assertEqual(len(kb.zones), 4)
+        for raw in (b"\xff\xfe\x00", b"[" * 100000):
+            config.write_bytes(raw)
+            kb.load(force=True)
+            self.assertEqual(kb.zones, ["ffffff"] * 4)
         config.write_text('{"zones": [5, "ff0000", "00ff00", "0000ff"]}')
         kb.load(force=True)
         self.assertEqual(kb.zones, ["ffffff"] * 4)
