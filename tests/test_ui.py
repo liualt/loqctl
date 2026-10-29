@@ -150,6 +150,58 @@ class UiTests(helpers.SysfsCase):
         self.assertEqual(row[1:], (7, True))
         self.assertTrue(any("Locked in balanced mode" in c[0] for c in calls))
 
+    def test_power_section_fits_grid_with_all_fields(self):
+        self.hw.set_mode("custom")
+        state = self.hw.capabilities()
+        template = next(iter(state["attributes"].values()))
+        state["attributes"] = {k: {**template, "label": m_common.FIELDS[k][0], "unit": m_common.FIELDS[k][1]}
+                               for k in m_common.FIELDS}
+        state["modes"] = ["quiet", "balanced", "performance", "custom"]
+        for mode in ("custom", "balanced"):
+            state["mode"] = mode
+            for h, w in ((20, 72), (24, 80)):
+                dashboard = self.dashboard()
+                dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3, INFO=6, BAD=2)
+                dashboard.box = Mock()
+                rows = dashboard.rows(state)
+                for sel in range(len(rows)):
+                    calls = []
+                    dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((y, str(text)))
+                    dashboard.selected = sel
+                    dashboard.pending = {"mode": "performance"} if sel == 0 else {}
+                    dashboard.draw_controls(state, 0, 14, h - 3, w - 14)
+                    lines = dict(calls)
+                    self.assertTrue(all(0 < y < h - 3 and len(t) <= w - 16 for y, t in calls), (mode, h, w, sel))
+                    self.assertRegex(lines[1], r"Mode\s+")
+                    if sel == 0:
+                        self.assertTrue(lines[1].endswith(f"{mode} → performance"), lines[1])
+                    elif mode == "custom" or rows[sel] in ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp"):
+                        self.assertTrue(any(t.startswith("▶") for t in lines.values()), (mode, h, w, sel))
+                    if mode == "balanced":
+                        self.assertLessEqual(sum(t.startswith(("▶", " ")) for y, t in calls if y > 1), 4)
+                        self.assertTrue(any("select custom" in t.lower() for t in lines.values()))
+
+    def test_stock_mode_cursor_visits_only_drawn_rows(self):
+        self.hw.set_mode("balanced")
+        for key in ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp", "cpu_temp"):
+            self.add_attr(key, 60, 5, 100, 1, 60)
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3, INFO=6, BAD=2)
+        dashboard.box = Mock()
+        rows = dashboard.rows(state)
+        dashboard.selected = rows.index("cpu_temp")  # left over from custom mode
+        visited = []
+        for _ in range(5):
+            calls = []
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append(str(text))
+            dashboard.draw_controls(state, 0, 0, 17, 58)
+            self.assertTrue(any(t.startswith("▶") for t in calls), rows[dashboard.selected])
+            visited.append(rows[dashboard.selected])
+            dashboard.handle(curses.KEY_DOWN, state)
+        self.assertEqual(visited[0], "mode")
+        self.assertEqual(visited[1:], ["ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp", "mode"])
+
     def test_limit_detail_shows_na_for_unreadable_limits(self):
         self.hw.set_mode("custom")
         cases = (
@@ -790,6 +842,7 @@ class ViewTests(unittest.TestCase):
                 self.assertTrue(any("Throttle" in t and "cpu yes" in t for t in rows.values()))
                 self.assertTrue(any(t == "Power" for t in rows.values()))
                 self.assertTrue(any(t.strip().startswith("package") and "21.5" in t for t in rows.values()))
+                self.assertTrue(any(t.strip().startswith("battery") and "battery0" not in t for t in rows.values()))
                 self.assertTrue(all(y < h - 2 for y in rows))
                 for t in rows.values():
                     self.assertLessEqual(len(t), w - 14 - 4)

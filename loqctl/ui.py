@@ -260,6 +260,13 @@ class Dashboard(FanPanel):
         # Gate on the LIVE mode; a staged mode never unlocks limit rows.
         return state.get("mode") != "custom"
 
+    SUMMARY = ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp")
+
+    def shown_rows(self, state):
+        "Rows the Power box draws and the cursor can visit: the mode, then the key limits in stock modes."
+        rows = self.rows(state)
+        return [k for k in rows if k == "mode" or not self.locked(state) or k in self.SUMMARY]
+
     def rows(self, state):
         attrs = state.get("attributes") or {}
         return ["mode"] + [k for k in FIELDS if k in attrs]
@@ -397,53 +404,79 @@ class Dashboard(FanPanel):
         right = f"{pending_n} staged" if pending_n else "Live"
         if self.invalid:
             right = (f"{pending_n} staged" if pending_n else "") + f"{', ' if pending_n else ''}{len(self.invalid)} invalid"
-        self.box(y, x, height, width, "Firmware", self.theme.ACCENT, right)
-        self.put(y + 1, x + 2, f"{'Control':<22} Live", self.theme.TEXT, dim=True)
+        self.box(y, x, height, width, "Power", self.theme.ACCENT, right)
         rows = self.rows(state)
         if not rows:
-            self.put(y + 3, x + 2, "No firmware attributes exposed.", self.theme.WARN)
+            self.put(y + 2, x + 2, "No firmware attributes exposed.", self.theme.WARN)
             return
         self.selected = clamp(self.selected, 0, len(rows) - 1)
+        if rows[self.selected] not in self.shown_rows(state):
+            self.selected = 0
+        # Mode selector on top: every mode the firmware offers, the live one in brackets.
+        modes, live = state.get("modes") or [], state.get("mode")
+        staged_mode = self.pending.get("mode")
+        names = [f"[{m}]" if m == live else m for m in modes] or [str(live or "N/A")]
+        if staged_mode is not None:
+            choice = f"{live or 'N/A'} → {staged_mode}"
+        else:
+            choice = fit_parts(names, width - 14, "  ")
+        chosen = self.selected == 0
+        self.put(y + 1, x + 1, f"{'▶' if chosen else ' '} {'Mode':<7}{choice}"[: width - 3],
+                 self.theme.WARN if staged_mode is not None else (self.theme.ACCENT if chosen else self.theme.TEXT),
+                 bold=chosen)
+        # Limits grouped by subsystem; a group name is a row in the list, not part of the selection.
+        shown, entries, group = self.shown_rows(state), [], None
+        for row, key in enumerate(rows[1:], 1):
+            if key not in shown:
+                continue  # stock modes show the few key limits, not the whole list
+            name = "GPU" if key.startswith("gpu_") else "CPU"
+            if name != group:
+                entries.append((None, name))
+                group = name
+            entries.append((row, key))
         list_top = y + 2
         detail_h = 4
-        list_h = max(3, height - detail_h - 3)
-        visible = list_h
-        start = 0
-        if self.selected >= visible:
-            start = self.selected - visible + 1
-        for i, key in enumerate(rows[start:start + visible]):
-            row = start + i
+        visible = max(3, height - detail_h - 3)
+        at = next((i for i, (row, _) in enumerate(entries) if row == self.selected), 0)
+        start = max(0, at - visible + 1)
+        if start and entries[start][0] is not None and entries[start - 1][0] is None and start - 1 + visible > at:
+            start -= 1  # keep a group name above its first visible row
+        window = entries[start:start + visible]
+        if window and window[-1][0] is None:
+            window.pop()
+        for i, (row, key) in enumerate(window):
             yy = list_top + i
+            if row is None:
+                self.put(yy, x + 2, key, self.theme.INFO, bold=True)
+                continue
             chosen = row == self.selected
             marker = "▶" if chosen else " "
-            if key == "mode":
-                label, current, unit = "Platform mode", state.get("mode", "N/A"), ""
-            else:
-                item = state["attributes"][key]
-                label, current, unit = item["label"], item.get("effective_value"), item["unit"]
+            item = state["attributes"][key]
+            label, current, unit = item["label"], item.get("effective_value"), item["unit"]
             staged = self.pending.get(key)
             value = "N/A" if current is None else f"{current}{unit_sep(unit)}{unit}"
-            if key != "mode" and self.locked(state):
+            if self.locked(state):
                 line = f"{marker} {label:<20} {value}"
                 self.put(yy, x + 1, line[: width - 3], self.theme.TEXT, bold=chosen, dim=True)
                 continue
-            if key != "mode":
-                text = self.fields.get(key)
-                bad = key in self.invalid
-                if chosen:
-                    line = (f"{marker} {label:<20} {strike(value)} -> "
-                            + (f"{text}_" if text else "__"))
-                    self.put(yy, x + 1, line[: width - 3], self.theme.BAD if bad else self.theme.ACCENT, bold=True)
-                    continue
-                if bad:
-                    value += f" → {text}"
-                    self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], self.theme.BAD)
-                    continue
+            text = self.fields.get(key)
+            bad = key in self.invalid
+            if chosen:
+                line = (f"{marker} {label:<20} {strike(value)} -> "
+                        + (f"{text}_" if text else "__"))
+                self.put(yy, x + 1, line[: width - 3], self.theme.BAD if bad else self.theme.ACCENT, bold=True)
+                continue
+            if bad:
+                value += f" → {text}"
+                self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], self.theme.BAD)
+                continue
             if staged is not None:
                 value += f" → {staged}"
-            color = self.theme.WARN if staged is not None else (self.theme.ACCENT if chosen else self.theme.TEXT)
-            line = f"{marker} {label:<20} {value}"
-            self.put(yy, x + 1, line[: width - 3], color, bold=chosen, dim=not chosen and staged is None)
+            color = self.theme.WARN if staged is not None else self.theme.TEXT
+            self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], color, dim=staged is None)
+
+        if self.locked(state):
+            self.put(list_top + len(window), x + 2, "Select custom on the mode row to edit.", self.theme.TEXT, dim=True)
 
         # Detail footer inside the box
         detail_y = y + height - detail_h
@@ -470,7 +503,8 @@ class Dashboard(FanPanel):
                     reason if reason and not reason.startswith("needs root") else
                     "Stock-mode limits need root: press s or run sudo loqctl serve")
             self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
-            self.put(detail_y + 2, x + 2, fit_parts([f"Locked in {mode} mode", "select custom on the mode row"], width - 4, "; "),
+            self.put(detail_y + 2, x + 2, (lambda long: long if len(long) <= width - 4 else "Select custom on the mode row to edit")(
+                         f"Locked in {mode} mode; select custom to edit"),
                      self.theme.TEXT, dim=True)
         else:
             item = state["attributes"][key]
@@ -593,7 +627,7 @@ class Dashboard(FanPanel):
 
         def row(label, parts, color=text, bold=False):
             "One row: a label, then parts that drop from the end rather than cut a number."
-            return (f"{label:<9}" + fit_parts(parts, iw - 9, "  "), color, bold)
+            return (f"{label:<10}" + fit_parts(parts, iw - 10, "  "), color, bold)
 
         # Throttle first: an active throttle is the row to see on a short terminal.
         throttle = metrics.get("throttle") or {}
@@ -1109,6 +1143,9 @@ class Dashboard(FanPanel):
                 self.open_fans()
             return
         self.selected = clamp(self.selected, 0, len(rows) - 1)
+        visit = self.shown_rows(state)
+        if rows[self.selected] not in visit:
+            self.selected = 0  # the mode changed to a stock mode; the cursor was on a row that is no longer drawn
         key = rows[self.selected]
 
         stale_staged = any(k != "mode" for k in self.pending)
@@ -1147,9 +1184,9 @@ class Dashboard(FanPanel):
             if not self.apply_results:
                 self.notice = "No apply results yet. Edit a row and press Enter."
         elif ch in (curses.KEY_DOWN, ord("j")):
-            self.selected = (self.selected + 1) % len(rows)
+            self.selected = rows.index(visit[(visit.index(key) + 1) % len(visit)])
         elif ch in (curses.KEY_UP, ord("k")):
-            self.selected = (self.selected - 1) % len(rows)
+            self.selected = rows.index(visit[(visit.index(key) - 1) % len(visit)])
         elif ch == ord("r"):
             self.pending.clear()
             self.fields.clear()
