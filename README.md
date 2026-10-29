@@ -44,7 +44,7 @@ sudo make install                  # PREFIX defaults to /usr/local
 
 When sudo runs a user-writable file, any process running as you can gain root by editing it.
 
-loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_capdata`, `_fancurve`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
+loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_capdata`, `_fancurve`, `_toggle`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
 
 Or run it in place with `python3 loqctl.py`.
 
@@ -161,9 +161,11 @@ loqctl doctor                        # which features this laptop supports, with
 loqctl mode                          # current mode and available modes
 sudo loqctl mode custom
 sudo loqctl set ppt_pl1_spl 50
+loqctl toggle                        # device switches this laptop exposes, with state
+loqctl toggle fn_lock on             # also camera, winkey, logo_light, port_light
 ```
 
-Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_capdata` and `_fancurve` are internal, used via sudo by the dashboard.
+Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_capdata`, `_fancurve` and `_toggle` are internal, used via sudo by the dashboard.
 
 `sudo` may not find a `~/.local/bin` install; install system-wide as described above so `sudo loqctl ...` works and the file is root-owned.
 
@@ -239,9 +241,11 @@ curl --unix-socket /run/loqctl-$(id -u)/control.sock \
 | GET | `/v1/status` | Sampler snapshot: firmware and telemetry (not a fresh read) |
 | GET | `/v1/metrics` | Telemetry from the sampler (about 1 Hz) |
 | GET | `/v1/capabilities` | Modes, bounds, defaults, per-mode limits; read fresh |
+| GET | `/v1/toggles` | Device switches present, with value and maximum; read fresh |
 | GET | `/v1/fancurve` | Fan curve, speed unit, RPM (or `available: false`); read fresh |
 | POST | `/v1/mode` | `{"mode":"custom"}` |
 | POST | `/v1/attributes/NAME` | `{"value":50}` |
+| POST | `/v1/toggles/NAME` | `{"value":1}`, 0 to the switch maximum, read back |
 | POST | `/v1/fancurve` | `{"points":[...]}`, custom mode only, per-field results |
 
 The server allows the user in `SUDO_UID`. If you start it as root without sudo, pass `--uid UID` so your user can connect.
