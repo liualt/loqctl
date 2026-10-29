@@ -406,16 +406,21 @@ class Dashboard(FanPanel):
         # Mode selector on top: every mode the firmware offers, the live one in brackets.
         modes, live = state.get("modes") or [], state.get("mode")
         staged_mode = self.pending.get("mode")
-        choice = "  ".join(f"[{m}]" if m == live else m for m in modes) or str(live or "N/A")
+        names = [f"[{m}]" if m == live else m for m in modes] or [str(live or "N/A")]
         if staged_mode is not None:
-            choice += f" → {staged_mode}"
+            choice = f"{live or 'N/A'} → {staged_mode}"
+        else:
+            choice = fit_parts(names, width - 14, "  ")
         chosen = self.selected == 0
         self.put(y + 1, x + 1, f"{'▶' if chosen else ' '} {'Mode':<7}{choice}"[: width - 3],
                  self.theme.WARN if staged_mode is not None else (self.theme.ACCENT if chosen else self.theme.TEXT),
                  bold=chosen)
         # Limits grouped by subsystem; a group name is a row in the list, not part of the selection.
         entries, group = [], None
+        summary = ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp")
         for row, key in enumerate(rows[1:], 1):
+            if self.locked(state) and key not in summary:
+                continue  # stock modes show the few key limits, not the whole list
             name = "GPU" if key.startswith("gpu_") else "CPU"
             if name != group:
                 entries.append((None, name))
@@ -426,9 +431,12 @@ class Dashboard(FanPanel):
         visible = max(3, height - detail_h - 3)
         at = next((i for i, (row, _) in enumerate(entries) if row == self.selected), 0)
         start = max(0, at - visible + 1)
-        if start and entries[start][0] is not None and entries[start - 1][0] is None:
+        if start and entries[start][0] is not None and entries[start - 1][0] is None and start - 1 + visible > at:
             start -= 1  # keep a group name above its first visible row
-        for i, (row, key) in enumerate(entries[start:start + visible]):
+        shown = entries[start:start + visible]
+        if shown and shown[-1][0] is None:
+            shown.pop()
+        for i, (row, key) in enumerate(shown):
             yy = list_top + i
             if row is None:
                 self.put(yy, x + 2, key, self.theme.INFO, bold=True)
@@ -459,6 +467,9 @@ class Dashboard(FanPanel):
             color = self.theme.WARN if staged is not None else self.theme.TEXT
             self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], color, dim=staged is None)
 
+        if self.locked(state):
+            self.put(list_top + len(shown), x + 2, "Select custom on the mode row to edit.", self.theme.TEXT, dim=True)
+
         # Detail footer inside the box
         detail_y = y + height - detail_h
         self.put(detail_y, x + 1, "─" * (width - 2), self.theme.ACCENT, dim=True)
@@ -484,7 +495,8 @@ class Dashboard(FanPanel):
                     reason if reason and not reason.startswith("needs root") else
                     "Stock-mode limits need root: press s or run sudo loqctl serve")
             self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
-            self.put(detail_y + 2, x + 2, fit_parts([f"Locked in {mode} mode", "select custom on the mode row"], width - 4, "; "),
+            self.put(detail_y + 2, x + 2, (lambda long: long if len(long) <= width - 4 else "Select custom on the mode row to edit")(
+                         f"Locked in {mode} mode; select custom to edit"),
                      self.theme.TEXT, dim=True)
         else:
             item = state["attributes"][key]
