@@ -124,6 +124,19 @@ class NVML:
             return None
 
 
+def battery_health(p):
+    "Cycle count, wear and capacities of one battery; None where sysfs lacks them or design is 0."
+    for full_name, design_name, divisor in (("energy_full", "energy_full_design", 1e6),
+                                            ("charge_full", "charge_full_design", 1e6)):
+        full, design = scaled(p / full_name, divisor), scaled(p / design_name, divisor)
+        if full is not None and design:
+            break
+    else:
+        full, design = None, None
+    return {"cycles": scaled(p / "cycle_count"), "full_wh": full if design else None,
+            "design_wh": design or None, "health_percent": full / design * 100 if design else None}
+
+
 class Sensors:
     def __init__(self, root=Path("/sys"), proc=Path("/proc"), dev=Path("/dev")):
         self.root, self.proc, self.dev = Path(root), Path(proc), Path(dev)
@@ -407,7 +420,8 @@ class Sensors:
                 limit = (f"{threshold:.0f}%" if threshold is not None
                          else None if conservation is None else "on" if conservation == "1" else "off")
                 battery.append({"charge_limit": limit, "name": p.name, "percent": scaled(p / "capacity"),
-                                "status": read(p / "status"), "power_w": scaled(p / "power_now", 1e6)})
+                                "status": read(p / "status"), "power_w": scaled(p / "power_now", 1e6),
+                                **battery_health(p)})
             elif (online := read(p / "online")) is not None:
                 ac.append(online == "1")
         gpu = self.gpu()
