@@ -16,6 +16,7 @@ _loqctl() {
     case $cmd in
         "") COMPREPLY=($(compgen -W "tui status metrics capabilities limits fan mode set kb doctor serve --socket --version -h --help" -- "$cur")) ;;
         metrics) COMPREPLY=($(compgen -W "--watch -h" -- "$cur")) ;;
+        serve) COMPREPLY=($(compgen -W "--uid -h" -- "$cur")) ;;
         mode)
             local modes="low-power balanced performance max-power custom"
             [[ -r /sys/firmware/acpi/platform_profile_choices ]] && modes=$(< /sys/firmware/acpi/platform_profile_choices)
