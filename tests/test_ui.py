@@ -832,6 +832,7 @@ class ViewTests(unittest.TestCase):
                    "gpu": {"devices": [{"name": "NVIDIA GeForce RTX 4050 Laptop GPU", "memory_clock_mhz": 8000,
                                         "memory_used_mib": 405, "memory_total_mib": 6144, "clock_mhz": 2100}]},
                    "power": {"rapl": {"package": 21.5, "core": 9.0}, "battery_w": 0.0, "battery_status": "Charging"},
+                   "battery": [{"name": "BAT1", "health_percent": 98.1, "cycles": 77, "full_wh": 58.9, "design_wh": 60.0}],
                    "voltages": [{"label": f"Vcore {i}", "v": 1.0} for i in range(6)],
                    "temperatures": [{"group": "cpu", "label": f"Core {i}", "c": 50} for i in range(12)]}
         for h, w in ((20, 72), (24, 80)):
@@ -843,6 +844,8 @@ class ViewTests(unittest.TestCase):
                 self.assertTrue(any(t == "Power" for t in rows.values()))
                 self.assertTrue(any(t.strip().startswith("package") and "21.5" in t for t in rows.values()))
                 self.assertTrue(any(t.strip().startswith("battery") and "battery0" not in t for t in rows.values()))
+                self.assertTrue(any(t.startswith("  BAT1") and "health 98%" in t and "cycles 77" in t
+                                    for t in rows.values()))
                 self.assertTrue(all(y < h - 2 for y in rows))
                 for t in rows.values():
                     self.assertLessEqual(len(t), w - 14 - 4)
