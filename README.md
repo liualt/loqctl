@@ -147,11 +147,13 @@ Safety: writes go only to an allowlist of the per-point temperature and pwm file
 
 ## CLI
 
-Read commands print JSON.
+Read commands print JSON. `metrics --watch [SECONDS]` prints one compact JSON object per line until interrupted,
+using the local sensors or the server socket. A failed sample is reported on stderr and the stream continues.
 
 ```sh
 loqctl status
 loqctl metrics
+loqctl metrics --watch 2             # one JSON line every 2 s (default 1, minimum 1); Ctrl+C stops
 loqctl capabilities
 loqctl limits                        # per-mode firmware limits as JSON
 loqctl fan                           # fan curve, speed unit and RPM as JSON

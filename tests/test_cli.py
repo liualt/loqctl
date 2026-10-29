@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,20 +27,52 @@ class CliTests(helpers.SysfsCase):
             self.assertEqual(m_cli.main(["_apply", json.dumps([["ppt_pl1_spl", 60]])]), 0)
         self.assertEqual(json.loads(out.getvalue())[0]["status"], "APPLIED")
 
-    def test_metrics_watch_prints_one_json_line_per_sample(self):
-        snaps = [{"metrics": {"n": 1}}, {"metrics": {"n": 2}}]
+    def run_watch(self, args, samples):
+        """Run metrics --watch with mocked Sensors; returns (exit, stdout lines, stderr, sleeps, Sensors mock)."""
+        sleeps, calls = [], []
 
-        def snapshot():
-            if not snaps:
+        def sample():
+            calls.append(1)
+            if len(calls) > len(samples) + 1:  # first call primes
                 raise KeyboardInterrupt
-            return snaps.pop(0)
+            return samples[len(calls) - 2] if len(calls) > 1 else None
 
-        backend = unittest.mock.Mock(remote=False, notice="", snapshot=snapshot)
-        out = io.StringIO()
-        with patch.object(m_cli, "Backend", return_value=backend), patch.object(m_cli.time, "sleep"), \
-                contextlib.redirect_stdout(out):
+        sensors = unittest.mock.Mock()
+        sensors.return_value.sample.side_effect = sample
+        backend = unittest.mock.Mock(remote=False, notice="")
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(m_cli, "Backend", return_value=backend), patch.object(m_cli, "Sensors", sensors), \
+                patch.object(m_cli.time, "sleep", sleeps.append), \
+                patch.object(m_cli.time, "monotonic", side_effect=[100, 100, 101.2, 102.0]), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = m_cli.main(["metrics", "--watch"] + args)
+        return code, out.getvalue().splitlines(), err.getvalue(), sleeps, sensors
+
+    def test_metrics_watch_streams_with_one_sensors_and_deadline_sleeps(self):
+        code, lines, _, sleeps, sensors = self.run_watch([], [{"n": 1}, {"n": 2}])
+        self.assertEqual(code, 130)
+        self.assertEqual([json.loads(x) for x in lines], [{"n": 1}, {"n": 2}])
+        sensors.assert_called_once_with()
+        self.assertEqual([round(x, 1) for x in sleeps], [1, 0.8, 1])
+
+    def test_metrics_watch_interval_argument_and_minimum(self):
+        _, _, _, sleeps, _ = self.run_watch(["3"], [{"n": 1}])
+        self.assertEqual(sleeps[0], 3)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(m_cli.main(["metrics", "--watch", "0.5"]), 1)
+        self.assertIn("at least 1 second", err.getvalue())
+
+    def test_metrics_watch_survives_a_failed_sample(self):
+        sensors = unittest.mock.Mock()
+        sensors.return_value.sample.side_effect = [None, OSError("boom"), {"n": 2}, KeyboardInterrupt]
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(m_cli, "Backend", return_value=unittest.mock.Mock(remote=False, notice="")), \
+                patch.object(m_cli, "Sensors", sensors), patch.object(m_cli.time, "sleep"), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             self.assertEqual(m_cli.main(["metrics", "--watch"]), 130)
-        self.assertEqual([json.loads(line) for line in out.getvalue().splitlines()], [{"n": 1}, {"n": 2}])
+        self.assertEqual(json.loads(out.getvalue()), {"n": 2})
+        self.assertIn("boom", err.getvalue())
 
     def test_doctor_reports_each_check_without_writes(self):
         proc = self.root / "proc"
