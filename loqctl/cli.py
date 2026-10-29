@@ -48,7 +48,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Lenovo LOQ firmware controls and live terminal telemetry")
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--socket", help="Connect to an existing loqctl Unix socket")
-    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,fan,mode,set,kb,serve}")
+    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,fan,mode,set,profile,kb,serve}")
     commands.add_parser("tui", help="Open the dashboard (default)")
     for cmd in ("status", "metrics", "capabilities"):
         commands.add_parser(cmd, help="Print " + cmd + " as JSON")
@@ -59,6 +59,9 @@ def main(argv=None):
     setting = commands.add_parser("set", help="Set one firmware attribute, with readback verification")
     setting.add_argument("attribute", choices=FIELDS)
     setting.add_argument("value", type=int)
+    profile = commands.add_parser("profile", help="List, save or apply named profiles (mode, limits, fan curve)")
+    profile.add_argument("action", choices=("list", "save", "apply"))
+    profile.add_argument("name", nargs="?", help="Profile name for save and apply")
     kb_parser = commands.add_parser("kb", help="Keyboard RGB via LegionAura")
     kb_parser.add_argument("args", nargs=argparse.REMAINDER, help="status|apply|off|static|breath|wave|hue|brightness …")
     server = commands.add_parser("serve", help="Serve the local HTTP API; run with sudo")
@@ -124,6 +127,18 @@ def main(argv=None):
                 result = backend.write("mode", args.value)
             elif args.command == "set":
                 result = backend.write(args.attribute, args.value)
+            elif args.command == "profile":
+                from . import profiles
+                if args.action == "list":
+                    result = {"profiles": profiles.list_profiles()}
+                elif not args.name:
+                    raise ControlError(f"profile {args.action} needs a name.")
+                elif args.action == "save":
+                    result = {"saved": str(profiles.save_profile(backend, args.name))}
+                else:
+                    result = profiles.apply_profile(backend, args.name)
+                    print(json.dumps(result, indent=2, allow_nan=False))
+                    return 0 if result["applied"] else 1
         print(json.dumps(result, indent=2, allow_nan=False))
         return 0
     except (ControlError, OSError, ValueError, http_client.HTTPException, curses.error) as exc:

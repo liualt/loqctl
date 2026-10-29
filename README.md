@@ -157,6 +157,9 @@ loqctl fan                           # fan curve, speed unit and RPM as JSON
 loqctl mode                          # current mode and available modes
 sudo loqctl mode custom
 sudo loqctl set ppt_pl1_spl 50
+loqctl profile list                  # saved profiles in ~/.config/loqctl/profiles
+loqctl profile save gaming           # save the current mode, limits and fan curve
+loqctl profile apply gaming          # check the whole profile, then write it
 ```
 
 Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_capdata` and `_fancurve` are internal, used via sudo by the dashboard.
