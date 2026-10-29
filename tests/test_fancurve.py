@@ -565,6 +565,70 @@ class FanCurveSurfaceTests(FanPanelFixture):
         self.assertIn("enable_platformprofile=0", text)
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
 
+    def test_fans_fit_small_terminals(self):
+        dash = self.dash()
+        self.keys(dash, {"mode": "custom"}, "f")
+        cells = {}
+        dash.put = lambda y, x, text, *a, **k: cells.update({(y, x + i): c for i, c in enumerate(str(text))})
+        metrics = {"fans": [{"rpm": 2000.0}, {"rpm": 1900.0}], "cpu": {"temperature_c": 67.0}}
+        for height, width in ((17, 57), (21, 66)):
+            for details in (False, True):
+                cells.clear()
+                dash.fan_details = details
+                dash.draw_fans({"mode": "custom"}, metrics, 1, 0, height, width)
+                self.assertTrue(all(0 <= y < height + 1 and 0 <= x < width for y, x in cells), (height, width))
+                text = "".join(cells.get((2, x), " ") for x in range(width))
+                self.assertIn("Point 1/", text)
+                self.assertEqual("Fan 2" in "".join(cells.values()), details)
+        dash.fan_sel = len(dash.fan_target()) - 1  # the table scrolls to the last point
+        cells.clear()
+        dash.draw_fans({"mode": "custom"}, metrics, 1, 0, 17, 24)
+        self.assertEqual("".join(cells.get((4, x), " ") for x in range(24)).split()[-1], str(dash.fan_sel + 1))
+
+    def test_full_screen_fits_small_terminals(self):
+        metrics = {"fans": [{"rpm": 2000.0}, {"rpm": 1900.0}], "cpu": {"temperature_c": 67.0, "power_w": 20.0},
+                   "gpu": {"devices": [{"temperature_c": 55.0}]}, "timestamp": time.time()}
+        for size in ((20, 72), (24, 80)):
+            for mode in ("custom", "balanced", "unavailable"):
+                for details in (False, True):
+                    dash = self.dash("custom" if mode == "unavailable" else mode)
+                    state = {"mode": "custom" if mode == "unavailable" else mode, "model": "LOQ", "metrics": metrics}
+                    self.keys(dash, state, "f")
+                    if mode == "unavailable":
+                        dash.fan = {"available": False, "reason": "legion_laptop hwmon not found"}
+                        dash.fan_result, dash.fan_loading = None, False  # a finished load would replace it
+                    else:
+                        dash.fan_sel = len(dash.fan_points()) - 1
+                    dash.fan_details = details
+                    dash.panel = "fans"
+                    dash.kb_seen = dash.keyboard.last_seq = 0
+                    dash.paused = True
+                    dash.s.getmaxyx.return_value = size
+                    del dash.put, dash.box
+                    calls = []
+                    dash.put = lambda y, x, text, *a, **k: calls.append((y, x, str(text)))
+                    dash.draw(state)
+                    h, w = size
+                    where = (size, mode, details)
+                    self.assertTrue(all(0 <= y < h and 0 <= x and x + len(t) <= w or (y, x + len(t)) == (h - 1, w)
+                                        for y, x, t in calls), where)
+                    cx = dash.NAV_W + 1
+                    top = sorted((x, x + len(t)) for y, x, t in calls if y == 1 and x > cx and t.strip(" ─")
+                                 and not t.startswith(("╭", "─")))
+                    self.assertTrue(all(a[1] <= b[0] for a, b in zip(top, top[1:])), (where, top))  # title vs right label
+                    self.assertEqual(sum(1 for y, x, t in calls if y == h - 1), 1, where)  # one footer line
+                    if mode == "unavailable":
+                        title = next((x, x + len(t)) for y, x, t in calls if y == 1 and t.startswith(" Fans"))
+                        label = next(x for y, x, t in calls if y == 1 and t == " Unavailable ")  
+                        self.assertLessEqual(title[1], label, where)
+                        continue
+                    drawn = " ".join(t for y, x, t in calls)
+                    self.assertTrue(str(dash.fan_sel + 1) in drawn.split() if details else "●" in drawn, where)  # point 10 is drawn
+                    self.assertIn("Fans", drawn)
+                    if mode == "balanced":
+                        self.assertIn("Select custom to edit.", drawn)
+                    self.assertIn("t details", "".join(t for y, x, t in calls if y == h - 1), where)
+
     def test_graph_draws_rpm_curve_with_cursor(self):
         rpm_root = self.root / "rpm"
         make_hwmon(rpm_root, NECN_STOCK, "rpm", max_rpm=10000)
@@ -577,7 +641,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.draw_fans({"mode": "custom"}, {"cpu": {"temperature_c": 67.4}, "fans": [{"rpm": 2000.0}]}, 1, 0, 30, 110)
         text = {t for t, _ in cells.values()}
         self.assertIn("Point 3/10 · 75°C · 3500 RPM (was 3400 RPM) (fan 2 was 3700 RPM)", text)  # fan 2 is compared too
-        self.assertIn("▲ CPU 67°C", text)
+        self.assertIn("Fans · F1 2000 RPM · CPU 67°C", dash.box.call_args.args[4])
         self.assertTrue({"70°C", " 4000", "RPM"} <= text)
         self.assertFalse(any("GPU" in t or "Curves" in t for t in text))  # details and the curve list stay hidden
         axis = next(y for (y, x), (t, _) in cells.items() if t.startswith("└"))
@@ -587,13 +651,15 @@ class FanCurveSurfaceTests(FanPanelFixture):
         self.assertEqual(len(selected), 1)
         lines = {x for (y, x), (t, _) in cells.items() if "\u2800" < t <= "\u28ff"}
         self.assertTrue(set(range(marks[0] + 1, marks[-1])) <= lines | set(marks))  # segments leave no gaps
-        self.keys(dash, {"mode": "custom"}, "d")
+        self.keys(dash, {"mode": "custom"}, "t")
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 30, 110)
         text = {t for t, _ in cells.values()}
         self.assertIn("Point 3/10 · CPU 75/73°C · GPU 75/73°C · IC 65/59°C · Fan 1 3500 RPM · Fan 2 3500 RPM", text)
         self.assertIn("IC", text)  # the per-point table
         self.assertIn("Unit: RPM", dash.box.call_args.args[6])
-        dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 17, 72)  # small: no table
+        dash.draw_fans({"mode": "balanced"}, {"fans": [{"rpm": 1800.0}, {"rpm": 1700.0}], "cpu": {"temperature_c": 61.0},
+                                              "gpu": {"devices": [{"temperature_c": 55.0}]}}, 1, 0, 17, 72)
+        self.assertEqual(dash.box.call_args.args[4], "Fans · F1 1800 RPM · F2 1700 RPM · CPU 61°C")  # GPU dropped, not cut
         self.assertIn("Fan curves are locked in balanced mode. Select custom to edit.", {t for t, _ in cells.values()})
 
 
