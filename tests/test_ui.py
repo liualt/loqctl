@@ -699,6 +699,47 @@ class UiTests(helpers.SysfsCase):
             self.assertTrue(any(t.startswith("GPU") and "mode Hybrid (auto)" in t for _, _, t in puts), (h, w))
             self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
 
+    def test_dialogs_and_header_stay_inside_the_screen(self):
+        modes = ["quiet", "balanced", "performance", "custom"]
+        template = {"label": "x", "unit": "W", "available": True, "current_value": 55, "min_value": 5,
+                    "max_value": 140, "scalar_increment": 1}
+        attrs = {k: {**template, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS}
+        for h, w in ((20, 72), (24, 80)):
+            for case in ("limits", "results", "header"):
+                grid = [[" "] * w for _ in range(h)]
+
+                def addnstr(y, x, text, n, attr=0):
+                    for i, c in enumerate(text[:n]):
+                        grid[y][x + i] = c
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = addnstr
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+                dash.panel = "main"
+                state = {"metrics": {}, "attributes": attrs, "modes": modes, "mode": "custom",
+                         "model": "Lenovo " + "LOQ Gaming Notebook " * 3, "mode_limits": None}
+                if case == "limits":
+                    dash.show_limits = True
+                elif case == "results":
+                    dash.show_results = True
+                    dash.apply_results = [{"key": "ppt_pl1_spl", "before": 1, "requested": 2, "current": 2,
+                                           "status": "APPLIED"}] * 14
+                dash.draw(state)
+                text = ["".join(r) for r in grid]
+                if case == "limits":
+                    self.assertIn("custom", text[next(i for i, t in enumerate(text) if "Control" in t and "quiet" in t)])
+                    self.assertTrue(any("more" in t and "…" in t for t in text), (h, w))
+                elif case == "results":
+                    self.assertTrue(any("… " in t and "more" in t for t in text), (h, w))
+                    drawn = [t for t in text if "ppt" in t.lower() or "APPLIED" in t]
+                    self.assertTrue(drawn and all(t.rstrip(" │").endswith("APPLIED") for t in drawn), (h, w))
+                    self.assertTrue(any("Enter / Esc closes" in t for t in text), (h, w))
+                else:
+                    self.assertIn("CUSTOM", text[0], (h, w))
+                    self.assertIn("API", text[0], (h, w))
+
     def test_battery_health_fits_summary_and_details(self):
         battery = [{"name": "BAT1", "percent": 90, "status": "Discharging", "charge_limit": "80%",
                     "health_percent": 98.13, "cycles": 77, "full_wh": 58.88, "design_wh": 60.0}]
