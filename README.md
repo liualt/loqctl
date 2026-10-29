@@ -315,6 +315,10 @@ Added:
 - The firmware GPU mode (read-only).
 - `loqctl metrics --watch` streams JSON samples.
 - `loqctl doctor` shows which features this laptop supports.
+- Battery time left or to full, smoothed over 30 s, in the System box, the details view and `metrics`.
+- `NO_COLOR` is honoured, and state is marked without colors.
+- Bash, zsh and fish completions.
+- `make install` is atomic.
 - `make install`, `make uninstall` and `make test`.
 
 Fixed:
