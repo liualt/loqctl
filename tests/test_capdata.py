@@ -51,6 +51,7 @@ class ParseTests(unittest.TestCase):
             for mode, value in zip(MODES, values):
                 self.assertEqual(table[mode][key], value, (mode, key))
         self.assertTrue(capdata.valid_table(table))
+        self.assertFalse(capdata.valid_table({mode: {} for mode in MODES}))
 
     def test_read_mode_table(self):
         with tempfile.TemporaryDirectory() as tmp:

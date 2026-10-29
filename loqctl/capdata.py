@@ -98,8 +98,8 @@ def effective_value(mode, key, current, table):
 
 
 def valid_table(table):
-    """True for a non-empty dict mode -> dict FIELDS key -> int."""
-    return isinstance(table, dict) and bool(table) and all(
+    """True for a dict mode -> dict FIELDS key -> int with at least one value."""
+    return isinstance(table, dict) and any(table.values()) and all(
         isinstance(mode, str) and isinstance(row, dict)
         and all(k in FIELD_IDS and type(v) is int for k, v in row.items())
         for mode, row in table.items())
