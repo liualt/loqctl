@@ -596,6 +596,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     self.keys(dash, state, "f")
                     if mode == "unavailable":
                         dash.fan = {"available": False, "reason": "legion_laptop hwmon not found"}
+                        dash.fan_result, dash.fan_loading = None, False  # a finished load would replace it
                     else:
                         dash.fan_sel = len(dash.fan_points()) - 1
                     dash.fan_details = details
@@ -617,6 +618,9 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     self.assertTrue(all(a[1] <= b[0] for a, b in zip(top, top[1:])), (where, top))  # title vs right label
                     self.assertEqual(sum(1 for y, x, t in calls if y == h - 1), 1, where)  # one footer line
                     if mode == "unavailable":
+                        title = next((x, x + len(t)) for y, x, t in calls if y == 1 and t.startswith(" Fans"))
+                        label = next(x for y, x, t in calls if y == 1 and t == " Unavailable ")  
+                        self.assertLessEqual(title[1], label, where)
                         continue
                     drawn = " ".join(t for y, x, t in calls)
                     self.assertTrue(str(dash.fan_sel + 1) in drawn.split() if details else "●" in drawn, where)  # point 10 is drawn
