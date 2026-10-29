@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +27,21 @@ class CliTests(helpers.SysfsCase):
         with patch.object(m_cli, "Hardware", return_value=self.hw), contextlib.redirect_stdout(out):
             self.assertEqual(m_cli.main(["_apply", json.dumps([["ppt_pl1_spl", 60]])]), 0)
         self.assertEqual(json.loads(out.getvalue())[0]["status"], "APPLIED")
+
+    def test_metrics_watch_prints_one_json_line_per_sample(self):
+        snaps = [{"metrics": {"n": 1}}, {"metrics": {"n": 2}}]
+
+        def snapshot():
+            if not snaps:
+                raise KeyboardInterrupt
+            return snaps.pop(0)
+
+        backend = unittest.mock.Mock(remote=False, notice="", snapshot=snapshot)
+        out = io.StringIO()
+        with patch.object(m_cli, "Backend", return_value=backend), patch.object(m_cli.time, "sleep"), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(m_cli.main(["metrics", "--watch"]), 130)
+        self.assertEqual([json.loads(line) for line in out.getvalue().splitlines()], [{"n": 1}, {"n": 2}])
 
     def test_doctor_reports_each_check_without_writes(self):
         proc = self.root / "proc"

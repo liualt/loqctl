@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 from . import VERSION
 from .api import http_client
@@ -52,6 +53,7 @@ def main(argv=None):
     commands.add_parser("tui", help="Open the dashboard (default)")
     for cmd in ("status", "metrics", "capabilities"):
         commands.add_parser(cmd, help="Print " + cmd + " as JSON")
+    commands.choices["metrics"].add_argument("--watch", action="store_true", help="Print one JSON line per second until interrupted")
     commands.add_parser("limits", help="Print per-mode firmware limits as JSON")
     commands.add_parser("fan", help="Print the fan curve and RPM as JSON")
     mode = commands.add_parser("mode", help="Read or set the platform mode")
@@ -108,6 +110,10 @@ def main(argv=None):
                 backend.load_mode_limits(allow_sudo=sudo_ok)
                 curses.wrapper(lambda screen: Dashboard(screen, backend, sudo_ok=sudo_ok).run())
                 return 0
+            elif args.command == "metrics" and args.watch:
+                while True:
+                    print(json.dumps(backend.snapshot().get("metrics", {}), allow_nan=False), flush=True)
+                    time.sleep(0.75)  # snapshot itself takes 0.25 s
             elif args.command in ("status", "metrics"):
                 if args.command == "status":
                     backend.load_mode_limits()
