@@ -13,7 +13,7 @@ import sys
 import termios
 import time
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, PropertyMock
 
 from pathlib import Path
 
@@ -609,16 +609,54 @@ class UiTests(helpers.SysfsCase):
     def test_tab_cycles_supported_sections_and_hides_missing(self):
         dash = self.dash()
         dash.panel = "overview"
-        dash.fan = {"available": False}
         dash.keyboard.available = False
         state = self.hw.capabilities()
-        self.assertEqual(dash.sections(state), ["overview", "main"])
+        self.assertEqual(dash.sections(state), ["overview", "main", "fans"])
         dash.handle(9, state)
         self.assertEqual(dash.panel, "main")
-        dash.handle(9, state)
-        self.assertEqual(dash.panel, "overview")
         dash.handle(curses.KEY_BTAB, state)
-        self.assertEqual(dash.panel, "main")
+        self.assertEqual(dash.panel, "overview")
+        dash.keyboard.available = True
+        self.assertEqual(dash.sections(state)[-1], "keyboard")
+
+    def test_esc_returns_to_overview_when_power_is_hidden(self):
+        dash = self.dash()
+        dash.rows = lambda state: []
+        dash.panel = "keyboard"
+        dash.handle(27, {})
+        self.assertEqual(dash.panel, "overview")
+        dash.panel = "fans"
+        dash.fan_take = lambda: None
+        dash.fan_edit = None
+        dash.handle(27, {})
+        self.assertEqual(dash.panel, "overview")
+
+    def test_keyboard_page_never_cuts_a_line_mid_word_at_72x20(self):
+        grid = [[" "] * 72 for _ in range(20)]
+
+        def addnstr(y, x, text, n, attr=0):
+            for i, c in enumerate(text[:n]):
+                grid[y][x + i] = c
+
+        screen = Mock()
+        screen.getmaxyx.return_value = (20, 72)
+        screen.addnstr.side_effect = addnstr
+        with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                patch.object(curses, "has_colors", return_value=False):
+            dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+        dash.keyboard = m_keyboard.Keyboard(binary="/nonexistent/legionaura", config=self.root / "legionaura.json")
+        dash.panel = "keyboard"
+        dash.draw({"metrics": {}, "attributes": {}, "modes": []})
+        rows = ["".join(r)[m_ui.Dashboard.NAV_W + 1:].strip("│ ") for r in grid]
+        self.assertIn("for 4-zone RGB control.", rows)
+        with patch.object(m_keyboard.Keyboard, "available", new_callable=PropertyMock, return_value=True):
+            dash.draw({"metrics": {}, "attributes": {}, "modes": []})
+        rows = ["".join(r)[m_ui.Dashboard.NAV_W + 1:].strip("│ ") for r in grid]
+        tip = next(r for r in rows if r.startswith("Hardware"))
+        self.assertIn(tip, ("Hardware shows the true color. UI uses your terminal theme only.",
+                            "Hardware shows the true color."))
+        title = next(r for r in rows if "HSV picker" in r)
+        self.assertIn(title, ("zone 1  HSV picker  (terminal swatch ≈ nearest ANSI)", "zone 1  HSV picker"))
 
     def test_overview_arrows_switch_section_but_never_edit(self):
         dash = self.dash()
