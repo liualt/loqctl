@@ -785,6 +785,7 @@ class ViewTests(unittest.TestCase):
                            "power_source": "RAPL energy counters from sysfs"},
                    "gpu": {"devices": [{"name": "NVIDIA GeForce RTX 4050 Laptop GPU", "memory_clock_mhz": 8000,
                                         "memory_used_mib": 405, "memory_total_mib": 6144, "clock_mhz": 2100}]},
+                   "power": {"rapl": {"package": 21.5, "core": 9.0}, "battery_w": 0.0, "battery_status": "Charging"},
                    "voltages": [{"label": f"Vcore {i}", "v": 1.0} for i in range(6)],
                    "temperatures": [{"group": "cpu", "label": f"Core {i}", "c": 50} for i in range(12)]}
         for h, w in ((20, 72), (24, 80)):
@@ -793,6 +794,8 @@ class ViewTests(unittest.TestCase):
                 dash.draw_details(metrics, 1, 14, h - 3, w - 14)
                 rows = {y: t for y, x, t in calls if x == 16}
                 self.assertTrue(any("Throttle" in t and "cpu yes" in t for t in rows.values()))
+                self.assertTrue(any(t == "Power" for t in rows.values()))
+                self.assertTrue(any(t.strip().startswith("package") and "21.5" in t for t in rows.values()))
                 self.assertTrue(all(y < h - 2 for y in rows))
                 for t in rows.values():
                     self.assertLessEqual(len(t), w - 14 - 4)

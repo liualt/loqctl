@@ -607,33 +607,36 @@ class Dashboard(FanPanel):
                      self.theme.BAD if gpu_t else text, bool(gpu_t))]
         cores = list((cpu.get("cores") or {}).values())
         spark = "".join("·" if c is None else SPARK[min(7, round(c * 7 / 100))] for c in cores)
-        lines += [row("CPU", [f"{na(cpu.get('utilization_pct'), '%', 0)}", f"avg {na(cpu.get('clock_mhz'), ' MHz', 0)}",
+        lines += [row("CPU", [f"util {na(cpu.get('utilization_pct'), '%', 0)}", f"avg {na(cpu.get('clock_mhz'), ' MHz', 0)}",
                               f"max {na(cpu.get('max_clock_mhz'), ' MHz', 0)}", cpu.get("power_source") or "N/A"]),
                   row("", [f"cores {spark or 'N/A'}"], self.theme.OK)]
         if gpu:
             lines += [row("GPU", [gpu.get("name") or "N/A"], self.theme.GPU),
-                      row("", [na(gpu.get("utilization_pct"), "%", 0), f"core {na(gpu.get('clock_mhz'), ' MHz', 0)}",
+                      row("", [f"util {na(gpu.get('utilization_pct'), '%', 0)}", f"core {na(gpu.get('clock_mhz'), ' MHz', 0)}",
                                f"memory {na(gpu.get('memory_clock_mhz'), ' MHz', 0)}"]),
                       row("", [f"vram {na(gpu.get('memory_used_mib'), '', 0)}/{na(gpu.get('memory_total_mib'), ' MiB', 0)}",
                                f"limit {na(gpu.get('power_limit_w'), ' W')}"])]
         else:
             lines.append(row("GPU", ["N/A"]))
-        lines.append(("Voltages", head, True))
-        lines += [(f"  {v['label'][:30]:<30} {na(v['v'], ' V', 3)}", text, False)
-                  for v in (metrics.get("voltages") or [])[:3]] or [("  N/A", text, False)]
-        lines.append(("Temperatures", head, True))
-        lines += [(f"  {t['group']:<6} {t['label'][:24]:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)
-                  for t in (metrics.get("temperatures") or [])[:4]] or [("  N/A", text, False)]
         power = metrics.get("power") or {}
-        lines.append(("Power", head, True))
-        lines += [(f"  {name:<24} {na(watts, ' W')}", text, False) for name, watts in (power.get("rapl") or {}).items()]
+        items = [(f"  {name:<24} {na(watts, ' W')}", text, False) for name, watts in (power.get("rapl") or {}).items()]
         if "battery_w" in power:
-            lines.append(row("  battery", [na(power.get("battery_w"), " W"), power.get("battery_status") or "N/A"]))
+            items.append(row("  battery", [na(power.get("battery_w"), " W"), power.get("battery_status") or "N/A"]))
         for u in power.get("usbc") or []:
-            lines.append(row(f"  {u['name'][:6]}", [na(u["watts"], " W"), na(u["volts"], " V", 2), na(u["amps"], " A", 2)]))
-        room = height - 2
-        if len(lines) > room:
-            lines = lines[:max(0, room - 1)] + [("…", text, False)]
+            items.append(row(f"  {u['name'][:6]}", [na(u["watts"], " W"), na(u["volts"], " V", 2), na(u["amps"], " A", 2)]))
+        temps = [(f"  {t['group']:<6} {t['label'][:24]:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)
+                 for t in metrics.get("temperatures") or []]
+        volts = [(f"  {v['label'][:30]:<30} {na(v['v'], ' V', 3)}", text, False) for v in metrics.get("voltages") or []]
+        room, more = height - 2, False
+        # Power keeps its place; temperatures and voltages take what is left, shortest first to go.
+        for name, found in (("Power", items), ("Temperatures", temps), ("Voltages", volts)):
+            left = room - len(lines) - 1
+            more = more or left < 1 or len(found) > left
+            if left >= 1:
+                lines.append((name, head, True))
+                lines += (found or [("  N/A", text, False)])[:left]
+        if more or len(lines) > room:
+            lines = lines[:max(0, min(len(lines), room - 1))] + [("…", text, False)]
         for i, (line, color, bold) in enumerate(lines):
             self.put(y + 1 + i, ix, line, color, bold)
 
