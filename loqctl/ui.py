@@ -754,14 +754,14 @@ class Dashboard(FanPanel):
         self.put(tip_y + 1, ix, f"config {kb.config}"[:iw], self.theme.TEXT, dim=True)
 
     HELP_LINES = (
-        "Global    Tab section t details  Space pause  ? help  q quit",
+        "Global    Tab section  Space pause  ? help  q quit",
+        "Overview  t details   Esc closes details",
         "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
         "          0-9 type a value   Backspace delete   Esc clear",
-        "          Enter apply all   d custom default   r discard all",
+        "          Enter apply   r discard   d stage firmware default",
         "          Limits need custom mode (Enter on mode row)",
         "          v last results   s sudo authenticate (if needed)",
         "          m overlay of every mode's firmware limits",
-        "",
         "Keyboard  l open lighting panel   Esc back to firmware",
         "          1–4 select zone   ←/→ adjust HSV   ↑↓ channel",
         "          e cycle effect   b brightness   w wave dir",

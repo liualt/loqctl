@@ -30,7 +30,7 @@ If the first command fails, loqctl can still show telemetry but cannot change fi
 
 ```sh
 git clone <this repository> && cd loqctl
-make install PREFIX=$HOME/.local   # user install; make sure ~/.local/bin is on PATH
+make install PREFIX=$HOME/.local   # user install; PREFIX must be absolute; make sure ~/.local/bin is on PATH
 loqctl --version
 ```
 
@@ -70,7 +70,7 @@ A section list on the left (Overview, Power, Fans, Keyboard) picks the page on t
 | `←→` / `- +` | Stage one step (on the mode row: cycle modes) |
 | `0-9` / `Backspace` | Type into the selected limit (custom mode); the old value is struck through |
 | `Enter` | Apply all staged edits, each write verified (refuses while a value is marked red). On the mode row: `←→` choose, `Enter` applies |
-| `Esc` | Clear the selected row |
+| `Esc` | Clear the selected limit (custom mode, row unlocked) |
 | `d` | Stage the firmware default for the selected control |
 | `r` | Discard staged edits |
 | `l` | Keyboard lighting panel |
@@ -99,8 +99,8 @@ Firmware writes need root. You have two options:
 | Key | Action |
 | --- | --- |
 | `1`–`4` | Select zone |
-| `↑↓` | Choose H / S / V channel |
-| `←→` | Nudge channel (`H` / `L` for fine steps) |
+| `↑↓` / `j` `k` | Choose H / S / V channel |
+| `←→` / `-` `+` `=` | Nudge channel (`H` / `L` for fine steps) |
 | `e` | Cycle effect: static → breath → wave → hue → off |
 | `b` | Toggle brightness low/high |
 | `w` | Wave direction ltr/rtl |
@@ -129,7 +129,7 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 - Temperatures are fixed: up and down temperatures are shown but not editable. Each point has one speed, edited in the curve's unit. Setting it writes the same speed to fan 1 and fan 2, each held between its neighbours' speeds, its safety floor and the top speed.
 - A point's speed never crosses its neighbours: it stays between the previous and next point's speed.
 - The curve is read in the background each time the panel opens and after each write, never cached, so a curve changed by a resume or another program shows up on the next open. Each file read costs the module a full EC table read (about 0.9 s for the whole curve on a LOQ 15IRX9).
-- `loqctl fan` prints the curve, speed unit, `max_rpm` and RPM as JSON.
+- `loqctl fan` prints JSON with `unit`, `max_rpm`, `rpm` and `points`.
 - Verified on a LOQ 15IRX9 (BIOS NECN44WW, LenovoLegionLinux 0.1.3): reading the curve, the `rpm` unit and its scaling, and that the stock curve passes validation. **Writes are unverified on hardware.** On this model the module reads the curve from one EC table and writes another, so a verified apply needs a real test; if readback never matches, loqctl reports the writes as FAILED rather than guessing.
 
 | Key | Action |
@@ -210,7 +210,7 @@ Every source appears only when the system exposes it; anything else shows `N/A` 
 - Voltages: battery and hwmon `in*` inputs. CPU 0 Vcore (read from CPU 0 only; N/A outside 0.3 to 2.0 V) needs root (run `loqctl serve` as root) on Intel with the `msr` module loaded; it is N/A on AMD. GPU voltage is not available from NVML.
 - Throttling: Intel thermal-throttle event counts and NVML clocks-event reasons.
 - Battery: cycle count, health in % and capacity in Wh, plus the charge limit (read-only). Wh only on batteries with energy files.
-- Battery time: per battery in `metrics`, `power_w` is the raw reading in W, `power_avg_w` the 30 s average in W, `time_remaining_min` is in minutes (N/A when unknown or over 48 hours) and `time_kind` is "to empty" or "to full".
+- Battery time: per battery in `metrics`, `power_w` is the raw reading in W, `power_avg_w` the 30 s average in W, `time_remaining_min` is in minutes (`null` when unknown or over 48 hours) and `time_kind` is "to empty" or "to full".
 - GPU mode: the firmware GPU mode (shown read-only).
 
 ### Keyboard CLI
@@ -387,6 +387,7 @@ Previous release.
 
 ```sh
 python3 -m unittest discover -s tests -v
+make test                        # same suite
 python3 loqctl.py status        # or: python3 -m loqctl status
 ```
 
