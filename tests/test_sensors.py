@@ -37,6 +37,16 @@ class SensorsTests(helpers.SysfsCase):
         for value in ("[N/A]", "nan", "inf", None, "Not Supported"):
             self.assertIsNone(m_common.number(value))
 
+    def test_gpu_mode_decodes_gsync_and_igpumode(self):
+        base = self.root / "devices/platform/legion"
+        self.assertIsNone(m_sensors.gpu_mode(self.root))
+        base.mkdir(parents=True)
+        for gsync, igpu, expected in (("0", "0", "dGPU only"), ("1", "0", "Hybrid"), ("1", "1", "iGPU only"),
+                                      ("1", "2", "Hybrid (auto)"), ("0", "1", None), ("1", "7", None)):
+            (base / "gsync").write_text(gsync)
+            (base / "igpumode").write_text(igpu)
+            self.assertEqual(m_sensors.gpu_mode(self.root), expected)
+
     def test_smt_siblings_counted_once(self):
         root = helpers.make_root(self)
         s = m_sensors.Sensors(root, root / "proc", root / "dev")

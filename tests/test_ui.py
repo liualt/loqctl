@@ -683,6 +683,22 @@ class UiTests(helpers.SysfsCase):
         dash.handle(27, {})
         self.assertEqual(dash.panel, "overview")
 
+    def test_details_gpu_row_shows_mode_and_fits_the_screen(self):
+        for h, w in ((20, 72), (24, 80)):
+            puts = []
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            dash.panel, dash.view = "overview", "details"
+            gpu = {"name": "NVIDIA GeForce RTX 4060 Laptop GPU"}
+            dash.draw({"metrics": {"gpu": {"devices": [gpu]}, "gpu_mode": "Hybrid (auto)"},
+                       "attributes": {}, "modes": []})
+            self.assertTrue(any(t.startswith("GPU") and "mode Hybrid (auto)" in t for _, _, t in puts), (h, w))
+            self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
+
     def test_keyboard_page_never_cuts_a_line_mid_word_at_72x20(self):
         grid = [[" "] * 72 for _ in range(20)]
 
@@ -824,6 +840,12 @@ class ViewTests(unittest.TestCase):
         text = "\n".join(t for _, _, t in calls)
         for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle", "CPU", "GPU"):
             self.assertIn(needle, text)
+
+    def test_details_view_shows_gpu_mode(self):
+        for mode, shown in (("Hybrid", "mode Hybrid"), (None, "mode N/A")):
+            dash, calls = self.stub_dash()
+            dash.draw_details({"gpu_mode": mode}, 1, 0, 30, 60)
+            self.assertIn(shown, "\n".join(t for _, _, t in calls))
 
     def test_details_grid_keeps_throttle_and_whole_numbers(self):
         metrics = {"throttle": {"cpu": {"active": True, "core_events": 3, "package_events": 12}, "gpu": ["power cap"]},

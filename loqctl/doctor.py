@@ -13,6 +13,7 @@ from .capdata import read_mode_table
 from .common import LEGIONAURA, read
 from .fancurve import find_legion_hwmon
 from .hardware import Hardware
+from .sensors import gpu_mode
 
 OK, MISSING, NA = "ok", "missing", "n/a"
 
@@ -45,6 +46,15 @@ def check_hwmon(root, **_):
     if find_legion_hwmon(root):
         return OK, ""
     return MISSING, "install the legion_laptop module for fan curves"
+
+
+def check_gpu_mode(root, **_):
+    if not (Path(root) / "devices/platform/legion").is_dir():
+        return NA, "legion_laptop not loaded"
+    mode = gpu_mode(root)
+    if mode:
+        return OK, mode
+    return MISSING, "gsync and igpumode not readable; GPU mode shows N/A"
 
 
 def check_capdata(root, **_):
@@ -99,6 +109,7 @@ def check_sudo(**_):
 
 CHECKS = (("firmware-attributes", check_attributes), ("platform-profile custom", check_profile),
           ("gamezone binding", check_gamezone), ("legion_laptop hwmon", check_hwmon),
+          ("GPU mode", check_gpu_mode),
           ("debugfs capdata", check_capdata), ("RAPL readable", check_rapl), ("msr", check_msr),
           ("NVML or nvidia-smi", check_nvidia), ("legionaura", check_legionaura), ("sudo", check_sudo))
 
