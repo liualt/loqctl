@@ -585,6 +585,46 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.draw_fans({"mode": "custom"}, metrics, 1, 0, 17, 24)
         self.assertEqual("".join(cells.get((4, x), " ") for x in range(24)).split()[-1], str(dash.fan_sel + 1))
 
+    def test_full_screen_fits_small_terminals(self):
+        metrics = {"fans": [{"rpm": 2000.0}, {"rpm": 1900.0}], "cpu": {"temperature_c": 67.0, "power_w": 20.0},
+                   "gpu": {"devices": [{"temperature_c": 55.0}]}, "timestamp": time.time()}
+        for size in ((20, 72), (24, 80)):
+            for mode in ("custom", "balanced", "unavailable"):
+                for details in (False, True):
+                    dash = self.dash("custom" if mode == "unavailable" else mode)
+                    state = {"mode": "custom" if mode == "unavailable" else mode, "model": "LOQ", "metrics": metrics}
+                    self.keys(dash, state, "f")
+                    if mode == "unavailable":
+                        dash.fan = {"available": False, "reason": "legion_laptop hwmon not found"}
+                    else:
+                        dash.fan_sel = len(dash.fan_points()) - 1
+                    dash.fan_details = details
+                    dash.panel = "fans"
+                    dash.kb_seen = dash.keyboard.last_seq = 0
+                    dash.paused = True
+                    dash.s.getmaxyx.return_value = size
+                    del dash.put, dash.box
+                    calls = []
+                    dash.put = lambda y, x, text, *a, **k: calls.append((y, x, str(text)))
+                    dash.draw(state)
+                    h, w = size
+                    where = (size, mode, details)
+                    self.assertTrue(all(0 <= y < h and 0 <= x and x + len(t) <= w or (y, x + len(t)) == (h - 1, w)
+                                        for y, x, t in calls), where)
+                    cx = dash.NAV_W + 1
+                    top = sorted((x, x + len(t)) for y, x, t in calls if y == 1 and x > cx and t.strip(" ─")
+                                 and not t.startswith(("╭", "─")))
+                    self.assertTrue(all(a[1] <= b[0] for a, b in zip(top, top[1:])), (where, top))  # title vs right label
+                    self.assertEqual(sum(1 for y, x, t in calls if y == h - 1), 1, where)  # one footer line
+                    if mode == "unavailable":
+                        continue
+                    drawn = " ".join(t for y, x, t in calls)
+                    self.assertTrue(str(dash.fan_sel + 1) in drawn.split() if details else "●" in drawn, where)  # point 10 is drawn
+                    self.assertIn("Fans", drawn)
+                    if mode == "balanced":
+                        self.assertIn("Select custom to edit.", drawn)
+                    self.assertIn("t details", "".join(t for y, x, t in calls if y == h - 1), where)
+
     def test_graph_draws_rpm_curve_with_cursor(self):
         rpm_root = self.root / "rpm"
         make_hwmon(rpm_root, NECN_STOCK, "rpm", max_rpm=10000)

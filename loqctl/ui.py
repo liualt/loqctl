@@ -118,8 +118,8 @@ class Dashboard(FanPanel):
         "overview": ("Tab section", "↑↓ section", "t details", "m modes", "Space pause", "v results"),
         "main": ("Tab section", "↑↓ select", "←→ adjust", "Enter apply", "0-9 type", "Esc clear",
                  "d default", "r discard", "m modes", "Space pause", "v results"),
-        "fans": ("←→ point", "↑↓ speed", "Enter apply", "Esc back", "r discard", "W save", "R stock",
-                 "p curves", "t details"),
+        "fans": ("←→ point", "↑↓ speed", "Enter apply", "t details", "R stock", "Esc back", "r discard",
+                 "W save", "p curves"),
         "keyboard": ("Tab section", "1–4 zone", "←→ adjust HSV", "↑↓ channel", "Enter apply", "Esc back", "e effect",
                      "b bright", "c copy-all", "Space live"),
     }

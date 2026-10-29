@@ -360,8 +360,9 @@ class FanPanel:
         ix, iw = x + 2, width - 4
         if not self.fan.get("available"):
             loading = self.fan_loading
-            self.box(y, x, height, width, fit_parts(parts, max(8, width - 14)), self.theme.GPU,
-                     "Loading" if loading else "Unavailable")
+            state_label = "Loading" if loading else "Unavailable"
+            self.box(y, x, height, width, fit_parts(parts, max(8, width - len(state_label) - 10)), self.theme.GPU,
+                     state_label)
             if loading:
                 self.put(y + 2, ix, "Reading the fan curve from the embedded controller…", self.theme.TEXT, dim=True)
                 return
@@ -373,8 +374,9 @@ class FanPanel:
         scale = self.fan_scale()
         unit = "Unit: " + scale.label
         right = unit
+        title = fit_parts(parts, max(8, width - len(unit) - 10))
         if self.fan_edit is not None:
-            room = width - 40 - len(unit) - 14  # title, side padding and "Staged  · "
+            room = width - len(title) - len(unit) - 14  # title, side padding and "Staged  · "
             name = self.fan_preset or ""
             if len(name) > room:
                 name = name[:max(0, room - 1)] + "…" if room > 1 else ""
@@ -499,7 +501,10 @@ class FanPanel:
     def fan_footer(self, state, target, scale, y, x, w):
         lines = []
         if self.fan_locked(state):
-            lines.append((f"Fan curves are locked in {state.get('mode')} mode. Select custom to edit.", self.theme.WARN))
+            mode = state.get("mode")
+            text = next((t for t in (f"Fan curves are locked in {mode} mode. Select custom to edit.",
+                                     f"Locked in {mode} mode. Select custom to edit.") if len(t) <= w), "Select custom to edit.")
+            lines.append((text, self.theme.WARN))
         errors = validate_curve(target, scale)
         if self.fan_edit is not None and errors:
             lines.append((errors[0][2], self.theme.BAD))
