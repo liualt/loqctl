@@ -706,7 +706,7 @@ class Dashboard(FanPanel):
         self.put(tip_y + 1, ix, f"config {kb.config}"[:iw], self.theme.TEXT, dim=True)
 
     HELP_LINES = (
-        "Global    Tab section   t sensors   Space pause   ? help   q quit",
+        "Global    Tab section t sensors  Space pause  ? help  q quit",
         "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
         "          0-9 type a value   Backspace delete   Esc clear",
         "          Enter apply all   d custom default   r discard all",
