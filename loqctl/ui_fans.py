@@ -128,6 +128,7 @@ class FanPanel:
         if not hasattr(self, "fan"):
             self.fan_init()
         self.panel = "fans"
+        self.view = "summary"
         self.notice = "Reading the fan curve…"
         self.fan_request()
 

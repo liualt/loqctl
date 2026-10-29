@@ -124,7 +124,7 @@ class Dashboard(FanPanel):
     MIN_W, MIN_H = 72, 20
     # Footer entries in priority order. footer_hint() drops from the end to fit.
     HINTS = {
-        "overview": ("Tab section", "↑↓ section", "t sensors", "m modes", "Space pause", "v results"),
+        "overview": ("Tab section", "↑↓ section", "t details", "m modes", "Space pause", "v results"),
         "main": ("Tab section", "↑↓ select", "←→ adjust", "Enter apply", "0-9 type", "Esc clear",
                  "d default", "r discard", "m modes", "Space pause", "v results"),
         "fans": ("←→ point", "↑↓ speed", "Enter apply", "Esc back", "r discard", "W save", "R stock",
@@ -153,7 +153,7 @@ class Dashboard(FanPanel):
         self.running = True
         self.paused = False
         self.panel = "overview"  # overview | main (Power) | fans | keyboard
-        self.view = "summary"  # summary | sensors (overview only)
+        self.view = "summary"  # summary | details (overview only)
         self.theme = Theme(curses.has_colors())
         self.keyboard = Keyboard()
         self.kb_zone = 0
@@ -360,6 +360,7 @@ class Dashboard(FanPanel):
             self.open_keyboard()
         else:
             self.panel = name
+            self.view = "summary"
             self.notice = "Ready."
 
     def leave_section(self, state):
@@ -368,6 +369,7 @@ class Dashboard(FanPanel):
 
     def open_keyboard(self):
         self.panel = "keyboard"
+        self.view = "summary"
         self.keyboard.recheck()
         self.keyboard.load()
         self.notice = "Keyboard lighting. Esc returns."
@@ -377,9 +379,13 @@ class Dashboard(FanPanel):
         at = found.index(self.panel) if self.panel in found else 0
         self.goto_section(found[(at + direction) % len(found)])
 
+    def toggle_details(self):
+        if self.panel == "overview":
+            self.view = "summary" if self.view == "details" else "details"
+
     def draw_overview(self, state, metrics, y, x, height, width):
-        if self.view == "sensors":
-            self.draw_sensors(metrics, y, x, height, width)
+        if self.view == "details":
+            self.draw_details(metrics, y, x, height, width)
         else:
             self.draw_telemetry(state, metrics, y, x, height, width)
 
@@ -576,40 +582,63 @@ class Dashboard(FanPanel):
             self.put(sy + 4, ix, ("load " + " ".join(fmt(v, decimals=2) for v in loads) + up)[:iw],
                      self.theme.TEXT, dim=True)
 
-    def draw_sensors(self, metrics, y, x, height, width):
-        self.box(y, x, height, width, "Sensors", self.theme.INFO, "t: summary")
+    def draw_details(self, metrics, y, x, height, width):
+        self.box(y, x, height, width, "Details", self.theme.INFO, "t or Esc: back")
         ix, iw = x + 2, width - 4
         na = lambda v, unit="", d=1: fmt(v, unit, d)
-        lines = [("Temperatures", self.theme.ACCENT, True)]
-        temps = metrics.get("temperatures") or []
-        lines += [(f"  {t['group']:<6} {t['label']:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)
-                  for t in temps] or [("  N/A", self.theme.TEXT, False)]
-        power = metrics.get("power") or {}
-        lines.append(("Power", self.theme.ACCENT, True))
-        for name, watts in (power.get("rapl") or {}).items():
-            lines.append((f"  {name:<24} {na(watts, ' W')}", self.theme.TEXT, False))
-        if "battery_w" in power:
-            lines.append((f"  {'battery':<24} {na(power.get('battery_w'), ' W')}  {power.get('battery_status') or 'N/A'}",
-                          self.theme.TEXT, False))
-        for u in power.get("usbc") or []:
-            lines.append((f"  {u['name'][:24]:<24} {na(u['watts'], ' W')}  {na(u['volts'], ' V', 2)}  "
-                          f"{na(u['amps'], ' A', 2)}", self.theme.TEXT, False))
-        lines.append(("Voltages", self.theme.ACCENT, True))
-        lines += [(f"  {v['label'][:30]:<30} {na(v['v'], ' V', 3)}", self.theme.TEXT, False)
-                  for v in metrics.get("voltages") or []] or [("  N/A", self.theme.TEXT, False)]
+        cpu = metrics.get("cpu") or {}
+        gpu = next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
+        text = self.theme.TEXT
+        head = self.theme.ACCENT
+
+        def row(label, parts, color=text, bold=False):
+            "One row: a label, then parts that drop from the end rather than cut a number."
+            return (f"{label:<9}" + fit_parts(parts, iw - 9, "  "), color, bold)
+
+        # Throttle first: an active throttle is the row to see on a short terminal.
         throttle = metrics.get("throttle") or {}
         cpu_t, gpu_t = throttle.get("cpu") or {}, throttle.get("gpu")
-        lines.append(("Throttle", self.theme.ACCENT, True))
-        lines.append((f"  cpu core {na(cpu_t.get('core_events'), '', 0)}  package {na(cpu_t.get('package_events'), '', 0)}"
-                      f"  active {'N/A' if cpu_t.get('active') is None else 'yes' if cpu_t['active'] else 'no'}",
-                      self.theme.BAD if cpu_t.get("active") else self.theme.TEXT, False))
-        lines.append(("  gpu " + ("N/A" if gpu_t is None else ", ".join(gpu_t) or "none"),
-                      self.theme.BAD if gpu_t else self.theme.TEXT, False))
-        room = height - 2
-        if len(lines) > room:
-            lines = lines[:max(0, room - 1)] + [("…", self.theme.TEXT, False)]
-        for i, (text, color, bold) in enumerate(lines):
-            self.put(y + 1 + i, ix, text[:iw], color, bold)
+        active = cpu_t.get("active")
+        lines = [row("Throttle", [f"cpu {'N/A' if active is None else 'yes' if active else 'no'}",
+                                  f"core {na(cpu_t.get('core_events'), '', 0)}",
+                                  f"package {na(cpu_t.get('package_events'), '', 0)}"],
+                     self.theme.BAD if active else text, bool(active)),
+                 row("", ["gpu " + ("N/A" if gpu_t is None else ", ".join(gpu_t) or "none")],
+                     self.theme.BAD if gpu_t else text, bool(gpu_t))]
+        cores = list((cpu.get("cores") or {}).values())
+        spark = "".join("·" if c is None else SPARK[min(7, round(c * 7 / 100))] for c in cores)
+        lines += [row("CPU", [f"util {na(cpu.get('utilization_pct'), '%', 0)}", f"avg {na(cpu.get('clock_mhz'), ' MHz', 0)}",
+                              f"max {na(cpu.get('max_clock_mhz'), ' MHz', 0)}", cpu.get("power_source") or "N/A"]),
+                  row("", [f"cores {spark or 'N/A'}"], self.theme.OK)]
+        if gpu:
+            lines += [row("GPU", [gpu.get("name") or "N/A"], self.theme.GPU),
+                      row("", [f"util {na(gpu.get('utilization_pct'), '%', 0)}", f"core {na(gpu.get('clock_mhz'), ' MHz', 0)}",
+                               f"memory {na(gpu.get('memory_clock_mhz'), ' MHz', 0)}"]),
+                      row("", [f"vram {na(gpu.get('memory_used_mib'), '', 0)}/{na(gpu.get('memory_total_mib'), ' MiB', 0)}",
+                               f"limit {na(gpu.get('power_limit_w'), ' W')}"])]
+        else:
+            lines.append(row("GPU", ["N/A"]))
+        power = metrics.get("power") or {}
+        items = [(f"  {name:<24} {na(watts, ' W')}", text, False) for name, watts in (power.get("rapl") or {}).items()]
+        if "battery_w" in power:
+            items.append(row("  battery", [na(power.get("battery_w"), " W"), power.get("battery_status") or "N/A"]))
+        for u in power.get("usbc") or []:
+            items.append(row(f"  {u['name'][:6]}", [na(u["watts"], " W"), na(u["volts"], " V", 2), na(u["amps"], " A", 2)]))
+        temps = [(f"  {t['group']:<6} {t['label'][:24]:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)
+                 for t in metrics.get("temperatures") or []]
+        volts = [(f"  {v['label'][:30]:<30} {na(v['v'], ' V', 3)}", text, False) for v in metrics.get("voltages") or []]
+        room, more = height - 2, False
+        # Power keeps its place; temperatures and voltages take what is left, shortest first to go.
+        for name, found in (("Power", items), ("Temperatures", temps), ("Voltages", volts)):
+            left = room - len(lines) - 1
+            more = more or left < 1 or len(found) > left
+            if left >= 1:
+                lines.append((name, head, True))
+                lines += (found or [("  N/A", text, False)])[:left]
+        if more or len(lines) > room:
+            lines = lines[:max(0, min(len(lines), room - 1))] + [("…", text, False)]
+        for i, (line, color, bold) in enumerate(lines):
+            self.put(y + 1 + i, ix, line, color, bold)
 
     def draw_keyboard(self, y, x, height, width):
         kb = self.keyboard
@@ -673,7 +702,7 @@ class Dashboard(FanPanel):
         self.put(tip_y + 1, ix, f"config {kb.config}"[:iw], self.theme.TEXT, dim=True)
 
     HELP_LINES = (
-        "Global    Tab section t sensors  Space pause  ? help  q quit",
+        "Global    Tab section t details  Space pause  ? help  q quit",
         "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
         "          0-9 type a value   Backspace delete   Esc clear",
         "          Enter apply all   d custom default   r discard all",
@@ -1057,6 +1086,9 @@ class Dashboard(FanPanel):
         if getattr(self, "panel", "main") == "keyboard":
             self.handle_keyboard(ch, state)
             return
+        if ch == 27 and self.panel == "overview" and self.view == "details":
+            self.view = "summary"
+            return
         if getattr(self, "panel", "main") == "fans":
             self.handle_fans(ch, state)
             return
@@ -1070,7 +1102,7 @@ class Dashboard(FanPanel):
             elif ch == ord("?"):
                 self.help = True
             elif ch == ord("t"):
-                self.view = "sensors" if self.view == "summary" else "summary"
+                self.toggle_details()
             elif ch == ord("l"):
                 self.open_keyboard()
             elif ch == ord("f"):
@@ -1097,7 +1129,7 @@ class Dashboard(FanPanel):
         elif ch == ord("m"):
             self.show_limits = True
         elif ch == ord("t"):
-            self.view = "sensors" if self.view == "summary" else "summary"
+            self.toggle_details()
         elif ch == ord("l"):
             self.open_keyboard()
         elif ch == ord("f"):

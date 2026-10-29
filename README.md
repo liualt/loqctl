@@ -69,7 +69,7 @@ A section list on the left (Overview, Power, Fans, Keyboard) picks the page on t
 | `l` | Keyboard lighting panel |
 | `f` | Fan curve panel |
 | `m` | Mode limits overlay: every mode's firmware limits side by side (`Enter` / `Esc` / `m` closes) |
-| `t` | Toggle the full sensors view (temperatures, power, voltages, throttling) |
+| `t` | Overview only: open or close the details view (CPU and GPU extras, voltages, temperatures, power, throttling). Esc also closes it |
 | `Space` | Pause telemetry |
 | `v` | Reopen the last apply results |
 | `s` | Authenticate sudo (shown when needed) |
@@ -324,7 +324,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 - Per-mode firmware limits from the capdata table, cached per product and BIOS; `m` overlay and `loqctl limits`.
 - Fan curve editor (`f`) over `legion_laptop` hwmon: validated, verified writes, stock reset, saved curves, `loqctl fan`, `/v1/fancurve`, re-apply in `serve`.
 - Batched `sudo -n` applies with pre-auth and re-auth on expiry; one apply results view (`v`).
-- Telemetry: RAPL domains, temperatures, voltages, throttling, limit markers on the power charts, sensors view (`t`).
+- Telemetry: RAPL domains, temperatures, voltages, throttling, limit markers on the power charts, details view (`t`).
 - Portability: PATH lookups, NVML via `ctypes`, no GPU wake-up while suspended, AMD CPU paths, write allowlist.
 - Stale socket recovery, resilient sampler, 5 s firmware polling.
 - Package layout: `loqctl/` package with the `loqctl.py` entry point; Python 3.10 minimum; GPL-3.0-or-later.
