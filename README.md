@@ -242,6 +242,8 @@ curl --unix-socket /run/loqctl-$(id -u)/control.sock \
 
 The server allows the user in `SUDO_UID`. If you start it as root without sudo, pass `--uid UID` so your user can connect.
 
+To start the server at boot instead of in a terminal, copy `contrib/loqctl-serve@.service` to `/etc/systemd/system/`, set `ExecStart` to where loqctl is installed, and run `sudo systemctl enable --now loqctl-serve@1000`. The instance (`1000` here) is your UID and is passed as `--uid`, so `SUDO_UID` is not needed. `serve` creates `/run/loqctl-UID` itself, so the unit sets no `RuntimeDirectory`. The service runs as root, so the unit file, the loqctl program and every directory above them must be owned by root and not writable by other users. Do not point it at a script in your home directory. loqctl does not install the unit or call `systemctl`. Fan curve re-apply after resume under systemd is untested on real hardware.
+
 Note: `/v1/status` returns the server's sampler snapshot (refreshed by its polling), while `/v1/capabilities` reads the firmware fresh on each request. There is no `/v1/limits`; per-mode limits are part of the `/v1/capabilities` and `/v1/status` payloads (`mode_limits`, `mode_limits_error`).
 
 Use `--socket PATH` to point the CLI or dashboard at a specific socket. Without it, a socket that does not accept connections is ignored with a notice and loqctl reads locally.
