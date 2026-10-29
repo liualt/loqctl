@@ -399,9 +399,14 @@ class Sensors:
         total, available = mem.get("MemTotal"), mem.get("MemAvailable")
         battery = []
         ac = []
+        conservation = next((v for f in sorted(self.root.glob("bus/platform/drivers/ideapad_acpi/*/conservation_mode"))
+                             if (v := read(f)) in ("0", "1")), None)
         for p in self.root.glob("class/power_supply/*"):
             if read(p / "type") == "Battery":
-                battery.append({"name": p.name, "percent": scaled(p / "capacity"),
+                threshold = scaled(p / "charge_control_end_threshold")
+                limit = (f"{threshold:.0f}%" if threshold is not None
+                         else None if conservation is None else "on" if conservation == "1" else "off")
+                battery.append({"charge_limit": limit, "name": p.name, "percent": scaled(p / "capacity"),
                                 "status": read(p / "status"), "power_w": scaled(p / "power_now", 1e6)})
             elif (online := read(p / "online")) is not None:
                 ac.append(online == "1")

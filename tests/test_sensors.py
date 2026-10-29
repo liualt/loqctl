@@ -250,6 +250,15 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual((by["002"]["online"], by["002"]["volts"], by["002"]["amps"], by["002"]["watts"]),
                          (False, 5.0, None, None))
 
+    def test_battery_charge_limit(self):
+        self.put("class/power_supply/BAT1/type", "Battery")
+        bat = lambda: self.sensors().sample()["battery"][0]["charge_limit"]
+        self.assertIsNone(bat())
+        self.put("bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode", "1")
+        self.assertEqual(bat(), "on")
+        self.put("class/power_supply/BAT1/charge_control_end_threshold", "80")
+        self.assertEqual(bat(), "80%")
+
     def test_temperature_groups(self):
         def hw(n, name, temps):
             self.put(f"class/hwmon/hwmon{n}/name", name)
