@@ -58,7 +58,7 @@ class Backend:
                     try:
                         self.latest = request(self.path, "GET", "/v1/status")
                     except (OSError, ControlError, ValueError, http_client.HTTPException) as exc:
-                        self.latest = {**self.latest, "error": "API connection failed: " + str(exc)}
+                        self.latest = {**{k: v for k, v in self.latest.items() if k != "metrics"}, "error": "API connection failed: " + str(exc)}
                     self.wake.wait(1)
                     self.wake.clear()
             threading.Thread(target=poll, daemon=True).start()
