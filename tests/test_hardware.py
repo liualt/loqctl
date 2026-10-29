@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import helpers
+from loqctl import battery as m_battery
 from loqctl import common as m_common
 from loqctl import hardware as m_hardware
 from loqctl import ui as m_ui
@@ -215,6 +216,19 @@ class HardwareTests(helpers.SysfsCase):
             with self.assertRaises(m_common.ControlError):
                 self.hw.write_battery(bad)
         self.assertEqual(conservation.read_text(), "0\n")
+
+    def test_battery_failed_second_write_leaves_both_off(self):
+        conservation, rapid = self.battery_files(rapid="1")
+        real = m_battery._write
+
+        def fail_on_one(path, value):
+            if value == 1:
+                raise m_common.ControlError("Firmware rejected the write: boom")
+            real(path, value)
+        with patch.object(m_battery, "_write", fail_on_one):
+            with self.assertRaises(m_common.ControlError):
+                self.hw.write_battery("conservation")
+        self.assertEqual((conservation.read_text(), rapid.read_text()), ("0\n", "0\n"))
 
     def test_set_mode_rejects_non_str_and_empty_choices(self):
         for bad in (None, 5):

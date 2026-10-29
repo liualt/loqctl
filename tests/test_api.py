@@ -41,6 +41,27 @@ class ApiTests(helpers.SysfsCase):
             worker.join()
 
 
+class BatteryRouteTests(helpers.SysfsCase):
+    def test_battery_post_applies_a_good_mode_and_rejects_a_bad_key(self):
+        conservation = self.root / "devices/platform/legion/battery_conservation"
+        conservation.parent.mkdir(parents=True)
+        conservation.write_text("0\n")
+        path = str(self.root / "test.sock")
+        server = m_api.APIServer(path, self.hw, type("Sampler", (), {"latest": {}})(), os.getuid())
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            with self.assertRaises(m_common.ControlError):
+                m_api.request(path, "POST", "/v1/battery", {"value": "conservation"})
+            self.assertEqual(conservation.read_text(), "0\n")
+            self.assertTrue(m_api.request(path, "POST", "/v1/battery", {"mode": "conservation"})["verified"])
+            self.assertEqual(m_api.request(path, "GET", "/v1/battery")["mode"], "conservation")
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
+
+
 class ServerSamplerTests(unittest.TestCase):
     def setUp(self):
         self.root = helpers.make_root(self)

@@ -44,7 +44,7 @@ sudo make install                  # PREFIX defaults to /usr/local
 
 When sudo runs a user-writable file, any process running as you can gain root by editing it.
 
-loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_capdata`, `_fancurve`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
+loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_battery`, `_capdata`, `_fancurve`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
 
 Or run it in place with `python3 loqctl.py`.
 
@@ -163,7 +163,7 @@ loqctl battery conservation          # sets it (through sudo or the server)
 sudo loqctl set ppt_pl1_spl 50
 ```
 
-Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_capdata` and `_fancurve` are internal, used via sudo by the dashboard.
+Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_battery`, `_capdata` and `_fancurve` are internal, used via sudo by the dashboard.
 
 `sudo` may not find a `~/.local/bin` install; install system-wide as described above so `sudo loqctl ...` works and the file is root-owned.
 

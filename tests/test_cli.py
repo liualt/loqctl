@@ -37,6 +37,16 @@ class CliTests(helpers.SysfsCase):
         run.assert_called_once_with(["_battery", "rapid"])
         self.assertEqual(json.loads(out.getvalue()), {"mode": "rapid"})
 
+    def test_battery_helper_rejects_a_bad_mode(self):
+        self.battery_conservation = self.root / "devices/platform/legion/battery_conservation"
+        self.battery_conservation.parent.mkdir(parents=True)
+        self.battery_conservation.write_text("0\n")
+        err = io.StringIO()
+        with patch.object(m_cli, "Hardware", return_value=self.hw), contextlib.redirect_stderr(err):
+            self.assertEqual(m_cli.main(["_battery", "turbo"]), 1)
+        self.assertIn("Unsupported battery mode", err.getvalue())
+        self.assertEqual(self.battery_conservation.read_text(), "0\n")
+
     def test_doctor_reports_each_check_without_writes(self):
         proc = self.root / "proc"
         proc.mkdir()
