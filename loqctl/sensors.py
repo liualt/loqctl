@@ -453,7 +453,7 @@ class Sensors:
                 "temperatures": temperatures, "voltages": voltages,
                 "throttle": {"cpu": self.cpu_throttle(now),
                              "gpu": devices[0].get("throttle") if devices else None},
-                "load": list(os.getloadavg()), "uptime_s": number((read(self.proc / "uptime", "0")).split()[0])}
+                "load": list(os.getloadavg()), "uptime_s": number((read(self.proc / "uptime", "").split() or [None])[0])}
 
 
 class Sampler:
