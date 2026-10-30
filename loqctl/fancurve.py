@@ -15,12 +15,15 @@ from __future__ import annotations
 import errno
 import math
 import os
+import time
 from pathlib import Path
 
 from .common import ControlError, read
 
 HWMON_NAME = "legion_hwmon"
 MAX_POINTS = 10
+READBACK_TRIES = 4  # reads after the last write before a mismatch counts
+READBACK_WAIT = 0.5
 DEFAULT_MAX_RPM = 10000  # the module's MAX_RPM when a model sets no fan_max_rpm
 # Explicit write allowlist (plus the read-only accel/decel). Never add fanN_target,
 # auto_points_size, minifancurve, lockfancontroller or fan_fullspeed. `_temp_hyst` is the
@@ -269,6 +272,25 @@ def _write_file(path, value):
         raise ControlError(f"Fan curve write failed: {exc.strerror}") from exc
 
 
+def _verify(results, sent, after, scale):
+    """Fill in `current` and a status for each sent result from a fresh read; True when all applied."""
+    ok = True
+    for n, result in enumerate(results):
+        i, f = result["point"], result["field"]
+        result["current"] = after[i][f] if i < len(after) else None
+        if n >= sent or result["status"] == "FAILED" and result["error"] and not result["error"].startswith("Requested"):
+            continue  # a failed write or an unsent field is final; reading again will not help
+        # read-back may differ by 1 % from the write, but a 1 % request must not read back as before
+        unchanged = f in SPEEDS and _same(f, result["current"], result["before"], scale, exact=True)
+        if _same(f, result["current"], result["requested"], scale) and not unchanged:
+            result["status"], result["error"] = "APPLIED", None
+        else:
+            result["status"] = "FAILED"
+            result["error"] = f"Requested {result['requested']}, but firmware reports {result['current']!r}."
+            ok = False
+    return ok
+
+
 def write_curve(hwmon, target, scale=None):
     """Write changed fields (temps first, then speeds), verify by re-reading everything.
 
@@ -302,17 +324,10 @@ def write_curve(hwmon, target, scale=None):
         except ControlError as exc:
             result["status"], result["error"], sent = "FAILED", str(exc), n + 1
             break
-    after = read_curve(hwmon) if results else current
-    for n, result in enumerate(results):
-        i, f = result["point"], result["field"]
-        result["current"] = after[i][f] if i < len(after) else None
-        if n >= sent or result["status"] == "FAILED":
-            continue
-        # read-back may differ by 1 % from the write, but a 1 % request must not read back as before
-        unchanged = f in SPEEDS and _same(f, result["current"], result["before"], scale, exact=True)
-        if _same(f, result["current"], result["requested"], scale) and not unchanged:
-            result["status"] = "APPLIED"
-        else:
-            result["status"] = "FAILED"
-            result["error"] = f"Requested {result['requested']}, but firmware reports {result['current']!r}."
+    for attempt in range(READBACK_TRIES if results else 1):
+        if attempt:
+            time.sleep(READBACK_WAIT)  # the module can serve the old value for a moment after a write
+        after = read_curve(hwmon) if results else current
+        if _verify(results, sent, after, scale) or not results:
+            break
     return results
