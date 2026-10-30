@@ -198,6 +198,40 @@ class HardwareTests(helpers.SysfsCase):
             with self.assertRaises(m_common.ControlError):
                 self.hw.set_value(key, 60)
 
+    def add_toggles(self):
+        for rel, value in {"bus/platform/devices/VPC2004:00/fn_lock": "0", "devices/platform/legion/winkey": "1",
+                           "class/leds/platform::ioport/brightness": "0"}.items():
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value)
+        (self.root / "class/leds/platform::ioport/max_brightness").write_text("2")
+
+    def test_toggles_list_only_present_switches(self):
+        self.assertEqual(self.hw.toggles(), [])
+        self.add_toggles()
+        self.assertEqual([(t["name"], t["value"], t["max"]) for t in self.hw.toggles()],
+                         [("fn_lock", 0, 1), ("winkey", 1, 1), ("port_light", 0, 2)])
+
+    def test_toggle_led_without_max_brightness_is_hidden(self):
+        self.add_toggles()
+        (self.root / "class/leds/platform::ioport/max_brightness").unlink()
+        self.assertNotIn("port_light", [t["name"] for t in self.hw.toggles()])
+        with self.assertRaises(m_common.ControlError):
+            self.hw.set_toggle("port_light", 1)
+
+    def test_toggle_write_is_bounded_allowlisted_and_verified(self):
+        self.add_toggles()
+        self.assertTrue(self.hw.set_toggle("port_light", 2)["verified"])
+        self.assertEqual((self.root / "class/leds/platform::ioport/brightness").read_text().strip(), "2")
+        for name, value in (("port_light", 3), ("fn_lock", 2), ("fn_lock", True), ("fn_lock", -1),
+                            ("camera", 1), ("../x", 1)):
+            with self.assertRaises(m_common.ControlError):
+                self.hw.set_toggle(name, value)
+        self.assertEqual((self.root / "bus/platform/devices/VPC2004:00/fn_lock").read_text(), "0")
+        with patch("pathlib.Path.write_text", lambda path, text: None):
+            with self.assertRaises(m_common.ControlError):
+                self.hw.set_toggle("fn_lock", 1)
+
     def test_missing_limits_never_write(self):
         (self.attr / "max_value").unlink()
         with self.assertRaises(m_common.ControlError):

@@ -27,6 +27,27 @@ class CliTests(helpers.SysfsCase):
             self.assertEqual(m_cli.main(["_apply", json.dumps([["ppt_pl1_spl", 60]])]), 0)
         self.assertEqual(json.loads(out.getvalue())[0]["status"], "APPLIED")
 
+    def test_toggle_lists_and_sets_through_the_backend(self):
+        backend = unittest.mock.Mock(remote=True, notice="")
+        backend.toggles.return_value = [{"name": "fn_lock", "value": 0, "max": 1}]
+        backend.write_toggle.return_value = {"verified": True}
+        out = io.StringIO()
+        with patch.object(m_cli, "Backend", return_value=backend), contextlib.redirect_stdout(out):
+            self.assertEqual(m_cli.main(["toggle"]), 0)
+            self.assertEqual(m_cli.main(["toggle", "fn_lock", "on"]), 0)
+        backend.write_toggle.assert_called_once_with("fn_lock", 1)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(m_cli.main(["toggle", "fn_lock", "\u00b2"]), 1)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            m_cli.main(["toggle", "touchpad", "on"])
+        backend = unittest.mock.Mock(remote=False, notice="")
+        with patch.object(m_cli, "Backend", return_value=backend), patch.object(m_cli.os, "geteuid", return_value=1000), \
+                patch.object(m_cli, "sudo_run", return_value=('{"verified": true}', "")) as run, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(m_cli.main(["toggle", "winkey", "off"]), 0)
+        run.assert_called_once_with(["_toggle", "winkey", "0"])
+        backend.write_toggle.assert_not_called()
+
     def run_watch(self, args, samples):
         """Run metrics --watch with mocked Sensors; returns (exit, stdout lines, stderr, sleeps, Sensors mock)."""
         sleeps, calls = [], []

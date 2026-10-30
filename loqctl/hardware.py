@@ -12,6 +12,7 @@ import time
 
 from .capdata import effective_value, read_mode_table
 from .common import FIELDS, ControlError, read, scaled
+from .toggles import list_toggles, set_toggle
 from .fancurve import curve_scale, find_legion_hwmon, read_curve, write_curve
 
 REDISCOVER_SECONDS = 5
@@ -226,6 +227,13 @@ class Hardware:
             return {"attribute": key, "value": value, "previous": item["current_value"],
                     "current": int(actual), "verified": True}
 
+
+    def toggles(self):
+        return list_toggles(self.root)
+
+    def set_toggle(self, name, value):
+        with self.lock:
+            return set_toggle(self.root, name, value)
 
     def fancurve(self):
         """Fan curve and RPM from the legion_laptop hwmon, or {"available": False, "reason": ...}.
