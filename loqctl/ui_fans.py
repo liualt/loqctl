@@ -423,9 +423,8 @@ class FanPanel:
         label_w = 7
         gx, gw = x + label_w, max(10, w - label_w)
         temps = [p["cpu_up"] for p in target if p.get("cpu_up") is not None]
-        seen = temps + ([round(cpu_temp)] if cpu_temp is not None else [])
-        lo_t = max(0, (min(seen, default=30) - 5) // 10 * 10)
-        hi_t = max(min(130, -(-max(seen, default=100) // 10) * 10), lo_t + 20)
+        lo_t = max(0, (min(temps, default=30) - 5) // 10 * 10)  # the live temperature must not stretch the axis
+        hi_t = max(min(130, -(-max(temps, default=100) // 10) * 10), lo_t + 20)
         top = scale.top
         if scale.unit == "rpm":
             speeds = [scale.show(p[f]) for p in target for f in ("fan1", "fan2") if p.get(f) is not None]
