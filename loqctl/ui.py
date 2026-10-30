@@ -1067,9 +1067,15 @@ class Dashboard(FanPanel):
             self.kb_zone = ch - ord("1")
             self.notice = f"Selected zone {self.kb_zone + 1}."
         elif ch in (curses.KEY_UP, ord("k")):
-            self.kb_channel = (self.kb_channel - 1) % 3
+            if self.kb_channel == 0:
+                self.step_section(state, -1)  # off the top edge: the previous section
+            else:
+                self.kb_channel -= 1
         elif ch in (curses.KEY_DOWN, ord("j")):
-            self.kb_channel = (self.kb_channel + 1) % 3
+            if self.kb_channel == 2:
+                self.step_section(state, 1)
+            else:
+                self.kb_channel += 1
         elif ch in (curses.KEY_LEFT, ord("-")):
             self.kb_nudge(-1)
         elif ch in (curses.KEY_RIGHT, ord("+"), ord("=")):
@@ -1222,9 +1228,17 @@ class Dashboard(FanPanel):
             if not self.apply_results:
                 self.notice = "No apply results yet. Edit a row and press Enter."
         elif ch in (curses.KEY_DOWN, ord("j")):
-            self.selected = rows.index(visit[(visit.index(key) + 1) % len(visit)])
+            at = visit.index(key)
+            if at == len(visit) - 1:
+                self.step_section(state, 1)  # off the bottom edge: the next section
+            else:
+                self.selected = rows.index(visit[at + 1])
         elif ch in (curses.KEY_UP, ord("k")):
-            self.selected = rows.index(visit[(visit.index(key) - 1) % len(visit)])
+            at = visit.index(key)
+            if at == 0:
+                self.step_section(state, -1)
+            else:
+                self.selected = rows.index(visit[at - 1])
         elif ch == ord("r"):
             self.pending.clear()
             self.fields.clear()

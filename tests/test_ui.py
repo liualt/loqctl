@@ -240,15 +240,15 @@ class UiTests(helpers.SysfsCase):
         rows = dashboard.rows(state)
         dashboard.selected = rows.index("cpu_temp")  # left over from custom mode
         visited = []
-        for _ in range(5):
+        for _ in range(4):
             calls = []
             dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append(str(text))
             dashboard.draw_controls(state, 0, 0, 17, 58)
             self.assertTrue(any(t.startswith("▶") for t in calls), rows[dashboard.selected])
             visited.append(rows[dashboard.selected])
-            dashboard.handle(curses.KEY_DOWN, state)
-        self.assertEqual(visited[0], "mode")
-        self.assertEqual(visited[1:], ["ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp", "mode"])
+            if len(visited) < 4:
+                dashboard.handle(curses.KEY_DOWN, state)
+        self.assertEqual(visited, ["mode", "ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp"])
 
     def test_limit_detail_shows_na_for_unreadable_limits(self):
         self.hw.set_mode("custom")
@@ -546,7 +546,7 @@ class UiTests(helpers.SysfsCase):
         dashboard.panel = "main"
         dashboard.keyboard = m_keyboard.Keyboard(binary="/usr/bin/false",
                                           config=self.root / "missing.json")
-        dashboard.handle(ord("j"), {})
+        dashboard.handle(ord("x"), {})
         dashboard.handle(ord("l"), {})
         self.assertEqual(dashboard.panel, "keyboard")
         dashboard.handle(27, {})
@@ -892,6 +892,29 @@ class UiTests(helpers.SysfsCase):
         self.assertEqual((dash.pending, dash.fields), ({}, {}))
         dash.handle(curses.KEY_DOWN, state)
         self.assertEqual(dash.panel, "main")
+
+    def test_arrows_leave_power_and_keyboard_at_the_edges(self):
+        dash = self.dash()
+        dash.fan = {"available": False}
+        dash.keyboard.available = True
+        dash.goto_section = lambda name: setattr(dash, "panel", name)  # opening a section reads hardware
+        state = self.hw.capabilities()
+        visit = dash.shown_rows(state)
+        rows = dash.rows(state)
+        dash.panel = "main"
+        dash.selected = rows.index(visit[0])
+        dash.handle(curses.KEY_UP, state)
+        self.assertEqual(dash.panel, "overview")
+        dash.panel = "main"
+        dash.selected = rows.index(visit[-1])
+        dash.handle(curses.KEY_DOWN, state)
+        self.assertEqual(dash.panel, "fans")
+        dash.panel, dash.kb_channel = "keyboard", 2
+        dash.handle(curses.KEY_DOWN, state)
+        self.assertEqual(dash.panel, "overview")
+        dash.panel, dash.kb_channel = "keyboard", 0
+        dash.handle(curses.KEY_UP, state)
+        self.assertEqual(dash.panel, "fans")
 
     def test_footer_hint_fits_and_keeps_help_and_quit(self):
         for panel in ("overview", "main", "keyboard", "fans"):
