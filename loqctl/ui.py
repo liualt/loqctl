@@ -936,6 +936,12 @@ class Dashboard(FanPanel):
             raise ControlError(stderr or "sudo apply returned unreadable output.") from exc
         return results
 
+    def authenticate(self):
+        if self.backend.remote or os.geteuid() == 0:
+            self.notice = "No sudo needed."
+        else:
+            self.reauth()
+
     def reauth(self):
         curses.def_prog_mode()
         curses.endwin()
@@ -1152,6 +1158,9 @@ class Dashboard(FanPanel):
         if ch in (9, curses.KEY_BTAB) and self.panel != "fans":  # the fan panel keeps Tab for curves
             self.step_section(state, -1 if ch == curses.KEY_BTAB else 1)
             return
+        if ch == ord("s") and self.panel in ("fans", "keyboard"):  # the status line offers it on every page
+            self.authenticate()
+            return
         if self.panel == "overview" and ch in (curses.KEY_UP, curses.KEY_DOWN, ord("j"), ord("k")):
             self.step_section(state, 1 if ch in (curses.KEY_DOWN, ord("j")) else -1)
             return
@@ -1213,10 +1222,7 @@ class Dashboard(FanPanel):
             self.paused = not self.paused
             self.notice = "Telemetry paused." if self.paused else "Telemetry resumed."
         elif ch == ord("s"):
-            if self.backend.remote or os.geteuid() == 0:
-                self.notice = "No sudo needed."
-            else:
-                self.reauth()
+            self.authenticate()
         elif ch == ord("v"):
             self.show_results = bool(self.apply_results)
             if not self.apply_results:

@@ -893,6 +893,20 @@ class UiTests(helpers.SysfsCase):
         dash.handle(curses.KEY_DOWN, state)
         self.assertEqual(dash.panel, "main")
 
+    def test_s_authenticates_on_every_page(self):
+        state = self.hw.capabilities()
+        for panel in ("main", "fans", "keyboard"):
+            dash = self.dash()
+            dash.panel = panel
+            dash.fan = {"available": False}
+            dash.keyboard.available = True
+            dash.backend.remote = False
+            calls = []
+            dash.reauth = lambda: calls.append(panel)
+            with patch("os.geteuid", return_value=1000):
+                dash.handle(ord("s"), state)
+            self.assertEqual(calls, [panel])
+
     def test_footer_hint_fits_and_keeps_help_and_quit(self):
         for panel in ("overview", "main", "keyboard", "fans"):
             for width in (72, 80, 120):
