@@ -119,6 +119,18 @@ class HardwareTests(Sim):
         self.assertEqual(caps["mode_limits"]["performance"]["ppt_pl1_spl"], 90)
         self.assertIsNone(caps["mode_limits_error"])
 
+    def test_other_profile_handler_gets_no_table(self):
+        self.add_table()
+        (self.root / "class/platform-profile/platform-profile-0/name").write_text("amd-pmf")
+        caps = m_hardware.Hardware(self.root).capabilities()
+        self.assertIsNone(caps["mode_limits"])
+        self.assertEqual(caps["mode_limits_error"], capdata.NOT_FOUND)
+        self.assertIsNone(caps["attributes"]["ppt_pl1_spl"]["effective_value"])
+
+    def test_missing_product_name_is_none(self):
+        (self.root / "class/dmi/id/product_name").unlink()
+        self.assertIsNone(m_hardware.Hardware(self.root).capabilities()["model"])
+
     def test_retry_only_as_root(self):
         hw = m_hardware.Hardware(self.root)
         with patch.object(os, "geteuid", return_value=1000):

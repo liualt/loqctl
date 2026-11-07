@@ -304,7 +304,7 @@ class Dashboard(FanPanel):
             self.push_history(metrics)
 
         # Header
-        model = state.get("model") or "…"
+        model = state.get("model") or "N/A"
         mode = (state.get("mode") or "…").upper()
         access = "API" if self.backend.remote else "ROOT" if os.geteuid() == 0 else "LOCAL"
         if self.paused:

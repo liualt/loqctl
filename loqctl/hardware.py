@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 
-from .capdata import effective_value, read_mode_table
+from .capdata import NOT_FOUND, effective_value, read_mode_table
 from .common import FIELDS, ControlError, read, scaled
 from .fancurve import curve_scale, find_legion_hwmon, read_curve, write_curve
 
@@ -184,11 +184,13 @@ class Hardware:
             if mode != self._static_mode:
                 self._static, self._static_mode = {}, mode
             table, reason = self.mode_limits()
+            if mode_driver != GAMEZONE:
+                table, reason = None, NOT_FOUND  # the capdata rows describe gamezone's modes only
             for key in FIELDS:
                 item = self._read_item(base, key, mode, table)
                 if item:
                     attrs[key] = item
-            return {"model": read(self.root / "class/dmi/id/product_name", "Lenovo LOQ"),
+            return {"model": read(self.root / "class/dmi/id/product_name"),
                     "mode": mode, "modes": (read(choices, "") or "").split(),
                     "mode_driver": mode_driver, "gamezone_holder": self.gamezone_holder(), "attributes": attrs, "extra_limits": self.extra_limits(), "mode_limits": table, "mode_limits_error": reason}
 
