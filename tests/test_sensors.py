@@ -329,6 +329,14 @@ class TelemetryTests(unittest.TestCase):
         self.assertAlmostEqual(rapl["psys"], 10.0)
         self.assertAlmostEqual(package, 5.0)
 
+    def test_device_scope_battery_is_skipped(self):
+        for name in ("BAT0", "hid-0003:046D:C52B.0001-battery"):
+            self.put(f"class/power_supply/{name}/type", "Battery")
+            self.put(f"class/power_supply/{name}/status", "Discharging")
+        self.put("class/power_supply/hid-0003:046D:C52B.0001-battery/scope", "Device")
+        out = self.sensors().sample()
+        self.assertEqual([b["name"] for b in out["battery"]], ["BAT0"])
+
     def test_battery_and_usbc_power(self):
         self.put("class/power_supply/BAT1/type", "Battery")
         self.put("class/power_supply/BAT1/status", "Discharging")
