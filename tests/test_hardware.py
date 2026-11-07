@@ -229,15 +229,21 @@ class HardwareTests(helpers.SysfsCase):
         for key in ("../ppt_pl1_spl", "ppt_pl1_spl/current_value", "gpu_mode", "/etc/passwd"):
             with self.assertRaises(m_common.ControlError):
                 self.hw.set_value(key, 60)
+        self.assertEqual((self.attr / "current_value").read_text(), "50")
 
     def test_missing_limits_never_write(self):
         (self.attr / "max_value").unlink()
         with self.assertRaises(m_common.ControlError):
             self.hw.set_value("ppt_pl1_spl", 60)
+        self.assertEqual((self.attr / "current_value").read_text(), "50")
 
     def test_readback_mismatch_reported(self):
-        with patch.object(Path, "write_text", return_value=3):
-            with self.assertRaisesRegex(m_common.ControlError, "readback"):
+        real = Path.write_text
+
+        def garbled(path, data, *args, **kwargs):  # the firmware stores a different value
+            return real(path, "61", *args, **kwargs)
+        with patch.object(Path, "write_text", garbled):
+            with self.assertRaisesRegex(m_common.ControlError, r"readback is '61', expected 60"):
                 self.hw.set_value("ppt_pl1_spl", 60)
 
     def test_ebusy_maps_to_custom_mode_message(self):

@@ -32,9 +32,11 @@ class ApiTests(helpers.SysfsCase):
             for payload in ({"value": True}, {"value": 500}, {"value": 50, "path": "/tmp/x"}, []):
                 with self.assertRaises(m_common.ControlError):
                     m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", payload)
+            self.assertEqual((self.attr / "current_value").read_text().strip(), "70")
             m_api.request(path, "POST", "/v1/mode", {"mode": "balanced"})
             with self.assertRaises(m_common.ControlError):
                 m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", {"value": 60})
+            self.assertEqual((self.attr / "current_value").read_text().strip(), "70")
         finally:
             server.shutdown()
             server.server_close()
