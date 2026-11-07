@@ -162,6 +162,12 @@ class ServerSamplerTests(unittest.TestCase):
         with patch.dict(os.environ, {"SUDO_UID": "1234"}):
             self.assertEqual(m_common.owner_uid(), 1234)
 
+    def test_serve_warns_when_sudo_uid_is_unusable(self):
+        for value in ("abc", ""):
+            with patch.dict(os.environ, {"SUDO_UID": value}), patch("os.getuid", return_value=0):
+                self.assertIn("SUDO_UID", m_api.serve_uid_warning(m_common.owner_uid()))
+        self.assertIsNone(m_api.serve_uid_warning(1000))
+
     def sampler(self, hardware):
         sampler = m_sensors.Sampler.__new__(m_sensors.Sampler)
         sampler.hardware = hardware
