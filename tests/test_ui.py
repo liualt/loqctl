@@ -868,7 +868,8 @@ class UiTests(helpers.SysfsCase):
 
     def test_paused_and_stale_are_marked_on_screen(self):
         for h, w in ((20, 72), (24, 80)):
-            for paused, stale in ((True, False), (False, True)):
+            for paused, stale, panel in ((True, False, "main"), (False, True, "main"), (True, False, "overview"),
+                                         (False, False, "fans"), (False, False, "keyboard")):
                 puts = []
                 screen = Mock()
                 screen.getmaxyx.return_value = (h, w)
@@ -876,7 +877,7 @@ class UiTests(helpers.SysfsCase):
                 with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
                         patch.object(curses, "has_colors", return_value=False):
                     dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
-                dash.paused, dash.notice = paused, "Ready."
+                dash.paused, dash.notice, dash.panel = paused or panel in ("fans", "keyboard"), "Ready.", panel
                 dash.draw({"metrics": {}, "attributes": {}, "modes": [], "stale": stale})
                 texts = [t for _, _, t in puts]
                 self.assertEqual(any("GRAPHS PAUSED" in t for t in texts), paused, (h, w))
@@ -965,7 +966,7 @@ class UiTests(helpers.SysfsCase):
 
     def test_s_authenticates_on_every_page(self):
         state = self.hw.capabilities()
-        for panel in ("main", "fans", "keyboard"):
+        for panel in ("fans", "keyboard"):
             dash = self.dash()
             dash.panel = panel
             dash.fan = {"available": False}
