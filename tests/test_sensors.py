@@ -297,6 +297,10 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(bat()["charge_type"], "Long_Life")
         self.put("class/power_supply/BAT1/charge_types", "Fast Standard Long_Life")
         self.assertIsNone(bat()["charge_type"])
+        self.assertEqual((bat()["rapid_charge"], bat()["power_charge_mode"]), (None, None))
+        self.put("devices/platform/legion/rapidcharge", "1")
+        self.put("devices/platform/legion/powerchargemode", "2")
+        self.assertEqual((bat()["rapid_charge"], bat()["power_charge_mode"]), ("on", "2"))
 
     def test_battery_health(self):
         self.put("class/power_supply/BAT1/type", "Battery")

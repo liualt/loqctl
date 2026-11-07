@@ -847,7 +847,9 @@ class UiTests(helpers.SysfsCase):
             dash.panel, dash.view = "overview", "summary"
             dash.draw({"metrics": {"battery": battery, "ac_online": True}, "attributes": {}, "modes": []})
             self.assertTrue(any("health 98%" in t for t in puts), (h, w))
-            self.assertTrue(any("charge Long Life" in t for t in puts) or w == 72, (h, w))
+            self.assertTrue(any("limit 80%" in t for t in puts), (h, w))
+            if w == 80:
+                self.assertTrue(any("charge Long Life" in t for t in puts), (h, w))
 
     def test_battery_left_text(self):
         left = m_ui.battery_left
