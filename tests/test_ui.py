@@ -835,7 +835,7 @@ class UiTests(helpers.SysfsCase):
 
     def test_battery_health_shows_when_plugged_in(self):
         battery = [{"name": "BAT1", "percent": 90, "status": "Not charging", "charge_limit": "80%",
-                    "health_percent": 98.13, "time_remaining_min": None, "time_kind": None}]
+                    "charge_type": "Long_Life", "health_percent": 98.13, "time_remaining_min": None, "time_kind": None}]
         for h, w in ((20, 72), (24, 80)):
             puts = []
             screen = Mock()
@@ -847,6 +847,7 @@ class UiTests(helpers.SysfsCase):
             dash.panel, dash.view = "overview", "summary"
             dash.draw({"metrics": {"battery": battery, "ac_online": True}, "attributes": {}, "modes": []})
             self.assertTrue(any("health 98%" in t for t in puts), (h, w))
+            self.assertTrue(any("charge Long Life" in t for t in puts) or w == 72, (h, w))
 
     def test_battery_left_text(self):
         left = m_ui.battery_left
