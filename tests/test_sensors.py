@@ -202,6 +202,17 @@ class PortabilityTests(unittest.TestCase):
             clock[0] += m_sensors.DISCOVERY_INTERVAL
             self.assertEqual(sensors.cpu_temperature(hwmons)[0], 90)
 
+    def test_hwmon_name_read_once_until_rescan(self):
+        self.hwmon(0, "coretemp", [("Package id 0", 60)])
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
+            self.assertEqual(sensors.sample()["cpu"]["temperature_c"], 60)
+            self.put("class/hwmon/hwmon0/name", "other")
+            self.assertEqual(sensors.sample()["cpu"]["temperature_c"], 60)
+            clock[0] += m_sensors.DISCOVERY_INTERVAL
+            self.assertIsNone(sensors.sample()["cpu"]["temperature_c"])
+
     def test_amd_rapl_package_power(self):
         self.hwmon(0, "k10temp", [("Tctl", 50)])
         self.put("class/powercap/intel-rapl:0/name", "package-0")

@@ -181,6 +181,7 @@ class Sensors:
         self.slow_at = None
         self.battery_rates = {}  # battery name -> ((status, source), [(time, rate)] within BATTERY_SMOOTH_S)
         self.found = {}  # discovery cache: name -> (paths, monotonic time of the scan)
+        self.hwmon_names = {}  # hwmon dir -> name file text, cleared when the hwmon list is re-scanned
 
     def discover(self, name, scan):
         """Paths from scan(), re-scanned at most every DISCOVERY_INTERVAL (hot-plug, module load)."""
@@ -189,6 +190,18 @@ class Sensors:
         if cached is None or now - cached[1] >= DISCOVERY_INTERVAL:
             cached = self.found[name] = (scan(), now)
         return cached[0]
+
+    def hwmon_dirs(self):
+        def scan():
+            self.hwmon_names.clear()
+            return sorted(self.root.glob("class/hwmon/hwmon*"))
+        return self.discover("hwmon", scan)
+
+    def hwmon_name(self, hw):
+        """The hwmon `name`, read once per scan; None when missing."""
+        if hw not in self.hwmon_names:
+            self.hwmon_names[hw] = read(hw / "name", "")
+        return self.hwmon_names[hw]
 
     def battery_rate(self, p, status, now):
         """(30 s smoothed rate, "energy" or "charge") from power_now, else current_now; (None, None) when 0 or missing.
@@ -306,7 +319,7 @@ class Sensors:
         """Headline CPU temperature and the label it came from."""
         best = (None, None)
         for hw in hwmon_dirs:
-            name = read(hw / "name", "")
+            name = self.hwmon_name(hw)
             if name not in ("coretemp", "k10temp", "zenpower"):
                 continue
             inputs = self.discover(f"cputemp:{hw}:{name}", lambda: [
@@ -416,7 +429,7 @@ class Sensors:
         if battery_v is not None:
             voltages.append({"label": "Battery", "v": battery_v})
         for hw in hwmons:
-            name = read(hw / "name", "") or ""
+            name = self.hwmon_name(hw) or ""
             group = "wifi" if name.startswith("iwlwifi") else TEMP_GROUPS.get(name)
             for p in sorted(hw.glob("temp*_input")):
                 value = scaled(p, 1000)
@@ -443,9 +456,9 @@ class Sensors:
         now = time.monotonic() if now is None else now
         usage = self.cpu_usage()
         fans = []
-        hwmons = self.discover("hwmon", lambda: sorted(self.root.glob("class/hwmon/hwmon*")))
+        hwmons = self.hwmon_dirs()
         for hw in hwmons:
-            name = read(hw / "name", "")
+            name = self.hwmon_name(hw)
             fan_inputs = self.discover(f"fans:{hw}:{name}", lambda: [
                 (p, read(p.with_name(p.name.replace("_input", "_label")), name + "/" + p.stem))
                 for p in hw.glob("fan*_input")])
