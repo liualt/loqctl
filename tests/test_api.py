@@ -60,6 +60,10 @@ class HandlerErrorTests(helpers.SysfsCase):
                 m_api.request(path, "POST", "/v1/mode", {"mode": "custom"})
             self.assertEqual(str(cm.exception), "OSError")
             self.assertNotIn("secret", err.getvalue())
+            with patch.object(m_api.json, "loads", side_effect=RecursionError), \
+                    self.assertRaises(m_common.ControlError) as cm:
+                m_api.request(path, "POST", "/v1/mode", {"mode": "custom"})
+            self.assertEqual(str(cm.exception), "The server returned unreadable JSON.")
         finally:
             server.shutdown()
             server.server_close()

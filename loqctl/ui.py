@@ -946,7 +946,7 @@ class Dashboard(FanPanel):
             if not isinstance(results, list) or not all(isinstance(r, dict) and "key" in r and "status" in r
                                                         for r in results):
                 raise ValueError
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
             raise ControlError(stderr or "sudo apply returned unreadable output.") from exc
         return results
 

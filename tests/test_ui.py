@@ -641,6 +641,14 @@ class UiTests(helpers.SysfsCase):
         dash.keyboard = Mock()
         return dash
 
+    def test_recursive_sudo_output_raises_control_error(self):
+        dash = self.dash()
+        with patch.object(m_ui.Dashboard, "sudo_call", return_value=("[[[", "")), \
+                patch.object(m_ui.json, "loads", side_effect=RecursionError):
+            for run in (dash.run_sudo_apply, dash.run_sudo_fancurve):
+                with self.assertRaises(m_common.ControlError):
+                    run([])
+
     def test_sudo_failure_keeps_overlay_closed_and_previous_results(self):
         dash = self.dash()
         dash.pending = {"ppt_pl1_spl": 60}

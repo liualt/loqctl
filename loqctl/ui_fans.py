@@ -297,7 +297,7 @@ class FanPanel:
             results = json.loads(stdout)
             if not isinstance(results, list) or not all(isinstance(r, dict) and "status" in r for r in results):
                 raise ValueError
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
             raise ControlError(stderr or "sudo fan curve apply returned unreadable output.") from exc
         return results
 

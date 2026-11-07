@@ -129,7 +129,7 @@ def _api_classes():
                     refresh = getattr(self.server.sampler, "refresh", None)
                     if refresh:
                         refresh()
-                except (ControlError, ValueError, TypeError) as exc:
+                except (ControlError, ValueError, TypeError, RecursionError) as exc:
                     self.reply(400, {"error": str(exc)})
                 except Exception as exc:
                     self.fail(exc)
@@ -149,7 +149,10 @@ def request(path, method, endpoint, payload=None):
         body = json.dumps(payload) if payload is not None else None
         conn.request(method, endpoint, body, {"Content-Type": "application/json"} if body else {})
         response = conn.getresponse()
-        result = json.loads(response.read())
+        try:
+            result = json.loads(response.read())
+        except RecursionError as exc:
+            raise ControlError("The server returned unreadable JSON.") from exc
         if response.status >= 400:
             raise ControlError(result.get("error", str(response.status)))
         return result
