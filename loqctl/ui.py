@@ -442,10 +442,15 @@ class Dashboard(FanPanel):
                 entries.append((None, name))
                 group = name
             entries.append((row, key))
+        extras = state.get("extra_limits") or []
+        if extras:  # read-only, not selectable
+            entries += [(None, "Firmware")] + [("ro", item) for item in extras]
         list_top = y + 2
         detail_h = 4
         visible = max(3, height - detail_h - 3)
         at = next((i for i, (row, _) in enumerate(entries) if row == self.selected), 0)
+        if not any(isinstance(row, int) for row, _ in entries[at + 1:]):
+            at = len(entries) - 1  # on the last editable row, scroll the read-only rows into view
         start = max(0, at - visible + 1)
         if start and entries[start][0] is not None and entries[start - 1][0] is None and start - 1 + visible > at:
             start -= 1  # keep a group name above its first visible row
@@ -456,6 +461,10 @@ class Dashboard(FanPanel):
             yy = list_top + i
             if row is None:
                 self.put(yy, x + 2, key, self.theme.INFO, bold=True)
+                continue
+            if row == "ro":
+                value = f"{key['value']}{unit_sep(key['unit'])}{key['unit']}"
+                self.put(yy, x + 1, f"  {key['label']:<20} {value}"[: width - 3], self.theme.TEXT, dim=True)
                 continue
             chosen = row == self.selected
             marker = "▶" if chosen else " "
