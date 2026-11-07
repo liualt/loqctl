@@ -426,6 +426,15 @@ class TelemetryTests(unittest.TestCase):
         self.put(d + "power_now", "100000")
         self.assertIsNone(bat(400)["time_remaining_min"])  # over 48 hours
 
+    def test_battery_time_to_full_needs_a_known_limit(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Charging"), ("energy_now", "30000000"),
+                        ("energy_full", "60000000"), ("power_now", "15000000")):
+            self.put(d + name, v)
+        self.put("bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode", "1")
+        b = self.sensors().sample(0)["battery"][0]
+        self.assertEqual((b["charge_limit"], b["time_remaining_min"], b["time_kind"]), ("on", None, None))
+
     def test_battery_average_restarts_when_status_flips(self):
         d = "class/power_supply/BAT1/"
         for name, v in (("type", "Battery"), ("status", "Discharging"), ("energy_now", "30000000"),
