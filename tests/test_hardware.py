@@ -58,6 +58,16 @@ class HardwareTests(helpers.SysfsCase):
         for fname, text in (("name", name), ("profile", mode), ("choices", "quiet custom")):
             (prof / fname).write_text(text + "\n")
 
+    def test_extra_limits_skip_missing_and_unreadable_files(self):
+        legion = self.root / "devices/platform/legion"
+        legion.mkdir(parents=True)
+        (legion / "cpu_temperature_limit").write_text("97\n")
+        (legion / "cpu_l1_tau").write_text("56\n")
+        (legion / "gpu_ppab_powerlimit").write_text("n/a\n")
+        found = self.hw.capabilities()["extra_limits"]
+        self.assertEqual([(i["key"], i["value"]) for i in found], [("cpu_temperature_limit", 97), ("cpu_l1_tau", 56)])
+        self.assertEqual(found[0]["unit"], "°C")
+
     def test_files_that_appear_after_start_are_found(self):
         with tempfile.TemporaryDirectory() as tmp:
             now = [0]
@@ -152,6 +162,28 @@ class HardwareTests(helpers.SysfsCase):
             hw.set_mode("quiet")
             self.assertEqual(hw.mode_limits(), ({"custom": {}}, None))
 
+    def test_base_change_during_hook_keeps_reload_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root)
+            calls = []
+
+            def hook():
+                calls.append(1)
+                if len(calls) == 1:  # a second thread finds a new base while the hook runs
+                    shutil.rmtree(root / "class/firmware-attributes/lenovo-wmi-other-0")
+                    (root / "class/firmware-attributes/lenovo-wmi-other-1/attributes").mkdir(parents=True)
+                    with hw.lock:
+                        hw._discover()
+                    hw._rediscover(force=True)  # must not start a second hook at once
+
+            hw.on_new_base = hook
+            self._late_files(root)
+            hw._rediscover(force=True)
+            self.assertEqual(len(calls), 1)
+            hw._rediscover(force=True)
+        self.assertEqual(len(calls), 2)
+
     def test_incomplete_limits_are_read_again(self):
         (self.attr / "max_value").unlink()
         (self.attr / "default_value").unlink()
@@ -242,15 +274,21 @@ class HardwareTests(helpers.SysfsCase):
         for key in ("../ppt_pl1_spl", "ppt_pl1_spl/current_value", "gpu_mode", "/etc/passwd"):
             with self.assertRaises(m_common.ControlError):
                 self.hw.set_value(key, 60)
+        self.assertEqual((self.attr / "current_value").read_text(), "50")
 
     def test_missing_limits_never_write(self):
         (self.attr / "max_value").unlink()
         with self.assertRaises(m_common.ControlError):
             self.hw.set_value("ppt_pl1_spl", 60)
+        self.assertEqual((self.attr / "current_value").read_text(), "50")
 
     def test_readback_mismatch_reported(self):
-        with patch.object(Path, "write_text", return_value=3):
-            with self.assertRaisesRegex(m_common.ControlError, "readback"):
+        real = Path.write_text
+
+        def garbled(path, data, *args, **kwargs):  # the firmware stores a different value
+            return real(path, "61", *args, **kwargs)
+        with patch.object(Path, "write_text", garbled):
+            with self.assertRaisesRegex(m_common.ControlError, r"readback is '61', expected 60"):
                 self.hw.set_value("ppt_pl1_spl", 60)
 
     def test_ebusy_maps_to_custom_mode_message(self):
