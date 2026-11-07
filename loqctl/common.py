@@ -101,7 +101,7 @@ def sudo_run(args, timeout=30):
 def read(path, default=None):
     try:
         return Path(path).read_text().strip()
-    except OSError:
+    except (OSError, ValueError):  # ValueError covers UnicodeDecodeError
         return default
 
 

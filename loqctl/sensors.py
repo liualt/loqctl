@@ -240,7 +240,10 @@ class Sensors:
             parts = line.split()
             if not parts or not parts[0].startswith("cpu"):
                 continue
-            values = list(map(int, parts[1:9]))  # guest times already included in user/nice
+            try:
+                values = list(map(int, parts[1:9]))  # guest times already included in user/nice
+            except ValueError:
+                continue
             total, idle = sum(values), sum(values[3:5])
             previous = self.previous_cpu.get(parts[0])
             usage = None
@@ -488,8 +491,9 @@ class Sensors:
         slow = self.slow
         mem = {}
         for line in (read(self.proc / "meminfo", "") or "").splitlines():
-            key, value = line.split(":", 1)
-            mem[key] = int(value.split()[0]) / 1024
+            key, _, value = line.partition(":")
+            if (kb := number((value.split() or [None])[0])) is not None:
+                mem[key] = kb / 1024
         total, available = mem.get("MemTotal"), mem.get("MemAvailable")
         battery = []
         ac = []
@@ -577,11 +581,12 @@ class Sampler:
             self.metrics = self.sensors.sample()
         except Exception as exc:
             error = str(exc)
+            self.metrics = {}  # drop the old sample so the UI shows N/A, not frozen values
         latest = {**self.caps, "metrics": self.metrics}
         if error:
             latest["error"] = error
-        if busy:
-            latest["stale"] = True  # firmware fields are from before the running hook
+        if busy or self.fw_error:
+            latest["stale"] = True  # firmware fields are from before the running hook or the failed read
         self.latest = latest
 
     def call_hook(self, caps):
