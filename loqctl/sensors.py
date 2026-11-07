@@ -182,6 +182,7 @@ class Sensors:
         self.battery_rates = {}  # battery name -> ((status, source), [(time, rate)] within BATTERY_SMOOTH_S)
         self.found = {}  # discovery cache: name -> (paths, monotonic time of the scan)
         self.hwmon_names = {}  # hwmon dir -> name file text, cleared when the hwmon list is re-scanned
+        self.rapl_names = {}  # powercap dir -> name file text, cleared when the powercap list is re-scanned
 
     def discover(self, name, scan):
         """Paths from scan(), re-scanned at most every DISCOVERY_INTERVAL (hot-plug, module load)."""
@@ -202,6 +203,18 @@ class Sensors:
         if hw not in self.hwmon_names:
             self.hwmon_names[hw] = read(hw / "name", "")
         return self.hwmon_names[hw]
+
+    def rapl_dirs(self):
+        def scan():
+            self.rapl_names.clear()
+            return sorted(self.root.glob("class/powercap/intel-rapl:*"))  # excludes intel-rapl-mmio duplicates
+        return self.discover("rapl", scan)
+
+    def rapl_name(self, path):
+        """The powercap `name`, read once per scan; empty when missing."""
+        if path not in self.rapl_names:
+            self.rapl_names[path] = read(path / "name", "") or ""
+        return self.rapl_names[path]
 
     def battery_rate(self, p, status, now):
         """(30 s smoothed rate, "energy" or "charge") from power_now, else current_now; (None, None) when 0 or missing.
@@ -242,13 +255,13 @@ class Sensors:
         rapl, package, sources, denied = {}, [], [], False
         # AMD Zen exposes package energy through the same powercap intel-rapl driver
         # (amd_energy was removed in 5.13), so one glob covers both vendors.
-        for path in sorted(self.root.glob("class/powercap/intel-rapl:*")):  # excludes intel-rapl-mmio duplicates
-            name = read(path / "name", "") or ""
+        for path in self.rapl_dirs():
+            name = self.rapl_name(path)
             if not name:
                 continue
             parent = path.name.count(":") > 1
             if parent:
-                parent_name = read(path.with_name(path.name.rsplit(":", 1)[0]) / "name", "") or ""
+                parent_name = self.rapl_name(path.with_name(path.name.rsplit(":", 1)[0]))
                 key = f"{parent_name}/{name}"
             else:
                 key = name

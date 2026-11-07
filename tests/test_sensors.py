@@ -213,6 +213,18 @@ class PortabilityTests(unittest.TestCase):
             clock[0] += m_sensors.DISCOVERY_INTERVAL
             self.assertIsNone(sensors.sample()["cpu"]["temperature_c"])
 
+    def test_rapl_name_read_once_until_rescan(self):
+        self.put("class/powercap/intel-rapl:0/name", "package-0")
+        self.put("class/powercap/intel-rapl:0/energy_uj", "1000000")
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
+            self.assertIn("package-0", sensors.rapl_power()[0])
+            self.put("class/powercap/intel-rapl:0/name", "other")
+            self.assertIn("package-0", sensors.rapl_power()[0])
+            clock[0] += m_sensors.DISCOVERY_INTERVAL
+            self.assertIn("other", sensors.rapl_power()[0])
+
     def test_amd_rapl_package_power(self):
         self.hwmon(0, "k10temp", [("Tctl", 50)])
         self.put("class/powercap/intel-rapl:0/name", "package-0")
@@ -263,7 +275,7 @@ class TelemetryTests(unittest.TestCase):
                      ("intel-rapl-mmio:0", "package-0")):
             self.rapl(d, n, 1000000)
         s = self.sensors()
-        with patch.object(time, "monotonic", side_effect=[0, 0, 0, 2, 2, 2]):
+        with patch.object(time, "monotonic", side_effect=[0, 0, 0, 0, 2, 2, 2, 2]):
             s.rapl_power()
             for d, uj in (("intel-rapl:0", 11000000), ("intel-rapl:0:0", 5000000), ("intel-rapl:1", 21000000),
                           ("intel-rapl-mmio:0", 99000000)):
