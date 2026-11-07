@@ -300,6 +300,19 @@ class TelemetryTests(unittest.TestCase):
         self.put("class/power_supply/BAT1/charge_control_end_threshold", "80")
         self.assertEqual(bat(), "80%")
 
+    def test_battery_charge_type(self):
+        self.put("class/power_supply/BAT1/type", "Battery")
+        bat = lambda: self.sensors().sample()["battery"][0]
+        self.assertIsNone(bat()["charge_type"])
+        self.put("class/power_supply/BAT1/charge_types", "Fast Standard [Long_Life]")
+        self.assertEqual(bat()["charge_type"], "Long_Life")
+        self.put("class/power_supply/BAT1/charge_types", "Fast Standard Long_Life")
+        self.assertIsNone(bat()["charge_type"])
+        self.assertEqual((bat()["rapid_charge"], bat()["power_charge_mode"]), (None, None))
+        self.put("devices/platform/legion/rapidcharge", "1")
+        self.put("devices/platform/legion/powerchargemode", "2")
+        self.assertEqual((bat()["rapid_charge"], bat()["power_charge_mode"]), ("on", "2"))
+
     def test_battery_health(self):
         self.put("class/power_supply/BAT1/type", "Battery")
         bat = lambda: self.sensors().sample()["battery"][0]

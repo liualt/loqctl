@@ -482,16 +482,20 @@ class Sensors:
         ac = []
         conservation = next((v for f in sorted(self.root.glob("bus/platform/drivers/ideapad_acpi/*/conservation_mode"))
                              if (v := read(f)) in ("0", "1")), None)
+        legion = self.root / "devices/platform/legion"
+        rapid = {"0": "off", "1": "on"}.get(read(legion / "rapidcharge"))
         for p in self.root.glob("class/power_supply/*"):
             if read(p / "type") == "Battery":
                 threshold = scaled(p / "charge_control_end_threshold")
                 limit = (f"{threshold:.0f}%" if threshold is not None
                          else None if conservation is None else "on" if conservation == "1" else "off")
                 status = read(p / "status")
+                charge_type = re.search(r"\[(\w+)\]", read(p / "charge_types") or "")
                 avg, source = self.battery_rate(p, status, now)
                 minutes, kind = battery_time(p, status, avg, source)
                 power = scaled(p / "power_now", 1e6)
-                battery.append({"charge_limit": limit, "name": p.name, "percent": scaled(p / "capacity"),
+                battery.append({"charge_limit": limit, "charge_type": charge_type and charge_type[1],
+                                "rapid_charge": rapid, "power_charge_mode": read(legion / "powerchargemode"), "name": p.name, "percent": scaled(p / "capacity"),
                                 "status": status, "power_w": power,
                                 "power_avg_w": avg / 1e6 if avg is not None and source == "energy" else None,
                                 "time_remaining_min": minutes, "time_kind": kind, **battery_health(p)})
