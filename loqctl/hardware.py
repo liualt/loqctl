@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 
-from .capdata import NOT_FOUND, effective_value, read_mode_table
+from .capdata import effective_value, read_mode_table
 from .common import FIELDS, ControlError, read, scaled
 from .fancurve import curve_scale, find_legion_hwmon, read_curve, write_curve
 
@@ -193,9 +193,10 @@ class Hardware:
             mode = read(profile)
             if mode != self._static_mode:
                 self._static, self._static_mode = {}, mode
-            table, reason = self.mode_limits()
-            if mode_driver != GAMEZONE:
-                table, reason = None, NOT_FOUND  # the capdata rows describe gamezone's modes only
+            if mode_driver == GAMEZONE:
+                table, reason = self.mode_limits()
+            else:  # the capdata rows describe gamezone's modes only, so skip the fetch and reload hook
+                table, reason = None, "stock limits are known for lenovo-wmi-gamezone only"
             for key in FIELDS:
                 item = self._read_item(base, key, mode, table)
                 if item:

@@ -122,9 +122,12 @@ class HardwareTests(Sim):
     def test_other_profile_handler_gets_no_table(self):
         self.add_table()
         (self.root / "class/platform-profile/platform-profile-0/name").write_text("amd-pmf")
-        caps = m_hardware.Hardware(self.root).capabilities()
+        hw = m_hardware.Hardware(self.root)
+        with patch.object(hw, "mode_limits") as fetch:
+            caps = hw.capabilities()
+        fetch.assert_not_called()
         self.assertIsNone(caps["mode_limits"])
-        self.assertEqual(caps["mode_limits_error"], capdata.NOT_FOUND)
+        self.assertEqual(caps["mode_limits_error"], "stock limits are known for lenovo-wmi-gamezone only")
         self.assertIsNone(caps["attributes"]["ppt_pl1_spl"]["effective_value"])
 
     def test_missing_product_name_is_none(self):
