@@ -41,6 +41,8 @@ class Hardware:
         self.state = (None, None, None, None)  # (base, profile, choices, mode_driver), swapped whole
         self.on_new_base = None  # called when the attributes directory first appears or moves
         self._hook_pending = False
+        self._hook_gen = 0  # bumped on every new base, so a hook run only clears its own request
+        self._hook_running = False
         self._hook_logged = False
         self._limits = (None, None)  # (table, reason); static per boot
         self._limits_tried = False
@@ -74,6 +76,7 @@ class Hardware:
         if found[0] != self.state[0]:
             self._limits, self._limits_tried = (None, None), False
             self._hook_pending = True
+            self._hook_gen += 1
         self.state = found
 
     def _rediscover(self, force=False):
@@ -83,15 +86,22 @@ class Hardware:
         with self.lock:
             self._discovered_at = self.clock()
             self._discover()
-            hook = self.on_new_base if self._hook_pending else None
+            hook = self.on_new_base if self._hook_pending and not self._hook_running else None
+            gen = self._hook_gen
+            self._hook_running = hook is not None
         if hook:  # outside the lock: it may do blocking I/O, and a failure is retried next time
             try:
                 hook()
-                self._hook_pending = False
+                with self.lock:
+                    if self._hook_gen == gen:  # a newer base needs another run
+                        self._hook_pending = False
             except Exception as exc:
                 if not self._hook_logged:
                     self._hook_logged = True
                     print(f"loqctl: reloading mode limits failed: {exc}", file=sys.stderr)
+            finally:
+                with self.lock:
+                    self._hook_running = False
 
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""

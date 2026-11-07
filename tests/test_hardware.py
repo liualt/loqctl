@@ -161,6 +161,28 @@ class HardwareTests(helpers.SysfsCase):
             hw.set_mode("quiet")
             self.assertEqual(hw.mode_limits(), ({"custom": {}}, None))
 
+    def test_base_change_during_hook_keeps_reload_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hw = m_hardware.Hardware(root)
+            calls = []
+
+            def hook():
+                calls.append(1)
+                if len(calls) == 1:  # a second thread finds a new base while the hook runs
+                    shutil.rmtree(root / "class/firmware-attributes/lenovo-wmi-other-0")
+                    (root / "class/firmware-attributes/lenovo-wmi-other-1/attributes").mkdir(parents=True)
+                    with hw.lock:
+                        hw._discover()
+                    hw._rediscover(force=True)  # must not start a second hook at once
+
+            hw.on_new_base = hook
+            self._late_files(root)
+            hw._rediscover(force=True)
+            self.assertEqual(len(calls), 1)
+            hw._rediscover(force=True)
+        self.assertEqual(len(calls), 2)
+
     def test_incomplete_limits_are_read_again(self):
         (self.attr / "max_value").unlink()
         (self.attr / "default_value").unlink()
