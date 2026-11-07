@@ -78,23 +78,19 @@ One branch per issue. Don't mix unrelated fixes into one branch.
 
 ## 3. Making the change
 
-- Read `AGENTS.md` first. Its hard rules can't be broken: no `fanN_target` writes, no raw
-  EC, `/dev/port`, `/dev/mem` or ACPI-call writes, no real firmware writes in tests, and no
-  GPL-2.0-only code.
-- Standard library only, Linux only, Python 3.10+.
-- Firmware writes stay on the allowlists (`FIELDS` and the fan-curve files), are bounds-checked
-  and are read back to verify.
-- Missing readings show N/A. UI colors use the ANSI palette only.
+- Read `AGENTS.md` first. Its hard rules and preferences apply to every change.
 - Every fix gets a test that fails without the fix. Firmware-writing paths are tested against
   simulated sysfs with mocked subprocesses.
-- Run the full suite before every commit:
+- Before each commit, run the tests the change affects: the module's test file plus the test
+  files of anything that imports or calls what changed.
 
   ```sh
-  python3 -m unittest discover -s tests -v
+  python3 -m unittest tests.test_x tests.test_y 2>&1 | tail -3
   ```
 
-- If the change is user-visible, add a line to the README changelog and bump `VERSION` in
-  `loqctl/__init__.py` (patch for fixes, minor for features).
+  The full suite (`python3 -m unittest discover -s tests -v`) runs in CI and before a release.
+- Don't bump `VERSION` in `loqctl/__init__.py` or edit the README changelog in a feature or fix
+  PR. The maintainer does both when cutting a release (patch for fixes, minor for features).
 - Reused code: check the license, keep the copyright notice, and credit the source in the file
   header and in `NOTICE`.
 

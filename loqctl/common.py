@@ -101,7 +101,7 @@ def sudo_run(args, timeout=30):
 def read(path, default=None):
     try:
         return Path(path).read_text().strip()
-    except OSError:
+    except (OSError, ValueError):  # ValueError covers UnicodeDecodeError
         return default
 
 
@@ -119,7 +119,10 @@ def scaled(path, divisor=1):
 
 
 def owner_uid():
-    return int(os.environ.get("SUDO_UID", os.getuid()))
+    try:
+        return int(os.environ["SUDO_UID"])
+    except (KeyError, ValueError):
+        return os.getuid()
 
 
 def socket_path():
@@ -134,6 +137,17 @@ def unit_sep(unit):
 def fmt(value, unit="", decimals=0):
     unit = unit.strip()
     return "N/A" if value is None else f"{value:.{decimals}f}{unit_sep(unit)}{unit}"
+
+
+def fit_parts(parts, width, sep=" · "):
+    """Join parts most important first, dropping trailing ones that do not fit, so a number is never cut mid-way."""
+    out = ""
+    for part in parts:
+        joined = f"{out}{sep}{part}" if out else part
+        if len(joined) > width:
+            break
+        out = joined
+    return out or parts[0][:width]
 
 
 def clamp(value, lo, hi):

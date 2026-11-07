@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -50,6 +51,7 @@ class ParseTests(unittest.TestCase):
             for mode, value in zip(MODES, values):
                 self.assertEqual(table[mode][key], value, (mode, key))
         self.assertTrue(capdata.valid_table(table))
+        self.assertFalse(capdata.valid_table({mode: {} for mode in MODES}))
 
     def test_read_mode_table(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,6 +63,9 @@ class ParseTests(unittest.TestCase):
             table, reason = capdata.read_mode_table(tmp)
             self.assertIsNone(reason)
             self.assertEqual(table["performance"]["gpu_nv_ctgp"], 90)
+            (guid / "capdata").write_text(re.sub(r"dev:\s*\d+", "dev: 99", FIXTURE))
+            self.assertEqual(capdata.read_mode_table(tmp), (None, capdata.NOT_FOUND))  # foreign IDs
+            (guid / "capdata").write_text(FIXTURE)
             with patch.object(Path, "read_text", side_effect=PermissionError):
                 self.assertEqual(capdata.read_mode_table(tmp), (None, "needs root"))
             with patch.object(os, "listdir", side_effect=PermissionError):
@@ -114,6 +119,18 @@ class HardwareTests(Sim):
         self.assertEqual(caps["mode_limits"]["performance"]["ppt_pl1_spl"], 90)
         self.assertIsNone(caps["mode_limits_error"])
 
+    def test_other_profile_handler_gets_no_table(self):
+        self.add_table()
+        (self.root / "class/platform-profile/platform-profile-0/name").write_text("amd-pmf")
+        caps = m_hardware.Hardware(self.root).capabilities()
+        self.assertIsNone(caps["mode_limits"])
+        self.assertEqual(caps["mode_limits_error"], capdata.NOT_FOUND)
+        self.assertIsNone(caps["attributes"]["ppt_pl1_spl"]["effective_value"])
+
+    def test_missing_product_name_is_none(self):
+        (self.root / "class/dmi/id/product_name").unlink()
+        self.assertIsNone(m_hardware.Hardware(self.root).capabilities()["model"])
+
     def test_retry_only_as_root(self):
         hw = m_hardware.Hardware(self.root)
         with patch.object(os, "geteuid", return_value=1000):
@@ -166,6 +183,16 @@ class SudoCacheTests(Sim):
         data = json.loads(path.read_text())
         self.assertEqual((data["version"], data["product"], data["bios"]), (1, "LOQ 15IRX9", "NECN44WW"))
 
+    def test_recursive_sudo_output_is_unreadable(self):
+        backend = self.backend()
+        with patch.object(capdata.json, "loads", side_effect=RecursionError):
+            self.load(backend, sudo_out("[[["))
+        self.assertIsNone(backend.hardware.capabilities()["attributes"]["ppt_pl1_spl"]["effective_value"])
+
+    def test_relative_xdg_cache_home_ignored(self):
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": "rel"}), patch.object(capdata.Path, "home", return_value=Path("/h")):
+            self.assertEqual(capdata.cache_path(), Path("/h/.cache/loqctl/mode-limits.json"))
+
     def test_cache_reused_without_sudo(self):
         capdata.save_cache(self.table(), self.root)
         backend = self.backend()
@@ -187,6 +214,8 @@ class SudoCacheTests(Sim):
             path.write_text(json.dumps({**data, **bad}))
             self.assertIsNone(capdata.load_cache(self.root), bad)
         path.write_text("not json")
+        self.assertIsNone(capdata.load_cache(self.root))
+        path.write_text("[" * 30000)
         self.assertIsNone(capdata.load_cache(self.root))
         backend = self.backend()
         run = self.load(backend, sudo_out(json.dumps(self.table())))  # mismatch -> refetch
@@ -241,7 +270,7 @@ class UiTests(Sim):
         dash.draw_controls(m_hardware.Hardware(self.root).capabilities(), 0, 0, 20, 70)
         text = self.text(dash)
         self.assertIn("CPU sustained / PL1  60 W", text)
-        self.assertIn("balanced limit from firmware table · custom default 60", text)
+        self.assertIn("custom default 60 · balanced limit from firmware table", text)
 
     def test_stock_row_without_table_is_na(self):
         dash = self.dash()

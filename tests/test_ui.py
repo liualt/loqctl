@@ -13,7 +13,7 @@ import sys
 import termios
 import time
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, PropertyMock
 
 from pathlib import Path
 
@@ -56,6 +56,54 @@ class UiTests(helpers.SysfsCase):
             dashboard.apply(state)
         self.assertEqual(dashboard.pending, {"cpu_temp": 90})
         self.assertEqual([r["status"] for r in dashboard.apply_results], ["APPLIED", "FAILED"])
+
+    def test_idle_run_loop_draws_only_on_change(self):
+        dashboard = self.dashboard()
+        dashboard.running = True
+        dashboard.paused = False
+        dashboard.notice = "Ready."
+        dashboard.keyboard = Mock(last_seq=0)
+        dashboard.backend.start = dashboard.backend.close = lambda: None
+        stamp = time.time()
+        dashboard.backend.state = lambda: {"mode": "custom", "metrics": {"timestamp": stamp}}
+        keys = iter([-1, -1, -1, ord("x"), -1])
+        def getch():
+            try:
+                return next(keys)
+            except StopIteration:
+                dashboard.running = False
+                return -1
+        dashboard.s = Mock(getch=getch, getmaxyx=lambda: (40, 120))
+        dashboard.MIN_H = dashboard.MIN_W = 1
+        dashboard.draw = Mock()
+        dashboard.handle = Mock()
+        dashboard.run()
+        # First frame, then one redraw after the key press; idle timeouts draw nothing.
+        self.assertEqual(dashboard.draw.call_count, 2)
+
+    def test_frozen_timestamp_still_adopts_fan_result(self):
+        dashboard = self.dashboard()
+        dashboard.running = True
+        dashboard.paused = False
+        dashboard.notice = "Ready."
+        dashboard.fan_result = None
+        dashboard.keyboard = Mock(last_seq=0)
+        dashboard.backend.start = dashboard.backend.close = lambda: None
+        stamp = time.time()
+        dashboard.backend.state = lambda: {"mode": "custom", "metrics": {"timestamp": stamp}}
+        passes = []
+        def getch():
+            passes.append(1)
+            if len(passes) == 2:
+                dashboard.fan_result = {"curve": []}  # the loader thread finished
+            if len(passes) == 4:
+                dashboard.running = False
+            return -1
+        dashboard.s = Mock(getch=getch, getmaxyx=lambda: (40, 120))
+        dashboard.MIN_H = dashboard.MIN_W = 1
+        dashboard.draw = Mock()
+        dashboard.run()
+        self.assertEqual(dashboard.draw.call_count, 2)
 
     def test_dashboard_mode_lock(self):
         self.hw.set_mode("balanced")
@@ -148,7 +196,59 @@ class UiTests(helpers.SysfsCase):
         dashboard.draw_controls(state, 0, 0, 20, 50)
         row = next(c for c in calls if "CPU sustained" in c[0] or "PL1" in c[0] or c[0].startswith("▶"))
         self.assertEqual(row[1:], (7, True))
-        self.assertTrue(any("locked in balanced mode" in c[0] for c in calls))
+        self.assertTrue(any("Locked in balanced mode" in c[0] for c in calls))
+
+    def test_power_section_fits_grid_with_all_fields(self):
+        self.hw.set_mode("custom")
+        state = self.hw.capabilities()
+        template = next(iter(state["attributes"].values()))
+        state["attributes"] = {k: {**template, "label": m_common.FIELDS[k][0], "unit": m_common.FIELDS[k][1]}
+                               for k in m_common.FIELDS}
+        state["modes"] = ["quiet", "balanced", "performance", "custom"]
+        for mode in ("custom", "balanced"):
+            state["mode"] = mode
+            for h, w in ((20, 72), (24, 80)):
+                dashboard = self.dashboard()
+                dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3, INFO=6, BAD=2)
+                dashboard.box = Mock()
+                rows = dashboard.rows(state)
+                for sel in range(len(rows)):
+                    calls = []
+                    dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((y, str(text)))
+                    dashboard.selected = sel
+                    dashboard.pending = {"mode": "performance"} if sel == 0 else {}
+                    dashboard.draw_controls(state, 0, 14, h - 3, w - 14)
+                    lines = dict(calls)
+                    self.assertTrue(all(0 < y < h - 3 and len(t) <= w - 16 for y, t in calls), (mode, h, w, sel))
+                    self.assertRegex(lines[1], r"Mode\s+")
+                    if sel == 0:
+                        self.assertTrue(lines[1].endswith(f"{mode} → performance"), lines[1])
+                    elif mode == "custom" or rows[sel] in ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp"):
+                        self.assertTrue(any(t.startswith("▶") for t in lines.values()), (mode, h, w, sel))
+                    if mode == "balanced":
+                        self.assertLessEqual(sum(t.startswith(("▶", " ")) for y, t in calls if y > 1), 4)
+                        self.assertTrue(any("select custom" in t.lower() for t in lines.values()))
+
+    def test_stock_mode_cursor_visits_only_drawn_rows(self):
+        self.hw.set_mode("balanced")
+        for key in ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp", "cpu_temp"):
+            self.add_attr(key, 60, 5, 100, 1, 60)
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.theme = Mock(TEXT=7, ACCENT=1, WARN=3, INFO=6, BAD=2)
+        dashboard.box = Mock()
+        rows = dashboard.rows(state)
+        dashboard.selected = rows.index("cpu_temp")  # left over from custom mode
+        visited = []
+        for _ in range(4):
+            calls = []
+            dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append(str(text))
+            dashboard.draw_controls(state, 0, 0, 17, 58)
+            self.assertTrue(any(t.startswith("▶") for t in calls), rows[dashboard.selected])
+            visited.append(rows[dashboard.selected])
+            if len(visited) < 4:
+                dashboard.handle(curses.KEY_DOWN, state)
+        self.assertEqual(visited, ["mode", "ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp"])
 
     def test_limit_detail_shows_na_for_unreadable_limits(self):
         self.hw.set_mode("custom")
@@ -446,7 +546,7 @@ class UiTests(helpers.SysfsCase):
         dashboard.panel = "main"
         dashboard.keyboard = m_keyboard.Keyboard(binary="/usr/bin/false",
                                           config=self.root / "missing.json")
-        dashboard.handle(ord("j"), {})
+        dashboard.handle(ord("x"), {})
         dashboard.handle(ord("l"), {})
         self.assertEqual(dashboard.panel, "keyboard")
         dashboard.handle(27, {})
@@ -541,6 +641,14 @@ class UiTests(helpers.SysfsCase):
         dash.keyboard = Mock()
         return dash
 
+    def test_recursive_sudo_output_raises_control_error(self):
+        dash = self.dash()
+        with patch.object(m_ui.Dashboard, "sudo_call", return_value=("[[[", "")), \
+                patch.object(m_ui.json, "loads", side_effect=RecursionError):
+            for run in (dash.run_sudo_apply, dash.run_sudo_fancurve):
+                with self.assertRaises(m_common.ControlError):
+                    run([])
+
     def test_sudo_failure_keeps_overlay_closed_and_previous_results(self):
         dash = self.dash()
         dash.pending = {"ppt_pl1_spl": 60}
@@ -597,7 +705,7 @@ class UiTests(helpers.SysfsCase):
         self.assertEqual(dash.s.addnstr.call_count, 1)
 
     def test_help_key_opens_from_every_panel(self):
-        for panel in ("main", "keyboard", "fans"):
+        for panel in ("overview", "main", "keyboard", "fans"):
             dash = self.dash()
             dash.panel = panel
             dash.handle(ord("?"), {})
@@ -606,14 +714,307 @@ class UiTests(helpers.SysfsCase):
             self.assertFalse(dash.help, panel)
             self.assertEqual(dash.panel, panel)
 
-    def test_help_key_opens_without_firmware_rows(self):
+    def test_tab_cycles_supported_sections_and_hides_missing(self):
+        dash = self.dash()
+        dash.panel = "overview"
+        dash.keyboard.available = False
+        state = self.hw.capabilities()
+        self.assertEqual(dash.sections(state), ["overview", "main", "fans"])
+        dash.handle(9, state)
+        self.assertEqual(dash.panel, "main")
+        dash.handle(curses.KEY_BTAB, state)
+        self.assertEqual(dash.panel, "overview")
+        dash.keyboard.available = True
+        self.assertEqual(dash.sections(state)[-1], "keyboard")
+
+    def test_esc_returns_to_overview_when_power_is_hidden(self):
         dash = self.dash()
         dash.rows = lambda state: []
-        dash.handle(ord("?"), {})
-        self.assertTrue(dash.help)
+        dash.panel = "keyboard"
+        dash.handle(27, {})
+        self.assertEqual(dash.panel, "overview")
+        dash.panel = "fans"
+        dash.fan_take = lambda: None
+        dash.fan_edit = None
+        dash.handle(27, {})
+        self.assertEqual(dash.panel, "overview")
+
+    def test_details_gpu_row_shows_mode_and_fits_the_screen(self):
+        for h, w in ((20, 72), (24, 80)):
+            puts = []
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            dash.panel, dash.view = "overview", "details"
+            gpu = {"name": "NVIDIA GeForce RTX 4060 Laptop GPU"}
+            dash.draw({"metrics": {"gpu": {"devices": [gpu]}, "gpu_mode": "Hybrid (auto)"},
+                       "attributes": {}, "modes": []})
+            self.assertTrue(any(t.startswith("GPU") and "mode Hybrid (auto)" in t for _, _, t in puts), (h, w))
+            self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
+
+    def test_extra_limits_are_drawn_read_only_on_small_screens(self):
+        template = {"label": "x", "unit": "W", "available": True, "current_value": 55, "min_value": 5,
+                    "max_value": 140, "scalar_increment": 1, "default_value": 50, "effective_value": 55}
+        attrs = {k: {**template, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS}
+        extras = [{"key": "cpu_l1_tau", "label": "CPU Tau", "unit": "s", "value": 56},
+                  {"key": "gpu_ppab_powerlimit", "label": "GPU PPAB", "unit": "W", "value": 10}]
+        for h, w in ((20, 72), (24, 80)):
+            grid = [[" "] * w for _ in range(h)]
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: grid[y].__setitem__(
+                slice(x, x + len(text[:n])), text[:n])
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+            dash.panel = "main"
+            state = {"metrics": {}, "attributes": attrs, "extra_limits": extras, "mode": "custom",
+                     "modes": ["balanced", "custom"], "mode_limits": None}
+            dash.selected = len(dash.rows(state)) - 1
+            dash.draw(state)
+            text = "\n".join("".join(r) for r in grid)
+            self.assertIn("CPU Tau", text, (h, w))
+            self.assertRegex(text, r"GPU PPAB\s+10 W")
+            self.assertEqual(dash.rows(state), ["mode"] + list(m_common.FIELDS))
+
+    def test_dialogs_and_header_stay_inside_the_screen(self):
+        modes = ["quiet", "balanced", "performance", "custom"]
+        template = {"label": "x", "unit": "W", "available": True, "current_value": 55, "min_value": 5,
+                    "max_value": 140, "scalar_increment": 1}
+        attrs = {k: {**template, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS}
+        for h, w in ((20, 72), (24, 80)):
+            for case in ("limits", "results", "header"):
+                grid = [[" "] * w for _ in range(h)]
+
+                def addnstr(y, x, text, n, attr=0):
+                    for i, c in enumerate(text[:n]):
+                        grid[y][x + i] = c
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = addnstr
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+                dash.panel = "main"
+                state = {"metrics": {}, "attributes": attrs, "modes": modes, "mode": "custom",
+                         "model": "Lenovo " + "LOQ Gaming Notebook " * 3, "mode_limits": None}
+                if case == "limits":
+                    dash.show_limits = True
+                elif case == "results":
+                    dash.show_results = True
+                    dash.apply_results = [{"key": "ppt_pl1_spl", "before": 1, "requested": 2, "current": 2,
+                                           "status": "APPLIED"}] * 14
+                dash.draw(state)
+                text = ["".join(r) for r in grid]
+                if case == "limits":
+                    self.assertIn("custom", text[next(i for i, t in enumerate(text) if "Control" in t and "quiet" in t)])
+                    self.assertTrue(any("more" in t and "…" in t for t in text), (h, w))
+                elif case == "results":
+                    self.assertTrue(any("… " in t and "more" in t for t in text), (h, w))
+                    drawn = [t for t in text if "ppt" in t.lower() or "APPLIED" in t]
+                    self.assertTrue(drawn and all(t.rstrip(" │").endswith("APPLIED") for t in drawn), (h, w))
+                    self.assertTrue(any("Enter / Esc closes" in t for t in text), (h, w))
+                else:
+                    self.assertIn("CUSTOM", text[0], (h, w))
+                    self.assertIn("API", text[0], (h, w))
+
+    def test_failed_poll_shows_error_and_na_readings(self):
+        backend = m_backend.Backend(str(self.root / "none.sock"))
+        backend.stop = Mock(is_set=Mock(side_effect=[False, True]))
+        backend.wake = Mock()
+        backend.latest = {"mode": "custom", "metrics": {"cpu": {"temp_c": 61}}}
+        with patch.object(m_backend, "request", side_effect=OSError("gone")), \
+                patch.object(m_backend.threading, "Thread", lambda target, daemon: Mock(start=target)):
+            backend.remote = True
+            backend.start()
+        self.assertNotIn("metrics", backend.latest)
+        self.assertEqual(backend.latest["mode"], "custom")
+        puts = []
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 80)
+        screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append(text[:n])
+        with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                patch.object(curses, "has_colors", return_value=False):
+            dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+        dash.draw(backend.latest)
+        self.assertTrue(any("API connection failed" in t for t in puts))
+        self.assertFalse(any("61" in t for t in puts))
+
+    def test_battery_health_fits_summary_and_details(self):
+        battery = [{"name": "BAT1", "percent": 90, "status": "Discharging", "charge_limit": "80%",
+                    "health_percent": 98.13, "cycles": 77, "full_wh": 58.88, "design_wh": 60.0,
+                    "time_remaining_min": 135, "time_kind": "to empty"}]
+        for h, w in ((20, 72), (24, 80)):
+            for view in ("summary", "details"):
+                puts = []
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+                dash.panel, dash.view = "overview", view
+                dash.draw({"metrics": {"battery": battery, "ac_online": False}, "attributes": {}, "modes": []})
+                texts = [t for _, _, t in puts]
+                if view == "summary":
+                    self.assertTrue(any("2 h 15 min left" in t for t in texts), (h, w))
+                    self.assertTrue(any("health 98%" in t for t in texts) or w == 72, (h, w))
+                else:
+                    self.assertTrue(any(t.strip().startswith("BAT1") and "cycles 77" in t for t in texts), (h, w))
+                self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w, view))
+
+    def test_paused_and_stale_are_marked_on_screen(self):
+        for h, w in ((20, 72), (24, 80)):
+            for paused, stale in ((True, False), (False, True)):
+                puts = []
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+                dash.paused, dash.notice = paused, "Ready."
+                dash.draw({"metrics": {}, "attributes": {}, "modes": [], "stale": stale})
+                texts = [t for _, _, t in puts]
+                self.assertEqual(any("GRAPHS PAUSED" in t for t in texts), paused, (h, w))
+                self.assertEqual(any(t.startswith("Firmware values are stale.") for t in texts), stale, (h, w))
+                self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
+
+    def test_battery_charge_type_drops_before_limit(self):
+        battery = [{"name": "BAT1", "percent": 90, "status": "Discharging", "charge_limit": "80%",
+                    "charge_type": "Long_Life", "rapid_charge": "off", "time_remaining_min": 135,
+                    "time_kind": "to empty"}]
+        puts = []
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 80)
+        screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append(text[:n])
+        with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                patch.object(curses, "has_colors", return_value=False):
+            dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+        dash.panel, dash.view = "overview", "summary"
+        dash.draw({"metrics": {"battery": battery, "ac_online": False}, "attributes": {}, "modes": []})
+        self.assertTrue(any("limit 80%" in t for t in puts))
+        self.assertFalse(any("charge Long Life" in t for t in puts))
+
+    def test_battery_health_shows_when_plugged_in(self):
+        battery = [{"name": "BAT1", "percent": 90, "status": "Not charging", "charge_limit": "80%",
+                    "charge_type": "Long_Life", "health_percent": 98.13, "time_remaining_min": None, "time_kind": None}]
+        for h, w in ((20, 72), (24, 80)):
+            puts = []
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append(text[:n])
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            dash.panel, dash.view = "overview", "summary"
+            dash.draw({"metrics": {"battery": battery, "ac_online": True}, "attributes": {}, "modes": []})
+            self.assertTrue(any("health 98%" in t for t in puts), (h, w))
+            self.assertTrue(any("limit 80%" in t for t in puts), (h, w))
+            if w == 80:
+                self.assertTrue(any("charge Long Life" in t for t in puts), (h, w))
+
+    def test_battery_left_text(self):
+        left = m_ui.battery_left
+        self.assertEqual(left({"time_remaining_min": 40, "time_kind": "to full"}), "40 min to full")
+        self.assertEqual(left({"time_remaining_min": 135, "time_kind": "to empty"}), "2 h 15 min left")
+        self.assertEqual(left({"time_remaining_min": None}), "")
+
+    def test_keyboard_page_never_cuts_a_line_mid_word_at_72x20(self):
+        grid = [[" "] * 72 for _ in range(20)]
+
+        def addnstr(y, x, text, n, attr=0):
+            for i, c in enumerate(text[:n]):
+                grid[y][x + i] = c
+
+        screen = Mock()
+        screen.getmaxyx.return_value = (20, 72)
+        screen.addnstr.side_effect = addnstr
+        with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                patch.object(curses, "has_colors", return_value=False):
+            dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+        dash.keyboard = m_keyboard.Keyboard(binary="/nonexistent/legionaura", config=self.root / "legionaura.json")
+        dash.panel = "keyboard"
+        dash.draw({"metrics": {}, "attributes": {}, "modes": []})
+        rows = ["".join(r)[m_ui.Dashboard.NAV_W + 1:].strip("│ ") for r in grid]
+        self.assertIn("for 4-zone RGB control.", rows)
+        with patch.object(m_keyboard.Keyboard, "available", new_callable=PropertyMock, return_value=True):
+            dash.draw({"metrics": {}, "attributes": {}, "modes": []})
+        rows = ["".join(r)[m_ui.Dashboard.NAV_W + 1:].strip("│ ") for r in grid]
+        tip = next(r for r in rows if r.startswith("Hardware"))
+        self.assertIn(tip, ("Hardware shows the true color. UI uses your terminal theme only.",
+                            "Hardware shows the true color."))
+        title = next(r for r in rows if "HSV picker" in r)
+        self.assertIn(title, ("zone 1  HSV picker  (terminal swatch ≈ nearest ANSI)", "zone 1  HSV picker"))
+
+    def test_overview_arrows_switch_section_but_never_edit(self):
+        dash = self.dash()
+        dash.panel = "overview"
+        dash.fan = {"available": False}
+        dash.keyboard.available = False
+        state = self.hw.capabilities()
+        dash.handle(curses.KEY_RIGHT, state)
+        dash.handle(ord("5"), state)
+        self.assertEqual((dash.pending, dash.fields), ({}, {}))
+        dash.handle(curses.KEY_DOWN, state)
+        self.assertEqual(dash.panel, "main")
+
+    def test_s_authenticates_on_every_page(self):
+        state = self.hw.capabilities()
+        for panel in ("main", "fans", "keyboard"):
+            dash = self.dash()
+            dash.panel = panel
+            dash.fan = {"available": False}
+            dash.keyboard.available = True
+            dash.backend.remote = False
+            calls = []
+            dash.reauth = lambda: calls.append(panel)
+            with patch("os.geteuid", return_value=1000):
+                dash.handle(ord("s"), state)
+            self.assertEqual(calls, [panel])
+
+    def test_fan_graph_axis_fits_the_curve_not_the_live_temperature(self):
+        from loqctl.fancurve import Scale
+        dash = self.dash()
+        dash.fan_sel = 0
+        dash.theme = Mock(TEXT=7, ACCENT=1, WARN=3, INFO=6, BAD=2)
+        calls = []
+        dash.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append(str(text))
+        points = [{"cpu_up": t, "fan1": 40 + i} for i, t in enumerate((88, 92, 92, 99, 100))]
+        dash.fan_graph(points, Scale("rpm", 10000), 61, 0, 0, 60, 8)
+        self.assertNotIn("50°C", calls)
+        self.assertNotIn("60°C", calls)
+        self.assertIn("80°C", calls)
+        self.assertNotIn("▲", calls)  # 61 °C is off the axis, so no tick
+
+    def test_arrows_leave_power_and_keyboard_at_the_edges(self):
+        dash = self.dash()
+        dash.fan = {"available": False}
+        dash.keyboard.available = True
+        dash.goto_section = lambda name: setattr(dash, "panel", name)  # opening a section reads hardware
+        state = self.hw.capabilities()
+        visit = dash.shown_rows(state)
+        rows = dash.rows(state)
+        dash.panel = "main"
+        dash.selected = rows.index(visit[0])
+        dash.handle(curses.KEY_UP, state)
+        self.assertEqual(dash.panel, "overview")
+        dash.panel = "main"
+        dash.selected = rows.index(visit[-1])
+        dash.handle(curses.KEY_DOWN, state)
+        self.assertEqual(dash.panel, "fans")
+        dash.panel, dash.kb_channel = "keyboard", 2
+        dash.handle(curses.KEY_DOWN, state)
+        self.assertEqual(dash.panel, "overview")
+        dash.panel, dash.kb_channel = "keyboard", 0
+        dash.handle(curses.KEY_UP, state)
+        self.assertEqual(dash.panel, "fans")
 
     def test_footer_hint_fits_and_keeps_help_and_quit(self):
-        for panel in ("main", "keyboard", "fans"):
+        for panel in ("overview", "main", "keyboard", "fans"):
             for width in (72, 80, 120):
                 dash = self.dash()
                 dash.panel = panel
@@ -627,12 +1028,13 @@ class UiTests(helpers.SysfsCase):
                 dash.help = dash.show_results = dash.show_limits = False
                 dash.sudo_expired = False
                 dash.theme = Mock()
-                dash.draw_main = dash.draw_keyboard = dash.draw_fans = lambda *a, **k: None
+                dash.draw_main = dash.draw_keyboard = dash.draw_fans = dash.draw_overview = lambda *a, **k: None
+                dash.draw_nav = lambda *a, **k: None
                 dash.draw({"metrics": {}})
                 hint = next(t for t in calls if isinstance(t, str) and t.startswith("? help"))
                 self.assertLessEqual(len(hint), width - 3, (panel, width))
                 self.assertTrue(hint.endswith("q quit"), (panel, width))
-                if width >= 80:
+                if width >= 80 and panel != "overview":
                     self.assertIn("Enter apply", hint, (panel, width))
                 if width == 120 and panel == "fans":
                     self.assertIn("R stock", hint)
@@ -667,54 +1069,96 @@ class ViewTests(unittest.TestCase):
                                                       ("gpu_nv_ctgp", 115))}
         return {"attributes": attrs}
 
-    def test_summary_view_with_markers(self):
+    def test_summary_numbers_in_titles_and_one_graph_per_box(self):
         dash, calls = self.stub_dash(45)
         dash.history["cpu_w"].extend([20, 45, 60])
         dash.history["gpu_w"].extend([30, 80])
-        metrics = {"cpu": {"utilization_pct": 5, "power_w": 45.2, "cores": {}},
+        metrics = {"cpu": {"temperature_c": 72, "power_w": 45.2, "clock_mhz": 4100},
                    "gpu": {"devices": [{"name": "G", "power_w": 80.1, "power_limit_w": 140,
                                         "throttle": ["sw_power_cap"]}]},
                    "throttle": {"cpu": {"active": True}}}
+        dash.chart_rows = Mock()
         dash.draw_telemetry(self.state(), metrics, 1, 40, 42, 60)
         text = "\n".join(t for _, _, t in calls)
-        self.assertIn("W 45.2 · PL1 55 · PL2 115", text)
-        self.assertIn("W 80.1 · cTGP 115 · limit 140", text)
-        self.assertIn("THROTTLE", text)
+        self.assertIn("THROTTLE · 72°C · 45.2 W · 4.1 GHz", text)
+        self.assertIn("80.1 W · N/A", text)  # missing GPU temperature and clock
         self.assertIn("throttle: sw_power_cap", text)
-        self.assertIn("┄", text)
+        self.assertNotIn("PL1", text)
+        self.assertEqual([c.args[4] for c in dash.chart_rows.call_args_list], ["cpu_w", "gpu_w"])
         self.assertTrue(all(0 <= y < 45 and x + len(t) <= 100 for y, x, t in calls))
         calls.clear()
+        dash.chart_rows.reset_mock()
         dash.draw_telemetry({}, {"cpu": {}}, 1, 40, 22, 60)  # no limits, small box
-        self.assertIn("PL1 N/A", "\n".join(t for _, _, t in calls))
+        self.assertEqual([c.args[5] for c in dash.chart_rows.call_args_list], [60])  # history max, not 1
+        self.assertIn("N/A · N/A · N/A", "\n".join(t for _, _, t in calls))
 
     def test_cpu_power_reason_at_box_heights(self):
         reason = "RAPL needs root: run sudo loqctl serve"
-        for height, cpu_h in ((18, 7), (22, 8), (27, 10), (29, 11)):
-            with self.subTest(cpu_h=cpu_h):
+        for height in (18, 22, 27, 29):
+            with self.subTest(height=height):
                 dash, calls = self.stub_dash(height, 80)
-                dash.chart, dash.chart_rows = Mock(), Mock()
+                dash.chart_rows = Mock()
                 dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": reason}}, 0, 0, height, 80)
-                shown = [(y, t) for y, _, t in calls if reason in t]
+                shown = [t for _, _, t in calls if reason in t]
                 self.assertEqual(len(shown), 1)
-                self.assertLessEqual(shown[0][0], cpu_h - 2)
-                dash.chart.assert_any_call(3, 2, 76, "cpu", color=dash.theme.OK)
         dash, calls = self.stub_dash(22, 80)
         dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": "Waiting for RAPL samples"}}, 0, 0, 22, 80)
         self.assertNotIn("Waiting", "\n".join(t for _, _, t in calls))
 
-    def test_sensors_view_draws_na(self):
+    def test_details_view_draws_na(self):
         dash, calls = self.stub_dash()
-        dash.draw_sensors({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
+        dash.draw_details({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
                            "power": {"rapl": {"psys": None}, "battery_w": None, "battery_status": None,
                                      "usbc": []},
                            "voltages": [{"label": "CPU 0 Vcore", "v": None}],
                            "throttle": {"cpu": {"core_events": None}, "gpu": None}}, 1, 0, 30, 60)
         text = "\n".join(t for _, _, t in calls)
-        for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle"):
+        for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle", "CPU", "GPU"):
+            self.assertIn(needle, text)
+
+    def test_details_view_shows_gpu_mode(self):
+        for mode, shown in (("Hybrid", "mode Hybrid"), (None, "mode N/A")):
+            dash, calls = self.stub_dash()
+            dash.draw_details({"gpu_mode": mode}, 1, 0, 30, 60)
+            self.assertIn(shown, "\n".join(t for _, _, t in calls))
+
+    def test_details_grid_keeps_throttle_and_whole_numbers(self):
+        metrics = {"throttle": {"cpu": {"active": True, "core_events": 3, "package_events": 12}, "gpu": ["power cap"]},
+                   "cpu": {"utilization_pct": 12, "clock_mhz": 3100, "max_clock_mhz": 4500, "cores": {"0": 5, "1": 90},
+                           "power_source": "RAPL energy counters from sysfs"},
+                   "gpu": {"devices": [{"name": "NVIDIA GeForce RTX 4050 Laptop GPU", "memory_clock_mhz": 8000,
+                                        "memory_used_mib": 405, "memory_total_mib": 6144, "clock_mhz": 2100}]},
+                   "power": {"rapl": {"package": 21.5, "core": 9.0}, "battery_w": 0.0, "battery_status": "Charging"},
+                   "battery": [{"name": "BAT1", "health_percent": 98.1, "cycles": 77, "full_wh": 58.9, "design_wh": 60.0}],
+                   "voltages": [{"label": f"Vcore {i}", "v": 1.0} for i in range(6)],
+                   "temperatures": [{"group": "cpu", "label": f"Core {i}", "c": 50} for i in range(12)]}
+        for h, w in ((20, 72), (24, 80)):
+            with self.subTest(size=(h, w)):
+                dash, calls = self.stub_dash(h, w)
+                dash.draw_details(metrics, 1, 14, h - 3, w - 14)
+                rows = {y: t for y, x, t in calls if x == 16}
+                self.assertTrue(any("Throttle" in t and "cpu yes" in t for t in rows.values()))
+                self.assertTrue(any(t == "Power" for t in rows.values()))
+                self.assertTrue(any(t.strip().startswith("package") and "21.5" in t for t in rows.values()))
+                self.assertTrue(any(t.strip().startswith("battery") and "battery0" not in t for t in rows.values()))
+                self.assertTrue(any(t.startswith("  BAT1") and "health 98%" in t and "cycles 77" in t
+                                    for t in rows.values()))
+                self.assertTrue(all(y < h - 2 for y in rows))
+                for t in rows.values():
+                    self.assertLessEqual(len(t), w - 14 - 4)
+                    self.assertNotRegex(t, r"\b(max|memory|vram) \d*$")
+
+    def test_details_view_shows_secondary_readings(self):
+        dash, calls = self.stub_dash()
+        dash.draw_details({"cpu": {"utilization_pct": 12, "cores": {"0": 0, "1": 100}, "max_clock_mhz": 4500},
+                           "gpu": {"devices": [{"name": "RTX 4050", "memory_total_mib": 6144,
+                                                "memory_clock_mhz": 8000}]}}, 1, 0, 30, 70)
+        text = "\n".join(t for _, _, t in calls)
+        for needle in ("12%", "▁█", "4500 MHz", "RTX 4050", "8000 MHz", "6144 MiB"):
             self.assertIn(needle, text)
         self.assertGreaterEqual(text.count("N/A"), 6)
         calls.clear()
-        dash.draw_sensors({"temperatures": [{"group": "cpu", "label": str(i), "c": 1} for i in range(40)]},
+        dash.draw_details({"temperatures": [{"group": "cpu", "label": str(i), "c": 1} for i in range(40)]},
                           1, 0, 8, 60)
         self.assertEqual(calls[-1][2], "…")
         self.assertTrue(all(y <= 8 for y, _, _ in calls))
@@ -727,7 +1171,13 @@ class ViewTests(unittest.TestCase):
         dash.locked = lambda state: True
         dash.fields, dash.invalid = {}, set()
         dash.handle(ord("t"), {})
-        self.assertEqual(dash.view, "sensors")
+        self.assertEqual(dash.view, "summary")  # only Overview has details
+        dash.panel = "overview"
+        dash.handle(ord("t"), {})
+        self.assertEqual(dash.view, "details")
+        dash.handle(27, {})
+        self.assertEqual(dash.view, "summary")
+        dash.handle(ord("t"), {})
         dash.handle(ord("t"), {})
         self.assertEqual(dash.view, "summary")
 
@@ -744,5 +1194,67 @@ class AnsiColorTests(unittest.TestCase):
             self.assertTrue(-1 <= fg <= 15 and -1 <= bg <= 15, (fg, bg))
 
 
+class NoColorTests(unittest.TestCase):
+    def test_no_color_marks_state_by_attribute(self):
+        t = m_ui.Theme(False)
+        self.assertEqual(t.attr(t.BAD), curses.A_BOLD | curses.A_REVERSE)
+        self.assertEqual(t.attr(t.WARN), curses.A_BOLD)
+        self.assertEqual(t.attr(t.OK), 0)
+        self.assertEqual(t.attr(t.ACCENT, bold=True), curses.A_BOLD)
+
+    def test_no_color_env_disables_theme(self):
+        for env, enabled in (({"NO_COLOR": "1"}, False), ({"NO_COLOR": ""}, True)):
+            screen = Mock()
+            screen.getmaxyx.return_value = (24, 80)
+            with patch.dict(os.environ, env), patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=True), \
+                    patch.object(curses, "start_color"), patch.object(curses, "use_default_colors"), \
+                    patch.object(curses, "init_pair"):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            self.assertEqual(dash.theme.enabled, enabled)
+
+    def test_every_panel_fits_and_marks_state_without_colors(self):
+        modes = ["quiet", "balanced", "performance", "custom"]
+        template = {"label": "x", "unit": "W", "available": True, "current_value": 55, "min_value": 5,
+                    "max_value": 140, "scalar_increment": 1}
+        attrs = {k: {**template, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS}
+        state = {"metrics": {"temperatures": [{"group": "cpu", "label": "Package", "c": 95},
+                                                  {"group": "gpu", "label": "Core", "c": 70}]}, "attributes": attrs, "modes": modes, "mode": "custom",
+                 "mode_limits": None}
+        for h, w in ((20, 72), (24, 80)):
+            for panel, view in (("overview", "summary"), ("overview", "details"), ("main", "summary"),
+                                ("fans", "summary"), ("keyboard", "summary")):
+                cells = []
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, text, n, attr=0: cells.append((x, text[:n], attr))
+                with patch.dict(os.environ, {"NO_COLOR": "1"}), patch.object(curses, "curs_set"), \
+                        patch.object(curses, "meta"), patch.object(curses, "has_colors", return_value=True):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+                dash.panel, dash.view = panel, view
+                dash.show_results = panel == "main"
+                dash.apply_results = [{"key": "ppt_pl1_spl", "before": 1, "requested": 2, "current": 1,
+                                       "status": "FAILED"}]
+                dash.draw(state)
+                self.assertTrue(all(x + len(t) <= w for x, t, _ in cells), (panel, view, h, w))
+                self.assertTrue(all(a & curses.A_COLOR == 0 for _, _, a in cells), (panel, view, h, w))
+                if panel == "main":
+                    self.assertTrue(any("FAILED" in t and a == curses.A_BOLD | curses.A_REVERSE
+                                        for _, t, a in cells), (h, w))
+                if panel == "overview" and view == "details" and h == 24:
+                    self.assertTrue(any("95" in t and a == curses.A_BOLD | curses.A_REVERSE
+                                        for _, t, a in cells), (h, w))
+                    self.assertTrue(any("70" in t and a == curses.A_BOLD for _, t, a in cells), (h, w))
+
+
+class FitPartsTests(unittest.TestCase):
+    def test_drops_trailing_parts_instead_of_cutting_a_number(self):
+        parts = ["custom default 95", "low-power limit from firmware table"]
+        self.assertEqual(m_ui.fit_parts(parts, 60), "custom default 95 · low-power limit from firmware table")
+        self.assertEqual(m_ui.fit_parts(parts, 30), "custom default 95")
+        self.assertEqual(m_ui.fit_parts(parts, 10), "custom def")
+
+
 if __name__ == "__main__":
     unittest.main()
+

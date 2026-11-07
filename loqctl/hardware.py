@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 
-from .capdata import effective_value, read_mode_table
+from .capdata import NOT_FOUND, effective_value, read_mode_table
 from .common import FIELDS, ControlError, read, scaled
 from .fancurve import curve_scale, find_legion_hwmon, read_curve, write_curve
 
@@ -21,6 +21,16 @@ GAMEZONE = "lenovo-wmi-gamezone"
 # and then every current_value read fails with EINVAL.
 GAMEZONE_GUID = "887B54E3-DDDC-4B2C-8B88-68A26A8835D0"
 GAMEZONE_WMI_DRIVER = "lenovo_wmi_gamezone"
+# Read-only firmware limits that legion_laptop exposes under devices/platform/legion/.
+# Never written; a model without a file simply has no row.
+EXTRA_LIMITS = (
+    ("cpu_temperature_limit", "CPU temperature limit", "°C"),
+    ("gpu_temperature_limit", "GPU temperature limit", "°C"),
+    ("cpu_l1_tau", "CPU Tau", "s"),
+    ("cpu_cross_loading_powerlimit", "CPU cross-loading", "W"),
+    ("gpu_power_target_offset", "GPU power target offset", "W"),
+    ("gpu_ppab_powerlimit", "GPU PPAB", "W"),
+)
 
 
 class Hardware:
@@ -31,6 +41,8 @@ class Hardware:
         self.state = (None, None, None, None)  # (base, profile, choices, mode_driver), swapped whole
         self.on_new_base = None  # called when the attributes directory first appears or moves
         self._hook_pending = False
+        self._hook_gen = 0  # bumped on every new base, so a hook run only clears its own request
+        self._hook_running = False
         self._hook_logged = False
         self._limits = (None, None)  # (table, reason); static per boot
         self._limits_tried = False
@@ -64,6 +76,7 @@ class Hardware:
         if found[0] != self.state[0]:
             self._limits, self._limits_tried = (None, None), False
             self._hook_pending = True
+            self._hook_gen += 1
         self.state = found
 
     def _rediscover(self, force=False):
@@ -73,15 +86,22 @@ class Hardware:
         with self.lock:
             self._discovered_at = self.clock()
             self._discover()
-            hook = self.on_new_base if self._hook_pending else None
+            hook = self.on_new_base if self._hook_pending and not self._hook_running else None
+            gen = self._hook_gen
+            self._hook_running = hook is not None
         if hook:  # outside the lock: it may do blocking I/O, and a failure is retried next time
             try:
                 hook()
-                self._hook_pending = False
+                with self.lock:
+                    if self._hook_gen == gen:  # a newer base needs another run
+                        self._hook_pending = False
             except Exception as exc:
                 if not self._hook_logged:
                     self._hook_logged = True
                     print(f"loqctl: reloading mode limits failed: {exc}", file=sys.stderr)
+            finally:
+                with self.lock:
+                    self._hook_running = False
 
     def mode_limits(self):
         """Per-mode firmware table as (table, None) or (None, reason); retried only as root."""
@@ -154,6 +174,17 @@ class Hardware:
                 return name
         return None
 
+    def extra_limits(self):
+        """Read-only legion_laptop limits as [{key, label, unit, value}]; unreadable files are skipped."""
+        found = []
+        for key, label, unit in EXTRA_LIMITS:
+            try:
+                value = int(read(self.root / "devices/platform/legion" / key))
+            except (ValueError, TypeError):
+                continue
+            found.append({"key": key, "label": label, "unit": unit, "value": value})
+        return found
+
     def capabilities(self):
         self._rediscover()
         with self.lock:
@@ -163,13 +194,15 @@ class Hardware:
             if mode != self._static_mode:
                 self._static, self._static_mode = {}, mode
             table, reason = self.mode_limits()
+            if mode_driver != GAMEZONE:
+                table, reason = None, NOT_FOUND  # the capdata rows describe gamezone's modes only
             for key in FIELDS:
                 item = self._read_item(base, key, mode, table)
                 if item:
                     attrs[key] = item
-            return {"model": read(self.root / "class/dmi/id/product_name", "Lenovo LOQ"),
+            return {"model": read(self.root / "class/dmi/id/product_name"),
                     "mode": mode, "modes": (read(choices, "") or "").split(),
-                    "mode_driver": mode_driver, "gamezone_holder": self.gamezone_holder(), "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
+                    "mode_driver": mode_driver, "gamezone_holder": self.gamezone_holder(), "attributes": attrs, "extra_limits": self.extra_limits(), "mode_limits": table, "mode_limits_error": reason}
 
     def _write(self, path, value):
         try:
