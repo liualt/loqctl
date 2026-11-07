@@ -655,6 +655,21 @@ class FanCurveSurfaceTests(FanPanelFixture):
                 if details:
                     self.assertTrue(any(line.count("Point") and (" 10" in line or "›" in line) for line in lines), size)
 
+    def test_default_notice_is_cut_on_a_word(self):
+        dash = self.dash()
+        dash.notice = "Ready. Edit a row, then press Enter to apply.  l opens keyboard lighting."
+        state = {"mode": "custom", "model": "LOQ", "metrics": {"timestamp": time.time()}}
+        dash.paused = True
+        dash.kb_seen = dash.keyboard.last_seq = 0
+        dash.s.getmaxyx.return_value = (20, 72)
+        del dash.put, dash.box
+        calls = []
+        dash.put = lambda y, x, text, *a, **k: calls.append((y, str(text)))
+        dash.draw(state)
+        status = next(t for y, t in calls if y == 18)
+        self.assertTrue(dash.notice.startswith(status), status)
+        self.assertEqual(dash.notice[len(status):len(status) + 1] in (" ", ""), True, status)
+
     def test_graph_draws_rpm_curve_with_cursor(self):
         rpm_root = self.root / "rpm"
         make_hwmon(rpm_root, NECN_STOCK, "rpm", max_rpm=10000)
