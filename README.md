@@ -210,6 +210,8 @@ Every source appears only when the system exposes it; anything else shows `N/A` 
 - Voltages: battery and hwmon `in*` inputs. CPU 0 Vcore (read from CPU 0 only; N/A outside 0.3 to 2.0 V) needs root (run `loqctl serve` as root) on Intel with the `msr` module loaded; it is N/A on AMD. GPU voltage is not available from NVML.
 - Throttling: Intel thermal-throttle event counts and NVML clocks-event reasons.
 - Battery: cycle count, health in % and capacity in Wh, plus the charge limit (read-only). Wh only on batteries with energy files.
+- Battery charging: the charge type from `charge_types` and the rapid-charge state ("rapid on/off", from `legion_laptop`) in the System box. `metrics` and `status` JSON carry `charge_type`, `rapid_charge` and `power_charge_mode` per battery (`power_charge_mode` is the raw `powerchargemode` value and is not shown in the UI).
+- Firmware limits: the Power box lists a read-only "Firmware" group with the CPU and GPU temperature limits, CPU Tau, CPU cross-loading, GPU power target offset and GPU PPAB, when `legion_laptop` exposes them.
 - Battery time: per battery in `metrics`, `power_w` is the raw reading in W, `power_avg_w` the 30 s average in W, `time_remaining_min` is in minutes (`null` when unknown or over 48 hours) and `time_kind` is "to empty" or "to full".
 - GPU mode: the firmware GPU mode (shown read-only).
 
@@ -313,6 +315,8 @@ Added:
 - A slimmer Fans section: a graph box, one point line and a details table.
 - `t` opens a details view in place of the sensors toggle.
 - Battery cycle count and health, and the charge limit (read-only).
+- Battery charge type and rapid-charge state in the System box; `charge_type`, `rapid_charge` and `power_charge_mode` in `metrics` and `status`.
+- A read-only "Firmware" group of six extra limits in the Power box.
 - The firmware GPU mode (read-only).
 - `loqctl metrics --watch` streams JSON samples.
 - `loqctl doctor` shows which features this laptop supports.
@@ -406,6 +410,9 @@ To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md): changes start as an issu
 | `loqctl/keyboard.py` | LegionAura keyboard control |
 | `loqctl/fancurve.py` | Fan curve reads, validation and verified writes (legion_laptop hwmon) |
 | `loqctl/ui_fans.py` | Fan curve panel of the dashboard |
+| `loqctl/capdata.py` | Reads and caches the firmware capability table (per-mode limits) |
+| `loqctl/doctor.py` | `loqctl doctor` feature report |
+| `scripts/` | Developer checks, not installed |
 | `loqctl/curvestore.py` | Stock and saved fan curves, `active.json` and the serve re-apply |
 | `loqctl/ui.py`, `loqctl/colors.py` | Curses dashboard and ANSI color helpers |
 
