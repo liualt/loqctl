@@ -586,6 +586,17 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.draw_fans({"mode": "custom"}, metrics, 1, 0, 17, 24)
         self.assertEqual("".join(cells.get((4, x), " ") for x in range(24)).split()[-1], str(dash.fan_sel + 1))
 
+    def test_unavailable_or_empty_curve_lets_tab_leave_and_draws_without_error(self):
+        state = {"mode": "custom", "model": "LOQ", "metrics": {"timestamp": time.time()}}
+        for key in (9, m_ui.curses.KEY_BTAB):
+            for fan in ({"available": False, "reason": "none"}, {"available": True, "points": []}):
+                dash = self.dash()
+                self.keys(dash, state, "f")
+                dash.fan, dash.fan_result, dash.fan_loading = fan, None, False
+                dash.draw_fans(state, state["metrics"], 1, 0, 17, 60)  # an empty list must not raise
+                self.keys(dash, state, key)
+                self.assertNotEqual(dash.panel, "fans", (key, fan))
+
     def test_full_screen_fits_small_terminals(self):
         metrics = {"fans": [{"rpm": 2000.0}, {"rpm": 1900.0}], "cpu": {"temperature_c": 67.0, "power_w": 20.0},
                    "gpu": {"devices": [{"temperature_c": 55.0}]}, "timestamp": time.time()}

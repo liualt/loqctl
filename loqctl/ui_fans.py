@@ -312,6 +312,8 @@ class FanPanel:
             return
         count = len(self.fan_points())
         if not count:
+            if ch in (9, curses.KEY_BTAB):  # no curve to step through, so Tab moves on like other pages
+                self.step_section(state, -1 if ch == curses.KEY_BTAB else 1)
             return
         locked = self.fan_locked(state)
         if locked and self.fan_edit is not None:
@@ -358,7 +360,7 @@ class FanPanel:
         gpu_temp = gpu.get("temperature_c")
         parts += [f"{name} {t:.0f}°C" for name, t in (("CPU", cpu_temp), ("GPU", gpu_temp)) if t is not None]
         ix, iw = x + 2, width - 4
-        if not self.fan.get("available"):
+        if not self.fan_points():
             loading = self.fan_loading
             state_label = "Loading" if loading else "Unavailable"
             self.box(y, x, height, width, fit_parts(parts, max(8, width - len(state_label) - 10)), self.theme.GPU,
