@@ -244,6 +244,25 @@ class PortabilityTests(unittest.TestCase):
         self.assertAlmostEqual(second["cpu"]["power_w"], 10.0)
         self.assertEqual(second["cpu"]["temperature_source"], "Tctl")
 
+    def test_battery_power_does_not_replace_cpu_power(self):
+        self.put("class/powercap/intel-rapl:0/name", "package-0")
+        self.put("class/powercap/intel-rapl:0/energy_uj", "1000000")
+        self.put("class/power_supply/BAT0/type", "Battery")
+        self.put("class/power_supply/BAT0/status", "Discharging")
+        self.put("class/power_supply/BAT0/power_now", "20000000")
+        self.put("proc/uptime", "10 5")
+        self.put("proc/meminfo", "MemTotal: 1024 kB\nMemAvailable: 512 kB")
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        sensors.gpu = lambda: {"available": False}
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
+            sensors.sample()
+            self.put("class/powercap/intel-rapl:0/energy_uj", "21000000")
+            clock[0] = 102.0
+            second = sensors.sample()
+        self.assertAlmostEqual(second["cpu"]["power_w"], 10.0)
+        self.assertEqual(second["battery"][0]["power_w"], 20.0)
+
 
 class TelemetryTests(unittest.TestCase):
     def setUp(self):
