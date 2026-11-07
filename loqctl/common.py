@@ -119,7 +119,10 @@ def scaled(path, divisor=1):
 
 
 def owner_uid():
-    return int(os.environ.get("SUDO_UID", os.getuid()))
+    try:
+        return int(os.environ["SUDO_UID"])
+    except (KeyError, ValueError):
+        return os.getuid()
 
 
 def socket_path():
