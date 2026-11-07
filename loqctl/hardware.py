@@ -21,6 +21,16 @@ GAMEZONE = "lenovo-wmi-gamezone"
 # and then every current_value read fails with EINVAL.
 GAMEZONE_GUID = "887B54E3-DDDC-4B2C-8B88-68A26A8835D0"
 GAMEZONE_WMI_DRIVER = "lenovo_wmi_gamezone"
+# Read-only firmware limits that legion_laptop exposes under devices/platform/legion/.
+# Never written; a model without a file simply has no row.
+EXTRA_LIMITS = (
+    ("cpu_temperature_limit", "CPU temperature limit", "°C"),
+    ("gpu_temperature_limit", "GPU temperature limit", "°C"),
+    ("cpu_l1_tau", "CPU Tau", "s"),
+    ("cpu_cross_loading_powerlimit", "CPU cross-loading", "W"),
+    ("gpu_power_target_offset", "GPU power target offset", "W"),
+    ("gpu_ppab_powerlimit", "GPU PPAB", "W"),
+)
 
 
 class Hardware:
@@ -154,6 +164,17 @@ class Hardware:
                 return name
         return None
 
+    def extra_limits(self):
+        """Read-only legion_laptop limits as [{key, label, unit, value}]; unreadable files are skipped."""
+        found = []
+        for key, label, unit in EXTRA_LIMITS:
+            try:
+                value = int(read(self.root / "devices/platform/legion" / key))
+            except (ValueError, TypeError):
+                continue
+            found.append({"key": key, "label": label, "unit": unit, "value": value})
+        return found
+
     def capabilities(self):
         self._rediscover()
         with self.lock:
@@ -169,7 +190,7 @@ class Hardware:
                     attrs[key] = item
             return {"model": read(self.root / "class/dmi/id/product_name", "Lenovo LOQ"),
                     "mode": mode, "modes": (read(choices, "") or "").split(),
-                    "mode_driver": mode_driver, "gamezone_holder": self.gamezone_holder(), "attributes": attrs, "mode_limits": table, "mode_limits_error": reason}
+                    "mode_driver": mode_driver, "gamezone_holder": self.gamezone_holder(), "attributes": attrs, "extra_limits": self.extra_limits(), "mode_limits": table, "mode_limits_error": reason}
 
     def _write(self, path, value):
         try:

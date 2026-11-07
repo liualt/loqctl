@@ -57,6 +57,16 @@ class HardwareTests(helpers.SysfsCase):
         for fname, text in (("name", name), ("profile", mode), ("choices", "quiet custom")):
             (prof / fname).write_text(text + "\n")
 
+    def test_extra_limits_skip_missing_and_unreadable_files(self):
+        legion = self.root / "devices/platform/legion"
+        legion.mkdir(parents=True)
+        (legion / "cpu_temperature_limit").write_text("97\n")
+        (legion / "cpu_l1_tau").write_text("56\n")
+        (legion / "gpu_ppab_powerlimit").write_text("n/a\n")
+        found = self.hw.capabilities()["extra_limits"]
+        self.assertEqual([(i["key"], i["value"]) for i in found], [("cpu_temperature_limit", 97), ("cpu_l1_tau", 56)])
+        self.assertEqual(found[0]["unit"], "°C")
+
     def test_files_that_appear_after_start_are_found(self):
         with tempfile.TemporaryDirectory() as tmp:
             now = [0]

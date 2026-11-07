@@ -747,6 +747,31 @@ class UiTests(helpers.SysfsCase):
             self.assertTrue(any(t.startswith("GPU") and "mode Hybrid (auto)" in t for _, _, t in puts), (h, w))
             self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
 
+    def test_extra_limits_are_drawn_read_only_on_small_screens(self):
+        template = {"label": "x", "unit": "W", "available": True, "current_value": 55, "min_value": 5,
+                    "max_value": 140, "scalar_increment": 1, "default_value": 50, "effective_value": 55}
+        attrs = {k: {**template, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS}
+        extras = [{"key": "cpu_l1_tau", "label": "CPU Tau", "unit": "s", "value": 56},
+                  {"key": "gpu_ppab_powerlimit", "label": "GPU PPAB", "unit": "W", "value": 10}]
+        for h, w in ((20, 72), (24, 80)):
+            grid = [[" "] * w for _ in range(h)]
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: grid[y].__setitem__(
+                slice(x, x + len(text[:n])), text[:n])
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+            dash.panel = "main"
+            state = {"metrics": {}, "attributes": attrs, "extra_limits": extras, "mode": "custom",
+                     "modes": ["balanced", "custom"], "mode_limits": None}
+            dash.selected = len(dash.rows(state)) - 1
+            dash.draw(state)
+            text = "\n".join("".join(r) for r in grid)
+            self.assertIn("CPU Tau", text, (h, w))
+            self.assertRegex(text, r"GPU PPAB\s+10 W")
+            self.assertEqual(dash.rows(state), ["mode"] + list(m_common.FIELDS))
+
     def test_dialogs_and_header_stay_inside_the_screen(self):
         modes = ["quiet", "balanced", "performance", "custom"]
         template = {"label": "x", "unit": "W", "available": True, "current_value": 55, "min_value": 5,
