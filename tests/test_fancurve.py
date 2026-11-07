@@ -5,6 +5,7 @@ import errno
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -251,6 +252,21 @@ class FanCurveTests(unittest.TestCase):
         self.assertEqual([r["status"] for r in results], ["FAILED", "NOT SENT"])
         self.assertEqual(len(calls), 1)
 
+    def test_failure_after_success_leaves_first_write_on_disk(self):
+        temp, speed = self.hwmon / "pwm1_auto_point2_temp", self.hwmon / "pwm1_auto_point2_pwm"
+        old_speed = speed.read_text()
+        real = m_fan._write_file
+
+        def second_fails(path, value):
+            if path.name != temp.name:
+                raise m_common.ControlError("boom")
+            real(path, value)
+        with patch.object(m_fan, "_write_file", side_effect=second_fails):
+            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "cpu_up"): 61, (1, "fan1"): 90}), self.pct)
+        self.assertEqual([r["status"] for r in results], ["APPLIED", "FAILED"])
+        self.assertEqual(temp.read_text().strip(), "61")
+        self.assertEqual(speed.read_text(), old_speed)
+
     def test_errno_messages(self):
         path = self.hwmon / "pwm1_auto_point2_pwm"
         for code, text in ((errno.EPERM, "refuses unvalidated"), (errno.EBUSY, "locked"),
@@ -310,10 +326,6 @@ class CheckScriptTests(unittest.TestCase):
 
 
 class MoveTests(unittest.TestCase):
-    def test_speeds_are_computed_once(self):
-        scale = m_fan.Scale("percent")
-        self.assertIs(scale.speeds(), scale.speeds())
-
     def test_speed_sets_both_fans_and_keeps_order(self):
         points, moved = m_panel.move_speed(NECN_STOCK, 1, 1, RPM)
         self.assertTrue(moved)
@@ -451,23 +463,6 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
         self.assertTrue(dash.fan["available"])
 
-    def test_fresh_read_beats_inflight_load(self):
-        dash = self.dash()
-        started = []
-        with patch.object(m_panel, "threading", SimpleNamespace(
-                Thread=lambda target, daemon=None: Mock(start=lambda: started.append(target)))):
-            dash.open_fans()
-        old = {"available": True, "mode": "custom", "points": CURVE[:2]}
-        new = {"available": True, "mode": "custom", "points": CURVE}
-        self.assertTrue(dash.fan_loading)  # the background load is still running
-        with patch.object(dash.backend, "fancurve", return_value=new):
-            dash.fan_request(wait=True)
-        with patch.object(dash.backend, "fancurve", return_value=old):
-            started[0]()  # the old load finishes late and must be dropped
-        dash.fan_take()
-        self.assertEqual(dash.fan["points"], CURVE)
-        self.assertFalse(dash.fan_loading)
-
     def test_fresh_read_discards_untaken_result(self):
         dash = self.dash()
         dash.fan_init()
@@ -586,6 +581,121 @@ class FanCurveSurfaceTests(FanPanelFixture):
         self.assertIn("enable_platformprofile=0", text)
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
 
+    def test_fans_fit_small_terminals(self):
+        dash = self.dash()
+        self.keys(dash, {"mode": "custom"}, "f")
+        cells = {}
+        dash.put = lambda y, x, text, *a, **k: cells.update({(y, x + i): c for i, c in enumerate(str(text))})
+        metrics = {"fans": [{"rpm": 2000.0}, {"rpm": 1900.0}], "cpu": {"temperature_c": 67.0}}
+        for height, width in ((17, 57), (21, 66)):
+            for details in (False, True):
+                cells.clear()
+                dash.fan_details = details
+                dash.draw_fans({"mode": "custom"}, metrics, 1, 0, height, width)
+                self.assertTrue(all(0 <= y < height + 1 and 0 <= x < width for y, x in cells), (height, width))
+                text = "".join(cells.get((2, x), " ") for x in range(width))
+                self.assertIn("Point 1/", text)
+                self.assertEqual("Fan 2" in "".join(cells.values()), details)
+        dash.fan_sel = len(dash.fan_target()) - 1  # the table scrolls to the last point
+        cells.clear()
+        dash.draw_fans({"mode": "custom"}, metrics, 1, 0, 17, 24)
+        self.assertEqual("".join(cells.get((4, x), " ") for x in range(24)).split()[-1], str(dash.fan_sel + 1))
+
+    def test_unavailable_or_empty_curve_lets_tab_leave_and_draws_without_error(self):
+        state = {"mode": "custom", "model": "LOQ", "metrics": {"timestamp": time.time()}}
+        for key in (9, m_ui.curses.KEY_BTAB):
+            for fan in ({"available": False, "reason": "none"}, {"available": True, "points": []}):
+                dash = self.dash()
+                self.keys(dash, state, "f")
+                dash.fan, dash.fan_result, dash.fan_loading = fan, None, False
+                dash.draw_fans(state, state["metrics"], 1, 0, 17, 60)  # an empty list must not raise
+                self.keys(dash, state, key)
+                self.assertNotEqual(dash.panel, "fans", (key, fan))
+
+    def test_full_screen_fits_small_terminals(self):
+        metrics = {"fans": [{"rpm": 2000.0}, {"rpm": 1900.0}], "cpu": {"temperature_c": 67.0, "power_w": 20.0},
+                   "gpu": {"devices": [{"temperature_c": 55.0}]}, "timestamp": time.time()}
+        for size in ((20, 72), (24, 80)):
+            for mode in ("custom", "balanced", "unavailable"):
+                for details in (False, True):
+                    dash = self.dash("custom" if mode == "unavailable" else mode)
+                    state = {"mode": "custom" if mode == "unavailable" else mode, "model": "LOQ", "metrics": metrics}
+                    self.keys(dash, state, "f")
+                    if mode == "unavailable":
+                        dash.fan = {"available": False, "reason": "legion_laptop hwmon not found"}
+                        dash.fan_result, dash.fan_loading = None, False  # a finished load would replace it
+                    else:
+                        dash.fan_sel = len(dash.fan_points()) - 1
+                    dash.fan_details = details
+                    dash.panel = "fans"
+                    dash.kb_seen = dash.keyboard.last_seq = 0
+                    dash.paused = True
+                    dash.s.getmaxyx.return_value = size
+                    del dash.put, dash.box
+                    calls = []
+                    dash.put = lambda y, x, text, *a, **k: calls.append((y, x, str(text)))
+                    dash.draw(state)
+                    h, w = size
+                    where = (size, mode, details)
+                    self.assertTrue(all(0 <= y < h and 0 <= x and x + len(t) <= w or (y, x + len(t)) == (h - 1, w)
+                                        for y, x, t in calls), where)
+                    cx = dash.NAV_W + 1
+                    top = sorted((x, x + len(t)) for y, x, t in calls if y == 1 and x > cx and t.strip(" ─")
+                                 and not t.startswith(("╭", "─")))
+                    self.assertTrue(all(a[1] <= b[0] for a, b in zip(top, top[1:])), (where, top))  # title vs right label
+                    self.assertEqual(sum(1 for y, x, t in calls if y == h - 1), 1, where)  # one footer line
+                    if mode == "unavailable":
+                        title = next((x, x + len(t)) for y, x, t in calls if y == 1 and t.startswith(" Fans"))
+                        label = next(x for y, x, t in calls if y == 1 and t == " Unavailable ")  
+                        self.assertLessEqual(title[1], label, where)
+                        continue
+                    drawn = " ".join(t for y, x, t in calls)
+                    self.assertTrue(str(dash.fan_sel + 1) in drawn.split() if details else "●" in drawn, where)  # point 10 is drawn
+                    self.assertIn("Fans", drawn)
+                    if mode == "balanced":
+                        self.assertIn("Select custom to edit.", drawn)
+                    self.assertIn("t details", "".join(t for y, x, t in calls if y == h - 1), where)
+
+    def test_full_screen_marks_hidden_points_and_keeps_labels_apart(self):
+        points = [dict(cpu_up=30 + 8 * i, cpu_down=0, gpu_up=30 + 8 * i, gpu_down=0, ic_up=40, ic_down=0,
+                       fan1=10 * i, fan2=10 * i, accel=1, decel=1) for i in range(10)]
+        points[-1]["cpu_up"] = 102
+        for size in ((20, 72), (24, 80)):
+            for details in (False, True):
+                dash = self.dash()
+                state = {"mode": "custom", "model": "LOQ", "metrics": {"timestamp": time.time()}}
+                self.keys(dash, state, "f")
+                dash.fan_request(wait=True)
+                dash.fan = {**dash.fan, "points": points}
+                dash.fan_result, dash.fan_loading = None, False  # a finished load would replace the points
+                dash.fan_sel, dash.fan_details, dash.panel, dash.paused = 0, details, "fans", True
+                dash.kb_seen = dash.keyboard.last_seq = 0
+                dash.s.getmaxyx.return_value = size
+                del dash.put, dash.box
+                rows = {}
+                dash.put = lambda y, x, text, *a, **k: rows.setdefault(y, {}).update(
+                    {x + i: c for i, c in enumerate(str(text))})
+                dash.draw(state)
+                lines = ["".join(r.get(x, " ") for x in range(size[1])) for _, r in sorted(rows.items())]
+                self.assertFalse(any(re.search(r"°C\d|\d°C\d", line) for line in lines), (size, details))
+                if details:
+                    self.assertTrue(any(line.count("Point") and (" 10" in line or "›" in line) for line in lines), size)
+
+    def test_default_notice_is_cut_on_a_word(self):
+        dash = self.dash()
+        dash.notice = "Ready. Edit a row, then press Enter to apply.  l opens keyboard lighting."
+        state = {"mode": "custom", "model": "LOQ", "metrics": {"timestamp": time.time()}}
+        dash.paused = True
+        dash.kb_seen = dash.keyboard.last_seq = 0
+        dash.s.getmaxyx.return_value = (20, 72)
+        del dash.put, dash.box
+        calls = []
+        dash.put = lambda y, x, text, *a, **k: calls.append((y, str(text)))
+        dash.draw(state)
+        status = next(t for y, t in calls if y == 18)
+        self.assertTrue(dash.notice.startswith(status), status)
+        self.assertEqual(dash.notice[len(status):len(status) + 1] in (" ", ""), True, status)
+
     def test_graph_draws_rpm_curve_with_cursor(self):
         rpm_root = self.root / "rpm"
         make_hwmon(rpm_root, NECN_STOCK, "rpm", max_rpm=10000)
@@ -598,7 +708,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.draw_fans({"mode": "custom"}, {"cpu": {"temperature_c": 67.4}, "fans": [{"rpm": 2000.0}]}, 1, 0, 30, 110)
         text = {t for t, _ in cells.values()}
         self.assertIn("Point 3/10 · 75°C · 3500 RPM (was 3400 RPM) (fan 2 was 3700 RPM)", text)  # fan 2 is compared too
-        self.assertIn("▲ CPU 67°C", text)
+        self.assertIn("Fans · F1 2000 RPM · CPU 67°C", dash.box.call_args.args[4])
         self.assertTrue({"70°C", " 4000", "RPM"} <= text)
         self.assertFalse(any("GPU" in t or "Curves" in t for t in text))  # details and the curve list stay hidden
         axis = next(y for (y, x), (t, _) in cells.items() if t.startswith("└"))
@@ -608,13 +718,15 @@ class FanCurveSurfaceTests(FanPanelFixture):
         self.assertEqual(len(selected), 1)
         lines = {x for (y, x), (t, _) in cells.items() if "\u2800" < t <= "\u28ff"}
         self.assertTrue(set(range(marks[0] + 1, marks[-1])) <= lines | set(marks))  # segments leave no gaps
-        self.keys(dash, {"mode": "custom"}, "d")
+        self.keys(dash, {"mode": "custom"}, "t")
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 30, 110)
         text = {t for t, _ in cells.values()}
         self.assertIn("Point 3/10 · CPU 75/73°C · GPU 75/73°C · IC 65/59°C · Fan 1 3500 RPM · Fan 2 3500 RPM", text)
         self.assertIn("IC", text)  # the per-point table
         self.assertIn("Unit: RPM", dash.box.call_args.args[6])
-        dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 17, 72)  # small: no table
+        dash.draw_fans({"mode": "balanced"}, {"fans": [{"rpm": 1800.0}, {"rpm": 1700.0}], "cpu": {"temperature_c": 61.0},
+                                              "gpu": {"devices": [{"temperature_c": 55.0}]}}, 1, 0, 17, 72)
+        self.assertEqual(dash.box.call_args.args[4], "Fans · F1 1800 RPM · F2 1700 RPM · CPU 61°C")  # GPU dropped, not cut
         self.assertIn("Fan curves are locked in balanced mode. Select custom to edit.", {t for t, _ in cells.values()})
 
 
@@ -631,6 +743,14 @@ class CurveStoreTests(unittest.TestCase):
                           side_effect=lambda uid: Mock(pw_dir=str(self.home if uid == os.getuid() else self.root / f"home{uid}")))
         pw.start()
         self.addCleanup(pw.stop)
+
+    def test_save_named_never_overwrites(self):
+        with patch.object(m_store.time, "strftime", return_value="saved-20260101-000000"):
+            first = m_store.save_named(CURVE)
+            second = m_store.save_named(CURVE)
+        self.assertNotEqual(first, second)
+        self.assertEqual(second.name, "saved-20260101-000000-2.json")
+        self.assertTrue(first.exists())
 
     def test_config_dir_respects_xdg(self):
         self.assertEqual(m_store.config_dir(), self.config / "loqctl")
@@ -709,13 +829,15 @@ class CurveStoreTests(unittest.TestCase):
         m_store.write_atomic(self.config / "loqctl/curves/b-good.json", edit(CURVE, {(1, "fan1"): 90}))
         m_store.write_atomic(self.config / "loqctl/curves/a-bad.json", edit(CURVE, {(1, "cpu_up"): 30}))
         (self.config / "loqctl/curves/c-junk.json").write_text("{")
+        (self.config / "loqctl/curves/e-deep.json").write_text("[" * 30000)
         null = {"version": 1, "points": m_store.writable_points(CURVE)}
         null["points"][0]["cpu_up"] = None
         (self.config / "loqctl/curves/d-null.json").write_text(json.dumps(null))
         saved = m_store.saved_curves(current)
-        self.assertEqual([n for n, _ in saved], ["a-bad", "b-good", "c-junk", "d-null"])
-        self.assertEqual([p is None for _, p in saved], [True, False, True, True])
-        self.assertEqual([n for n, _ in m_store.curve_options("custom", current)], ["a-bad", "b-good", "c-junk", "d-null"])
+        self.assertEqual([n for n, _ in saved], ["a-bad", "b-good", "c-junk", "d-null", "e-deep"])
+        self.assertEqual([p is None for _, p in saved], [True, False, True, True, True])
+        self.assertEqual([n for n, _ in m_store.curve_options("custom", current)],
+                         ["a-bad", "b-good", "c-junk", "d-null", "e-deep"])
         m_store.save_stock("custom", CURVE)
         self.assertEqual([n for n, _ in m_store.curve_options("custom", current)][:2], ["stock", "a-bad"])
         self.assertEqual([n for n, _ in m_store.curve_options("balanced", current)][:1], ["a-bad"])

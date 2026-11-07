@@ -84,7 +84,10 @@ def read_mode_table(root=Path("/sys")):
             continue
     if not entries:
         return None, NOT_FOUND
-    return mode_table(entries), None
+    table = mode_table(entries)
+    if not any(table.values()):
+        return None, NOT_FOUND  # rows from another model, no known field IDs
+    return table, None
 
 
 def effective_value(mode, key, current, table):
@@ -95,8 +98,8 @@ def effective_value(mode, key, current, table):
 
 
 def valid_table(table):
-    """True for a non-empty dict mode -> dict FIELDS key -> int."""
-    return isinstance(table, dict) and bool(table) and all(
+    """True for a dict mode -> dict FIELDS key -> int with at least one value."""
+    return isinstance(table, dict) and any(table.values()) and all(
         isinstance(mode, str) and isinstance(row, dict)
         and all(k in FIELD_IDS and type(v) is int for k, v in row.items())
         for mode, row in table.items())
@@ -113,8 +116,8 @@ def limits_report(caps):
 
 
 def cache_path():
-    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-    return Path(base) / "loqctl" / "mode-limits.json"
+    base = os.environ.get("XDG_CACHE_HOME", "")
+    return (Path(base) if os.path.isabs(base) else Path.home() / ".cache") / "loqctl" / "mode-limits.json"
 
 
 def _dmi(root):
@@ -126,7 +129,7 @@ def load_cache(root=Path("/sys")):
     product, bios = _dmi(root)
     try:
         data = json.loads(cache_path().read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     if (not isinstance(data, dict) or data.get("version") != CACHE_VERSION or product is None
             or data.get("product") != product or data.get("bios") != bios or not valid_table(data.get("table"))):
@@ -166,7 +169,7 @@ def fetch_via_sudo():
         return None, str(exc)
     try:
         table = json.loads(out)
-    except ValueError:
+    except (ValueError, RecursionError):
         table = None
     if not valid_table(table):
         return None, "sudo returned an unreadable capability table"
