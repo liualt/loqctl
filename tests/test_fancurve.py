@@ -252,6 +252,21 @@ class FanCurveTests(unittest.TestCase):
         self.assertEqual([r["status"] for r in results], ["FAILED", "NOT SENT"])
         self.assertEqual(len(calls), 1)
 
+    def test_failure_after_success_leaves_first_write_on_disk(self):
+        temp, speed = self.hwmon / "pwm1_auto_point2_temp", self.hwmon / "pwm1_auto_point2_pwm"
+        old_speed = speed.read_text()
+        real = m_fan._write_file
+
+        def second_fails(path, value):
+            if path.name != temp.name:
+                raise m_common.ControlError("boom")
+            real(path, value)
+        with patch.object(m_fan, "_write_file", side_effect=second_fails):
+            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "cpu_up"): 61, (1, "fan1"): 90}), self.pct)
+        self.assertEqual([r["status"] for r in results], ["APPLIED", "FAILED"])
+        self.assertEqual(temp.read_text().strip(), "61")
+        self.assertEqual(speed.read_text(), old_speed)
+
     def test_errno_messages(self):
         path = self.hwmon / "pwm1_auto_point2_pwm"
         for code, text in ((errno.EPERM, "refuses unvalidated"), (errno.EBUSY, "locked"),
