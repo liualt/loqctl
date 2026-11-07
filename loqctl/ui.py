@@ -626,8 +626,8 @@ class Dashboard(FanPanel):
         bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}".strip()
         health = battery.get("health_percent")
         left = battery_left(battery)
-        parts = ([f"{power}  {bat}"] + ([left] if left else []) + ([f"health {health:.0f}%"] if health is not None else [])
-                 + [f"limit {battery.get('charge_limit') or 'N/A'}"]
+        parts = ([f"{power}  {bat}"] + ([left] if left else []) + [f"limit {battery.get('charge_limit') or 'N/A'}"]
+                 + ([f"health {health:.0f}%"] if health is not None else [])
                  + ([f"charge {battery['charge_type'].replace('_', ' ')}"] if battery.get("charge_type") else [])
                  + ([f"rapid {battery['rapid_charge']}"] if battery.get("rapid_charge") else []))
         self.put(sy + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
