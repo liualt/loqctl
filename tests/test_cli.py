@@ -179,12 +179,12 @@ class KbCliTests(unittest.TestCase):
     def test_effect_arguments(self):
         cases = {
             ("static", "#FF0000", "--brightness", "1"): ["static", *["ff0000"] * 4, "--brightness", "1"],
-            ("breath", "ff0000", "00ff00", "--speed", "9"):
+            ("breath", "ff0000", "00ff00", "--speed", "4"):
                 ["breath", "ff0000", *["00ff00"] * 3, "--speed", "4", "--brightness", "2"],
             ("wave", "rtl", "--speed", "2"): ["wave", "rtl", "--speed", "2", "--brightness", "2"],
-            ("hue", "--brightness", "5"): ["hue", "--speed", "1", "--brightness", "2"],
+            ("hue", "--brightness", "1"): ["hue", "--speed", "1", "--brightness", "1"],
             ("off",): ["off"],
-            ("brightness", "0"): ["--brightness", "1"],
+            ("brightness", "1"): ["--brightness", "1"],
         }
         for argv, expected in cases.items():
             self.assertEqual(self.run_cli(*argv)[0], expected, argv)

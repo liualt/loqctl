@@ -262,6 +262,20 @@ class KeyboardConfigTests(helpers.SysfsCase):
         run.assert_called_once_with(["apply"])
         self.assertEqual(result["result"], "OK")
 
+    def test_kb_cli_rejects_bad_numbers_without_running(self):
+        kb = m_keyboard.Keyboard(binary="legionaura", config=self.root / "none.json")
+        cases = [
+            (["brightness", "5"], "brightness must be a number from 1 to 2"),
+            (["static", "ff0000", "--brightness", "-3"], "--brightness must be a number from 1 to 2"),
+            (["wave", "--speed", "99"], "--speed must be a number from 1 to 4"),
+            (["hue", "--speed", "x"], "--speed must be a number from 1 to 4"),
+        ]
+        with patch.object(m_keyboard, "Keyboard", return_value=kb), patch.object(kb, "_run") as run:
+            for argv, message in cases:
+                with self.subTest(argv=argv), self.assertRaisesRegex(m_common.ControlError, message):
+                    m_keyboard.kb_cli(argv)
+        run.assert_not_called()
+
     def test_legionaura_resolved_via_path(self):
         kb = m_keyboard.Keyboard(binary="legionaura", config="/nonexistent/loqctl.json")
         run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
