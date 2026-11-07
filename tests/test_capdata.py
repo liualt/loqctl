@@ -183,6 +183,12 @@ class SudoCacheTests(Sim):
         data = json.loads(path.read_text())
         self.assertEqual((data["version"], data["product"], data["bios"]), (1, "LOQ 15IRX9", "NECN44WW"))
 
+    def test_recursive_sudo_output_is_unreadable(self):
+        backend = self.backend()
+        with patch.object(capdata.json, "loads", side_effect=RecursionError):
+            self.load(backend, sudo_out("[[["))
+        self.assertIsNone(backend.hardware.capabilities()["attributes"]["ppt_pl1_spl"]["effective_value"])
+
     def test_relative_xdg_cache_home_ignored(self):
         with patch.dict(os.environ, {"XDG_CACHE_HOME": "rel"}), patch.object(capdata.Path, "home", return_value=Path("/h")):
             self.assertEqual(capdata.cache_path(), Path("/h/.cache/loqctl/mode-limits.json"))

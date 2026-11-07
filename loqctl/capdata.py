@@ -169,7 +169,7 @@ def fetch_via_sudo():
         return None, str(exc)
     try:
         table = json.loads(out)
-    except ValueError:
+    except (ValueError, RecursionError):
         table = None
     if not valid_table(table):
         return None, "sudo returned an unreadable capability table"
