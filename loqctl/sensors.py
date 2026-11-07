@@ -429,7 +429,7 @@ class Sensors:
         battery_w, battery_status, battery_v, usbc = None, None, None, []
         for p in sorted(self.root.glob("class/power_supply/*")):
             kind = read(p / "type")
-            if kind == "Battery" and battery_w is None and battery_status is None:
+            if kind == "Battery" and read(p / "scope") != "Device" and battery_w is None and battery_status is None:
                 volts, amps = scaled(p / "voltage_now", 1e6), scaled(p / "current_now", 1e6)
                 battery_w = scaled(p / "power_now", 1e6)
                 if battery_w is None and volts is not None and amps is not None:
@@ -501,8 +501,8 @@ class Sensors:
                              if (v := read(f)) in ("0", "1")), None)
         legion = self.root / "devices/platform/legion"
         rapid = {"0": "off", "1": "on"}.get(read(legion / "rapidcharge"))
-        for p in self.root.glob("class/power_supply/*"):
-            if read(p / "type") == "Battery":
+        for p in sorted(self.root.glob("class/power_supply/*")):
+            if read(p / "type") == "Battery" and read(p / "scope") != "Device":
                 threshold = scaled(p / "charge_control_end_threshold")
                 limit = (f"{threshold:.0f}%" if threshold is not None
                          else None if conservation is None else "on" if conservation == "1" else "off")
