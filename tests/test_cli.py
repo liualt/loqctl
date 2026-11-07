@@ -64,7 +64,7 @@ class CliTests(helpers.SysfsCase):
         out, err = io.StringIO(), io.StringIO()
         with patch.object(m_cli, "Backend", return_value=backend), patch.object(m_cli, "Sensors", sensors), \
                 patch.object(m_cli.time, "sleep", sleeps.append), \
-                patch.object(m_cli.time, "monotonic", side_effect=[100, 100, 101.2, 102.0]), \
+                patch.object(m_cli.time, "monotonic", side_effect=[100, 100, 100.5, 101.2, 101.5, 102.0]), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = m_cli.main(["metrics", "--watch"] + args)
         return code, out.getvalue().splitlines(), err.getvalue(), sleeps, sensors
@@ -106,6 +106,33 @@ class CliTests(helpers.SysfsCase):
         self.assertEqual(json.loads(out.getvalue()), {"n": 2})
         self.assertIn("boom", err.getvalue())
 
+
+    def test_metrics_watch_exits_cleanly_when_the_reader_closes(self):
+        root = REPO
+        proc = subprocess.Popen([sys.executable, str(root / "loqctl.py"), "metrics", "--watch", "1"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            proc.stdout.readline()
+            proc.stdout.close()
+            err = proc.stderr.read()
+            code = proc.wait(timeout=5)
+        finally:
+            proc.kill()
+            proc.stderr.close()
+        self.assertEqual(code, 0)
+        self.assertNotIn("Exception ignored", err)
+
+    def test_metrics_watch_reports_any_sample_exception_and_continues(self):
+        sensors = unittest.mock.Mock()
+        sensors.return_value.sample.side_effect = [None, IndexError("bad"), {"n": 2}, KeyboardInterrupt]
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(m_cli, "Backend", return_value=unittest.mock.Mock(remote=False, notice="")), \
+                patch.object(m_cli, "Sensors", sensors), patch.object(m_cli.time, "sleep"), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(m_cli.main(["metrics", "--watch"]), 130)
+        self.assertEqual(json.loads(out.getvalue()), {"n": 2})
+        self.assertEqual(err.getvalue().strip(), "loqctl: bad")
+
     def test_doctor_reports_each_check_without_writes(self):
         proc = self.root / "proc"
         proc.mkdir()
@@ -124,7 +151,8 @@ class CliTests(helpers.SysfsCase):
         self.assertEqual(states["legion_laptop hwmon"], "missing")
         self.assertEqual(states["debugfs capdata"], "missing")
         self.assertEqual(states["msr"], "n/a")
-        self.assertEqual(len(states), 10)
+        self.assertEqual(len(states), 11)
+        self.assertEqual(states["GPU mode"], "n/a")
 
     def test_doctor_msr_unreadable_is_missing(self):
         proc = self.root / "proc"
@@ -172,12 +200,12 @@ class KbCliTests(unittest.TestCase):
     def test_effect_arguments(self):
         cases = {
             ("static", "#FF0000", "--brightness", "1"): ["static", *["ff0000"] * 4, "--brightness", "1"],
-            ("breath", "ff0000", "00ff00", "--speed", "9"):
+            ("breath", "ff0000", "00ff00", "--speed", "4"):
                 ["breath", "ff0000", *["00ff00"] * 3, "--speed", "4", "--brightness", "2"],
             ("wave", "rtl", "--speed", "2"): ["wave", "rtl", "--speed", "2", "--brightness", "2"],
-            ("hue", "--brightness", "5"): ["hue", "--speed", "1", "--brightness", "2"],
+            ("hue", "--brightness", "1"): ["hue", "--speed", "1", "--brightness", "1"],
             ("off",): ["off"],
-            ("brightness", "0"): ["--brightness", "1"],
+            ("brightness", "1"): ["--brightness", "1"],
         }
         for argv, expected in cases.items():
             self.assertEqual(self.run_cli(*argv)[0], expected, argv)

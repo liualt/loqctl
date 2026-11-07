@@ -1,5 +1,6 @@
 # Local working notes and research, not project code
 todo
+todo.md
 reports/
 research_notes/
 
@@ -10,3 +11,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# Hardware check checklist and logs (local)
+hwchecks.md
+hwlogs/

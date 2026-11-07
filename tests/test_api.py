@@ -32,6 +32,7 @@ class ApiTests(helpers.SysfsCase):
             for payload in ({"value": True}, {"value": 500}, {"value": 50, "path": "/tmp/x"}, []):
                 with self.assertRaises(m_common.ControlError):
                     m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", payload)
+            self.assertEqual((self.attr / "current_value").read_text().strip(), "70")
             led = self.root / "devices/platform/legion/winkey"
             led.parent.mkdir(parents=True)
             led.write_text("0")
@@ -42,6 +43,34 @@ class ApiTests(helpers.SysfsCase):
             m_api.request(path, "POST", "/v1/mode", {"mode": "balanced"})
             with self.assertRaises(m_common.ControlError):
                 m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", {"value": 60})
+            self.assertEqual((self.attr / "current_value").read_text().strip(), "70")
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
+
+
+class HandlerErrorTests(helpers.SysfsCase):
+    def test_unexpected_error_gets_500_without_message(self):
+        sampler = type("Sampler", (), {"latest": {"metrics": {"x": float("nan")}}})()
+        path = str(self.root / "err.sock")
+        server = m_api.APIServer(path, self.hw, sampler, os.getuid())
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            err = io.StringIO()
+            with patch.object(sys, "stderr", err), self.assertRaises(m_common.ControlError) as cm:
+                m_api.request(path, "GET", "/v1/status")
+            self.assertEqual(str(cm.exception), "ValueError")
+            with patch.object(self.hw, "set_mode", side_effect=OSError("secret path")), \
+                    patch.object(sys, "stderr", err), self.assertRaises(m_common.ControlError) as cm:
+                m_api.request(path, "POST", "/v1/mode", {"mode": "custom"})
+            self.assertEqual(str(cm.exception), "OSError")
+            self.assertNotIn("secret", err.getvalue())
+            with patch.object(m_api.json, "loads", side_effect=RecursionError), \
+                    self.assertRaises(m_common.ControlError) as cm:
+                m_api.request(path, "POST", "/v1/mode", {"mode": "custom"})
+            self.assertEqual(str(cm.exception), "The server returned unreadable JSON.")
         finally:
             server.shutdown()
             server.server_close()
@@ -127,6 +156,18 @@ class ServerSamplerTests(unittest.TestCase):
         with self.assertRaisesRegex(m_common.ControlError, "already running"):
             m_api.prepare_socket_path(live)
         self.assertTrue(live.exists())
+
+    def test_serve_rejects_unknown_uid(self):
+        with patch("os.geteuid", return_value=0):
+            for uid in (99999, -1, 99999999999999999999):
+                with self.assertRaisesRegex(m_common.ControlError, "Unknown uid"):
+                    m_api.serve(uid)
+
+    def test_owner_uid_ignores_bad_sudo_uid(self):
+        with patch.dict(os.environ, {"SUDO_UID": "abc"}):
+            self.assertEqual(m_common.owner_uid(), os.getuid())
+        with patch.dict(os.environ, {"SUDO_UID": "1234"}):
+            self.assertEqual(m_common.owner_uid(), 1234)
 
     def sampler(self, hardware):
         sampler = m_sensors.Sampler.__new__(m_sensors.Sampler)
