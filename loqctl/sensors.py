@@ -506,10 +506,10 @@ class Sensors:
                 charge_type = re.search(r"\[(\w+)\]", read(p / "charge_types") or "")
                 avg, source = self.battery_rate(p, status, now)
                 minutes, kind = battery_time(p, status, avg, source)
-                power = scaled(p / "power_now", 1e6)
+                battery_power = scaled(p / "power_now", 1e6)
                 battery.append({"charge_limit": limit, "charge_type": charge_type and charge_type[1],
                                 "rapid_charge": rapid, "power_charge_mode": read(legion / "powerchargemode"), "name": p.name, "percent": scaled(p / "capacity"),
-                                "status": status, "power_w": power,
+                                "status": status, "power_w": battery_power,
                                 "power_avg_w": avg / 1e6 if avg is not None and source == "energy" else None,
                                 "time_remaining_min": minutes, "time_kind": kind, **battery_health(p)})
             elif (online := read(p / "online")) is not None:
