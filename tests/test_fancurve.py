@@ -622,7 +622,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     dash.draw(state)
                     h, w = size
                     where = (size, mode, details)
-                    self.assertTrue(all(0 <= y < h and 0 <= x and x + len(t) <= w or (y, x + len(t)) == (h - 1, w)
+                    self.assertTrue(all(0 <= y < h and 0 <= x and x + len(t) <= w
                                         for y, x, t in calls), where)
                     cx = dash.NAV_W + 1
                     top = sorted((x, x + len(t)) for y, x, t in calls if y == 1 and x > cx and t.strip(" ─")
