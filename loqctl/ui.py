@@ -338,7 +338,9 @@ class Dashboard(FanPanel):
         warn = bool(state.get("error") or stale)
         if self.sudo_expired and not self.backend.remote and os.geteuid() != 0:
             status, warn = "sudo not authenticated · press s to authenticate · edits stay staged", True
-        self.put(h - 2, 1, status[: w - 3], self.theme.WARN if warn else self.theme.TEXT)
+        if len(status) > w - 3:  # cut at a word boundary
+            status = status[: w - 3].rsplit(" ", 1)[0].rstrip(" ,;:.") if " " in status[: w - 3] else status[: w - 3]
+        self.put(h - 2, 1, status, self.theme.WARN if warn else self.theme.TEXT)
         keys = self.footer_hint(w - 3)
         self.put(h - 1, 1, keys, self.theme.ACCENT, dim=True)
 
