@@ -199,7 +199,10 @@ def prepare_socket_dir(directory):
 def serve(uid):
     if os.geteuid() != 0:
         raise ControlError("Start the server with sudo so it can write firmware settings.")
-    pwd.getpwuid(uid)
+    try:
+        pwd.getpwuid(uid)
+    except (KeyError, OverflowError):
+        raise ControlError(f"Unknown uid {uid}.") from None
     directory = Path(f"/run/loqctl-{uid}")
     prepare_socket_dir(directory)
     path = directory / "control.sock"

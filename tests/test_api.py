@@ -144,6 +144,18 @@ class ServerSamplerTests(unittest.TestCase):
             m_api.prepare_socket_path(live)
         self.assertTrue(live.exists())
 
+    def test_serve_rejects_unknown_uid(self):
+        with patch("os.geteuid", return_value=0):
+            for uid in (99999, -1, 99999999999999999999):
+                with self.assertRaisesRegex(m_common.ControlError, "Unknown uid"):
+                    m_api.serve(uid)
+
+    def test_owner_uid_ignores_bad_sudo_uid(self):
+        with patch.dict(os.environ, {"SUDO_UID": "abc"}):
+            self.assertEqual(m_common.owner_uid(), os.getuid())
+        with patch.dict(os.environ, {"SUDO_UID": "1234"}):
+            self.assertEqual(m_common.owner_uid(), 1234)
+
     def sampler(self, hardware):
         sampler = m_sensors.Sampler.__new__(m_sensors.Sampler)
         sampler.hardware = hardware
