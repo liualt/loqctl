@@ -408,9 +408,15 @@ class TelemetryTests(unittest.TestCase):
         self.put(d + "status", "Charging")
         b = bat(200)
         self.assertEqual((b["time_remaining_min"], b["time_kind"]), (40, "to full"))
+        self.put(d + "charge_control_end_threshold", "80")
+        self.assertEqual(bat(205)["time_remaining_min"], 24)  # 48 Wh target, not 60
+        self.put(d + "energy_now", "50000000")
+        self.assertEqual((bat(206)["time_remaining_min"], bat(206)["time_kind"]), (None, None))  # at the limit
+        self.put(d + "energy_now", "30000000")
         self.put(d + "time_to_full_now", "1800")
         self.assertEqual(bat(210)["time_remaining_min"], 30)
         (self.root / d / "time_to_full_now").unlink()
+        (self.root / d / "charge_control_end_threshold").unlink()
         for status, power in (("Not charging", "15000000"), ("Full", "15000000"), ("Charging", "0")):
             self.put(d + "status", status)
             self.put(d + "power_now", power)
