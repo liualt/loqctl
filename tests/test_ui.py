@@ -858,6 +858,23 @@ class UiTests(helpers.SysfsCase):
                     self.assertTrue(any(t.strip().startswith("BAT1") and "cycles 77" in t for t in texts), (h, w))
                 self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w, view))
 
+    def test_paused_and_stale_are_marked_on_screen(self):
+        for h, w in ((20, 72), (24, 80)):
+            for paused, stale in ((True, False), (False, True)):
+                puts = []
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+                dash.paused, dash.notice = paused, "Ready."
+                dash.draw({"metrics": {}, "attributes": {}, "modes": [], "stale": stale})
+                texts = [t for _, _, t in puts]
+                self.assertEqual(any("GRAPHS PAUSED" in t for t in texts), paused, (h, w))
+                self.assertEqual(any(t.startswith("Firmware values are stale.") for t in texts), stale, (h, w))
+                self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
+
     def test_battery_charge_type_drops_before_limit(self):
         battery = [{"name": "BAT1", "percent": 90, "status": "Discharging", "charge_limit": "80%",
                     "charge_type": "Long_Life", "rapid_charge": "off", "time_remaining_min": 135,

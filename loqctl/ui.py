@@ -308,7 +308,7 @@ class Dashboard(FanPanel):
         mode = (state.get("mode") or "…").upper()
         access = "API" if self.backend.remote else "ROOT" if os.geteuid() == 0 else "LOCAL"
         if self.paused:
-            access = "PAUSED"
+            access = "GRAPHS PAUSED"
         title = f" loqctl {VERSION} "
         self.put(0, 0, "━" * (w - 1), self.theme.ACCENT, dim=True)
         self.put(0, 1, title, self.theme.ACCENT, True)
@@ -334,8 +334,9 @@ class Dashboard(FanPanel):
         # Status + keys
         stamp = metrics.get("timestamp")
         stale = stamp is not None and time.time() - stamp > 5
-        status = state.get("error") or (("Sensor data is stale. " if stale else "") + self.notice)
-        warn = bool(state.get("error") or stale)
+        old = "Sensor data is stale. " if stale else "Firmware values are stale. " if state.get("stale") else ""
+        status = state.get("error") or old + self.notice
+        warn = bool(state.get("error") or old)
         if self.sudo_expired and not self.backend.remote and os.geteuid() != 0:
             status, warn = "sudo not authenticated · press s to authenticate · edits stay staged", True
         if len(status) > w - 3:  # cut at a word boundary
@@ -1239,7 +1240,7 @@ class Dashboard(FanPanel):
             self.open_fans()
         elif ch == ord(" "):
             self.paused = not self.paused
-            self.notice = "Telemetry paused." if self.paused else "Telemetry resumed."
+            self.notice = "Graph history paused; readings stay live." if self.paused else "Telemetry resumed."
         elif ch == ord("s"):
             self.authenticate()
         elif ch == ord("v"):
