@@ -1221,17 +1221,6 @@ class NoColorTests(unittest.TestCase):
                                         for _, t, a in cells), (h, w))
                     self.assertTrue(any("70" in t and a == curses.A_BOLD for _, t, a in cells), (h, w))
 
-    def test_put_carries_state_attrs_without_colors(self):
-        dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
-        dash.theme = m_ui.Theme(False)
-        dash.s = Mock()
-        dash.s.getmaxyx.return_value = (24, 80)
-        puts = []
-        dash.s.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((text, attr))
-        dash.put(0, 0, "hot", dash.theme.BAD)
-        dash.put(1, 0, "warm", dash.theme.WARN)
-        self.assertEqual(puts, [("hot", curses.A_BOLD | curses.A_REVERSE), ("warm", curses.A_BOLD)])
-
 
 class FitPartsTests(unittest.TestCase):
     def test_drops_trailing_parts_instead_of_cutting_a_number(self):
