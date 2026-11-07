@@ -183,6 +183,10 @@ class SudoCacheTests(Sim):
         data = json.loads(path.read_text())
         self.assertEqual((data["version"], data["product"], data["bios"]), (1, "LOQ 15IRX9", "NECN44WW"))
 
+    def test_relative_xdg_cache_home_ignored(self):
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": "rel"}), patch.object(capdata.Path, "home", return_value=Path("/h")):
+            self.assertEqual(capdata.cache_path(), Path("/h/.cache/loqctl/mode-limits.json"))
+
     def test_cache_reused_without_sudo(self):
         capdata.save_cache(self.table(), self.root)
         backend = self.backend()
@@ -204,6 +208,8 @@ class SudoCacheTests(Sim):
             path.write_text(json.dumps({**data, **bad}))
             self.assertIsNone(capdata.load_cache(self.root), bad)
         path.write_text("not json")
+        self.assertIsNone(capdata.load_cache(self.root))
+        path.write_text("[" * 30000)
         self.assertIsNone(capdata.load_cache(self.root))
         backend = self.backend()
         run = self.load(backend, sudo_out(json.dumps(self.table())))  # mismatch -> refetch

@@ -141,7 +141,7 @@ def read_curve_file(path, uid=None):
             data = json.loads(raw.decode())
         except ControlError:
             raise
-        except ValueError as exc:  # UnicodeDecodeError is one
+        except (ValueError, RecursionError) as exc:  # UnicodeDecodeError is a ValueError
             raise ControlError(f"{name} is not valid JSON.") from exc
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("points"), list):
         raise ControlError(f"{name} is not a version 1 fan curve.")
