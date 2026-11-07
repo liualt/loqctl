@@ -33,6 +33,29 @@ class SensorsTests(helpers.SysfsCase):
         with patch.object(time, "monotonic", return_value=3):
             self.assertEqual(sensors.rapl_power()[1], 2)
 
+    def test_bad_proc_lines_are_skipped(self):
+        (self.root / "proc").mkdir()
+        (self.root / "proc/meminfo").write_text("garbage\nEmpty:\nMemTotal: 1024 kB\nMemAvailable: 512 kB")
+        (self.root / "proc/stat").write_text("cpu  1 2 x 4 5 6 7 8\ncpu0 1 2 3 4 5 6 7 8")
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        self.assertEqual(sensors.cpu_usage(), {"cpu0": None})
+        sensors.gpu = lambda: {"available": False}
+        self.assertEqual(sensors.sample()["memory"], {"total_mib": 1.0, "used_mib": 0.5})
+
+    def test_undecodable_file_reads_as_missing(self):
+        path = self.root / "bad"
+        path.write_bytes(b"\xff\xfe")
+        self.assertIsNone(m_common.read(path))
+
+    def test_failed_reads_drop_metrics_and_mark_stale(self):
+        sampler = m_sensors.Sampler(Mock(root=self.root, capabilities=Mock(side_effect=RuntimeError("fw"))))
+        sampler.metrics = {"cpu": {}}
+        with patch.object(sampler.sensors, "sample", side_effect=ValueError("bad")):
+            sampler.tick()
+        self.assertEqual(sampler.latest["metrics"], {})
+        self.assertTrue(sampler.latest["stale"])
+        self.assertEqual(sampler.latest["error"], "bad")
+
     def test_unsupported_sensor_values_are_null(self):
         for value in ("[N/A]", "nan", "inf", None, "Not Supported"):
             self.assertIsNone(m_common.number(value))
