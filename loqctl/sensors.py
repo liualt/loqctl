@@ -505,6 +505,8 @@ class Sensors:
         conservation = next((v for f in sorted(self.root.glob("bus/platform/drivers/ideapad_acpi/*/conservation_mode"))
                              if (v := read(f)) in ("0", "1")), None)
         legion = self.root / "devices/platform/legion"
+        # rapidcharge (0/1) and powerchargemode are legion_laptop attributes under devices/platform/legion
+        # (LenovoLegionLinux kernel_module/legion-laptop.c); powerchargemode is kept raw and not shown.
         rapid = {"0": "off", "1": "on"}.get(read(legion / "rapidcharge"))
         for p in sorted(self.root.glob("class/power_supply/*")):
             if read(p / "type") == "Battery" and read(p / "scope") != "Device":
