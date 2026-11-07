@@ -4,6 +4,9 @@ import contextlib
 import io
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 from loqctl.cli import main
@@ -32,6 +35,35 @@ class CompletionTests(unittest.TestCase):
             for opt in ("--watch", "--socket", "--version", "--uid"):
                 # fish spells long options as `-l name`
                 self.assertTrue(opt in words or f"-l {opt[2:]}" in text, f"{name} lacks {opt}")
+
+    def _modes(self, shell, root):
+        """Run the mode lookup of one completion file with /sys redirected to root."""
+        with open(os.path.join(DIR, "loqctl.bash" if shell == "bash" else "loqctl.fish")) as f:
+            text = f.read().replace("/sys/", root + "/")
+        if shell == "bash":
+            script = text + '\nCOMP_WORDS=(loqctl mode ""); COMP_CWORD=2; _loqctl; echo "${COMPREPLY[*]}"'
+        else:
+            script = text + "\n__loqctl_modes | string join ' '"
+        return subprocess.run([shell, "-c", script], capture_output=True, text=True, timeout=20).stdout.split()
+
+    def test_mode_choices_prefer_gamezone_class_device(self):
+        for shell in ("bash", "fish"):
+            if not shutil.which(shell):
+                continue
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory() as root:
+                for name, dev, modes in (("other", "platform-profile/platform-profile-0", "low balanced"),
+                                         ("lenovo-wmi-gamezone", "platform-profile/platform-profile-1", "quiet performance")):
+                    d = os.path.join(root, "class", dev)
+                    os.makedirs(d)
+                    for fn, val in (("name", name), ("choices", modes)):
+                        with open(os.path.join(d, fn), "w") as f:
+                            f.write(val + "\n")
+                os.makedirs(os.path.join(root, "firmware", "acpi"))
+                with open(os.path.join(root, "firmware", "acpi", "platform_profile_choices"), "w") as f:
+                    f.write("balanced custom\n")
+                self.assertEqual(self._modes(shell, root), ["quiet", "performance"])
+                shutil.rmtree(os.path.join(root, "class"))
+                self.assertEqual(self._modes(shell, root), ["balanced", "custom"])
 
 
 if __name__ == "__main__":

@@ -1,8 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # fish completion for loqctl. Static: never runs loqctl.
 function __loqctl_modes
-    if test -r /sys/firmware/acpi/platform_profile_choices
-        string split ' ' -- (string trim < /sys/firmware/acpi/platform_profile_choices)
+    # Gamezone's class device first, then any other, then the legacy file (it lists "custom", which the kernel rejects).
+    set -l src
+    for f in /sys/class/platform-profile/*/choices
+        test -r $f; or continue
+        set -q src[1]; or set src $f
+        if test (string trim < (string replace -r 'choices$' name $f)) = lenovo-wmi-gamezone
+            set src $f
+            break
+        end
+    end
+    set -q src[1]; or set src /sys/firmware/acpi/platform_profile_choices
+    if test -r $src
+        string split ' ' -- (string trim < $src)
     else
         printf '%s\n' low-power balanced performance max-power custom
     end
