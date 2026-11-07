@@ -27,6 +27,7 @@ Mark problems the change didn't introduce as **Pre-existing**.
 ## Cap the nits
 
 Report at most five Nits per review. Choose the ones that most affect readability or upkeep.
+A reviewer subagent started by the orchestrator leaves Nits out unless its prompt asks for them.
 
 ## Evidence
 
@@ -102,13 +103,16 @@ unit shown (RPM, level or %) matches the curve's real scale.
 
 ## Do not report
 
-- Gitignored or local-only files: `todo`, `reports/`, `research_notes/`, `__pycache__/`.
+- Gitignored or local-only files: `todo.md`, `reports/`, `research_notes/`, `__pycache__/`.
 - Agent tooling and specs under `.claude/`, and binary assets such as `preview.png`.
 - `LICENSE` text.
 - Third-party packages: loqctl is standard-library only, so a suggestion to add one is not a
   finding.
 
 ## Output
+
+If an agent prompt (such as `code-reviewer`) sets its own reply format, use that format and skip the
+`reports/` file. The rules below are for reviews run directly in a chat session.
 
 - Post every finding in the chat: severity, `file:line`, a one-sentence summary, a concrete
   failure scenario, and for data-provenance findings the source and driver. Don't shorten
