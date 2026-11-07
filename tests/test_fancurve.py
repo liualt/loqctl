@@ -5,6 +5,7 @@ import errno
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -628,6 +629,31 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     if mode == "balanced":
                         self.assertIn("Select custom to edit.", drawn)
                     self.assertIn("t details", "".join(t for y, x, t in calls if y == h - 1), where)
+
+    def test_full_screen_marks_hidden_points_and_keeps_labels_apart(self):
+        points = [dict(cpu_up=30 + 8 * i, cpu_down=0, gpu_up=30 + 8 * i, gpu_down=0, ic_up=40, ic_down=0,
+                       fan1=10 * i, fan2=10 * i, accel=1, decel=1) for i in range(10)]
+        points[-1]["cpu_up"] = 102
+        for size in ((20, 72), (24, 80)):
+            for details in (False, True):
+                dash = self.dash()
+                state = {"mode": "custom", "model": "LOQ", "metrics": {"timestamp": time.time()}}
+                self.keys(dash, state, "f")
+                dash.fan_request(wait=True)
+                dash.fan = {**dash.fan, "points": points}
+                dash.fan_result, dash.fan_loading = None, False  # a finished load would replace the points
+                dash.fan_sel, dash.fan_details, dash.panel, dash.paused = 0, details, "fans", True
+                dash.kb_seen = dash.keyboard.last_seq = 0
+                dash.s.getmaxyx.return_value = size
+                del dash.put, dash.box
+                rows = {}
+                dash.put = lambda y, x, text, *a, **k: rows.setdefault(y, {}).update(
+                    {x + i: c for i, c in enumerate(str(text))})
+                dash.draw(state)
+                lines = ["".join(r.get(x, " ") for x in range(size[1])) for _, r in sorted(rows.items())]
+                self.assertFalse(any(re.search(r"°C\d|\d°C\d", line) for line in lines), (size, details))
+                if details:
+                    self.assertTrue(any(line.count("Point") and (" 10" in line or "›" in line) for line in lines), size)
 
     def test_graph_draws_rpm_curve_with_cursor(self):
         rpm_root = self.root / "rpm"

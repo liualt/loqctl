@@ -447,10 +447,14 @@ class FanPanel:
             self.put(r, gx - 1, "┤", dim, dim=True)
         self.put(y + h, gx - 1, "└" + "─" * gw, dim, dim=True)
         self.put(y + h + 1, x, scale.label, dim, dim=True)
+        edge = 0  # first column past the last temperature label
         for t in range(lo_t, hi_t + 1, 10):  # temperature ticks
             c, label = gx + dot_x(t) // 2, f"{t}°C"
             self.put(y + h, c, "┴", dim, dim=True)
-            self.put(y + h + 1, clamp(c - len(label) // 2, gx, gx + gw - len(label)), label, dim, dim=True)
+            lx = clamp(c - len(label) // 2, gx, gx + gw - len(label))
+            if lx >= edge:  # skip a label that would touch the previous one
+                self.put(y + h + 1, lx, label, dim, dim=True)
+                edge = lx + len(label) + 1
         if cpu_temp is not None and lo_t <= cpu_temp <= hi_t:  # live CPU temperature
             self.put(y + h, gx + dot_x(cpu_temp) // 2, "▲", self.theme.WARN, True)
         marks = [(i, dot_x(p["cpu_up"]), dot_y(scale.show(p["fan1"]))) for i, p in enumerate(target)
@@ -496,6 +500,10 @@ class FanPanel:
                 changed = i < len(current) and any(p.get(f) != current[i].get(f) for f in fields)
                 color = self.theme.WARN if changed else self.theme.TEXT
                 self.put(y + r, cx, f"{text:>{cw - 1}}"[: cw - 1], color, bold=chosen, dim=not (chosen or changed))
+        if first > 0:  # points scrolled out of view
+            self.put(y, x + label_w - 1, "‹", self.theme.ACCENT, dim=True)
+        if first + shown < len(target):
+            self.put(y, x + w - 1, "›", self.theme.ACCENT, dim=True)
 
     def fan_footer(self, state, target, scale, y, x, w):
         lines = []
