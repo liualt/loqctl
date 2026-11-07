@@ -132,9 +132,9 @@ class Dashboard(FanPanel):
         "main": ("Tab section", "↑↓ select", "←→ adjust", "Enter apply", "0-9 type", "Esc clear",
                  "d default", "r discard", "m modes", "Space pause", "v results"),
         "fans": ("←→ point", "↑↓ speed", "Enter apply", "t details", "R stock", "Esc back", "r discard",
-                 "W save", "p curves"),
+                 "W save", "p curves", "s sudo"),
         "keyboard": ("Tab section", "1–4 zone", "←→ adjust HSV", "↑↓ channel", "Enter apply", "Esc back", "e effect",
-                     "b bright", "c copy-all", "Space live"),
+                     "b bright", "c copy-all", "Space live", "s sudo"),
     }
     show_limits = False
     panel = "main"  # instances built without __init__ (tests) act as Power
@@ -307,7 +307,7 @@ class Dashboard(FanPanel):
         model = state.get("model") or "N/A"
         mode = (state.get("mode") or "…").upper()
         access = "API" if self.backend.remote else "ROOT" if os.geteuid() == 0 else "LOCAL"
-        if self.paused:
+        if self.paused and self.panel in ("overview", "main"):  # Space toggles it only there
             access = "GRAPHS PAUSED"
         title = f" loqctl {VERSION} "
         self.put(0, 0, "━" * (w - 1), self.theme.ACCENT, dim=True)
@@ -768,26 +768,26 @@ class Dashboard(FanPanel):
         self.put(tip_y + 1, ix, f"config {kb.config}"[:iw], self.theme.TEXT, dim=True)
 
     HELP_LINES = (
-        "Global    Tab section  Space pause  ? help  q quit",
+        "Global    ? help  q quit  s sudo authenticate (any page)",
+        "Sections  Tab next section (not on Fans)",
+        "          ↑↓ leave Power and Keyboard at the edges",
+        "          Space pause graphs (Power, Overview only)",
         "Overview  t details   Esc closes details",
         "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
         "          0-9 type a value   Backspace delete   Esc clear",
         "          Enter apply   r discard   d stage firmware default",
         "          Limits need custom mode (Enter on mode row)",
-        "          v last results   s sudo authenticate (if needed)",
-        "          m overlay of every mode's firmware limits",
+        "          v last results   m every mode's firmware limits",
         "Keyboard  l open lighting panel   Esc back to firmware",
         "          1–4 select zone   ←/→ adjust HSV   ↑↓ channel",
         "          e cycle effect   b brightness   w wave dir",
         "          c copy color to all zones   Space live apply",
         "          Enter apply via legionaura",
-        "",
         "Fans      f open fan curves (edits need custom mode)",
         "          ←→ or Tab/[ ] select point",
         "          ↑↓ next speed the fan stores (both fans)",
         "          Shift+↑↓ five steps   t details",
-        "          Enter apply   r discard   R reset to stock",
-        "          p next curve   W save   Esc back",
+        "          Enter apply  r discard  R stock  p curve  W save",
     )
 
     def footer_hint(self, width):
