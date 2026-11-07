@@ -156,7 +156,12 @@ def battery_time(p, status, avg_rate, source):
         now_v, full_v = scaled(p / f"{source}_now"), scaled(p / f"{source}_full")
         if now_v is None or (name == "full" and full_v is None):
             return None, None
-        minutes = (now_v if name == "empty" else full_v - now_v) / avg_rate * 60
+        target = full_v
+        if name == "full" and (limit := scaled(p / "charge_control_end_threshold")) is not None and 0 < limit < 100:
+            target = full_v * limit / 100  # charging stops at the limit, not at 100%
+        if name == "full" and target <= now_v:
+            return None, None
+        minutes = (now_v if name == "empty" else target - now_v) / avg_rate * 60
     return (minutes, kind) if 0 <= minutes <= BATTERY_MAX_MIN else (None, None)
 
 
