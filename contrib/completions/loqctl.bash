@@ -18,8 +18,15 @@ _loqctl() {
         metrics) COMPREPLY=($(compgen -W "--watch -h" -- "$cur")) ;;
         serve) COMPREPLY=($(compgen -W "--uid -h" -- "$cur")) ;;
         mode)
-            local modes="low-power balanced performance max-power custom"
-            [[ -r /sys/firmware/acpi/platform_profile_choices ]] && modes=$(< /sys/firmware/acpi/platform_profile_choices)
+            local modes="low-power balanced performance max-power custom" f src=""
+            # Gamezone's class device first, then any other, then the legacy file (it lists "custom", which the kernel rejects).
+            for f in /sys/class/platform-profile/*/choices; do
+                [[ -r $f ]] || continue
+                [[ -z $src ]] && src=$f
+                [[ $(< "${f%choices}name") == lenovo-wmi-gamezone ]] && { src=$f; break; }
+            done
+            [[ -z $src ]] && src=/sys/firmware/acpi/platform_profile_choices
+            [[ -r $src ]] && modes=$(< "$src")
             COMPREPLY=($(compgen -W "$modes" -- "$cur")) ;;
         set)
             [[ $COMP_CWORD -eq $((i + 1)) ]] && COMPREPLY=($(compgen -W "ppt_pl1_spl ppt_pl2_sppt ppt_cpu_cl ppt_pl1_spl_cl ppt_pl2_sppt_cl ppt_pl3_fppt ppt_pl3_fppt_cl ppt_pl4_ipl ppt_pl4_ipl_cl ppt_pl1_apu_spl ppt_pl1_tau cpu_temp gpu_nv_ctgp gpu_nv_ppab gpu_nv_ac_offset gpu_nv_bpl gpu_nv_cpu_boost gpu_temp" -- "$cur")) ;;
