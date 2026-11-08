@@ -275,6 +275,21 @@ class UiTests(helpers.SysfsCase):
                 self.assertIn(part, detail, unreadable)
             self.assertNotIn("None", detail, unreadable)
 
+    def test_help_lists_only_keys_that_work_now(self):
+        dash = self.dash()
+        dash.fan_init()
+        dash.keyboard = Mock(available=True)
+        dash.panel = "main"
+        editable = "\n".join(dash.help_lines({"mode": "custom"}))
+        locked = "\n".join(dash.help_lines({"mode": "balanced"}))
+        self.assertIn("0-9", editable)
+        self.assertNotIn("0-9", locked)  # no typing in a stock mode
+        self.assertIn("custom mode only", locked)
+        dash.panel = "fans"  # no curve loaded: the page has no keys of its own
+        missing = dash.help_lines({"mode": "custom"})
+        self.assertEqual(missing[-1], "Fan curves need the legion_laptop module.")
+        self.assertFalse(any(line.startswith(("←→", "↑↓", "Enter")) for line in missing))
+
     def test_invalid_value_says_the_allowed_range(self):
         self.add_attr("ppt_pl2_sppt", 60, 50, 100, 5, 60)
         state = self.hw.capabilities()
@@ -1013,7 +1028,7 @@ class UiTests(helpers.SysfsCase):
             self.assertIn("Read-only. Press s to unlock.", rows[h - 2], (h, w))
             self.assertIn("s unlock", rows[h - 1], (h, w))
             rows = self.draw_rows(h, w, "fans", locked, expired=True)  # no curve: nothing to unlock
-            self.assertIn("legion_laptop module is not loaded", rows[h - 2], (h, w))
+            self.assertEqual(rows[h - 2].strip(), "", (h, w))  # the page says what is missing; the status line does not repeat it
             self.assertNotIn("unlock", rows[h - 1], (h, w))
             rows = self.draw_rows(h, w, "main", {**locked, "stale": True}, expired=True)
             self.assertEqual(rows[h - 2].strip(), "Firmware values are stale. Wait for the next refresh.")
@@ -1097,7 +1112,7 @@ class UiTests(helpers.SysfsCase):
         dash.panel = "keyboard"
         dash.draw({"metrics": {}, "attributes": {}, "modes": []})
         rows = ["".join(r)[m_ui.Dashboard.NAV_W + 1:].strip("│ ") for r in grid]
-        self.assertIn("for 4-zone RGB control.", rows)
+        self.assertIn("Get it from github.com/nivedck/LegionAura.", rows)
         with patch.object(m_keyboard.Keyboard, "available", new_callable=PropertyMock, return_value=True):
             dash.draw({"metrics": {}, "attributes": {}, "modes": []})
         rows = ["".join(r)[m_ui.Dashboard.NAV_W + 1:].strip("│ ") for r in grid]
@@ -1133,7 +1148,7 @@ class UiTests(helpers.SysfsCase):
                 dash.handle(ord("s"), state)
             self.assertEqual(calls, [panel])
 
-    def test_fan_graph_shows_percent_and_no_temperatures(self):
+    def test_fan_graph_shows_percent_and_step_temperatures(self):
         from loqctl.fancurve import Scale
         dash = self.dash()
         dash.fan_sel = 0
@@ -1145,9 +1160,9 @@ class UiTests(helpers.SysfsCase):
         self.assertIn("100%", calls)
         self.assertEqual(calls.count("●") + calls.count("◉"), 5)
         self.assertEqual(calls.count("◉"), 1)  # the selected step has its own glyph
-        self.assertIn("cooler 88°C", calls)  # the axis ends name the first and last trigger temperature
-        self.assertIn("hotter 100°C", calls)
-        self.assertFalse(any(re.search(r"\d\s*°C|RPM", c) for c in calls if not c.startswith(("cooler", "hotter"))))
+        self.assertEqual([c for c in calls if c in ("88", "92", "99", "100")], ["88", "92", "99", "100"])  # a run of 92s reads once
+        self.assertIn("  °C", calls)  # the tick row is labelled once
+        self.assertFalse(any("RPM" in c for c in calls))
 
     def test_arrows_leave_power_and_keyboard_at_the_edges(self):
         dash = self.dash()

@@ -112,7 +112,7 @@ Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the
 
 ### Fan curves
 
-Fan curves are read and written through the [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux) `legion_laptop` kernel module (loqctl does not copy its code; it only uses the hwmon files the module exposes). Without the module the panel says so and shows fan RPM only.
+Fan curves are read and written through the [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux) `legion_laptop` kernel module (loqctl does not copy its code; it only uses the hwmon files the module exposes). Without the module the page says what to load and has no keys of its own.
 
 - Load the module with `enable_platformprofile=0` next to the mainline `lenovo-wmi-gamezone` driver, so gamezone stays the single platform-profile provider (loqctl keeps using it). Also make gamezone load first, or the module's `legion_wmi` driver claims the gamezone WMI device and every limit reads N/A (see Troubleshooting). `/etc/modprobe.d/legion_laptop.conf`:
 
@@ -122,7 +122,7 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
   ```
 - Curves are editable only while the live platform mode is `custom`, like limits. Other modes show that mode's curve read-only (labelled "Read-only", with "Select custom to edit" under the graph) and re-read it when the mode changes.
 - The firmware resets the curve when the mode changes and on reboot.
-- The panel shows a graph of fan 1 speed against the CPU up temperature of each point (straight segments between the points, one marker per point, the selected point highlighted, a `▲` tick on the temperature axis at the live CPU temperature) and one line for the selected point: its temperature and speed, fan 2 when it differs, and, after a move, the exact new speed with the old one. The top right corner reads "Unsaved changes" only while an edit is pending. Enter reports "Applied and verified N steps." (or what failed and what to do next) on the status line, which stays until the next key. `t` shows the details: the GPU/IC temperatures and hysteresis of the selected point, and a table of every point (CPU/GPU/IC up/down temperatures and both fan speeds; staged changes in the warning color). "down" is the absolute lower temperature of a step (the `_temp_hyst` file).
+- The page opens with a "Now" line holding the live fan speeds (percent of the top speed; RPM only when the top speed is unknown, or on the table view) and the CPU and GPU temperatures. Under it, one line for the selected step: the CPU temperature it starts at, the speed it sets and, after an edit, the old speed. Fan 2 is named when the two fans differ. The chart shows each step's speed in percent on evenly spaced rails, labelled with the CPU temperature each step starts at. The selected step is `◉` and the others `●`. When the box is 90 columns or wider, a table of every step sits next to the chart (CPU, GPU and heatsink start temperatures and the speed; a staged speed shows as `old → new`). On narrower screens `t` swaps the chart for that table. The top right corner reads "Unsaved changes" only while an edit is pending. Enter reports "Applied and verified N steps." (or what failed and what to do next) on the status line, which stays until the next key.
 - Speeds are shown in the module's unit (`fancurve_speed_unit`): RPM for `rpm` (scaled with `fan1_max`), firmware levels 0-10 for `level`, percent otherwise. `↑`/`↓` move to the next speed the module can store, worked out from the module's conversion of the 256 pwm values: 100 RPM on `rpm` curves, one level on `level` curves, and 1 % on percent curves. loqctl writes the exact pwm value the module maps back to that speed, so readback matches.
 - Temperatures are fixed: up and down temperatures are shown but not editable. Each point has one speed, edited in the curve's unit. Setting it writes the same speed to fan 1 and fan 2, each held between its neighbours' speeds, its safety floor and the top speed.
 - A point's speed never crosses its neighbours: it stays between the previous and next point's speed.
@@ -134,13 +134,13 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 | --- | --- |
 | `←` / `→` | Select the previous or next point |
 | `↑` / `↓` | Move the point's speed for both fans to the next speed the fan stores (`Shift`: five steps) |
-| `t` | Show or hide the details |
+| `t` | Show the step table in place of the chart (narrow screens; wide ones show both) and the live RPM |
 | `r` | Discard all edits |
 | `Enter` | Apply; refuses and selects the first problem point if the curve does not validate |
 | `p` | Stage the next curve (`stock`, then saved curves); the notice and the panel title name it; nothing is written until `Enter` |
 | `R` | Reset: write the recorded stock curve for the current mode and delete `active.json` (custom mode only) |
 | `W` | Save the staged (or live) curve as `curves/saved-YYYYmmdd-HHMMSS.json` |
-| `Esc` | Back (staged edits are kept) |
+| `Esc` | Back to Power (staged edits are kept) |
 | `q` | Quit |
 
 Curves: `stock` is the live curve loqctl read just before its first write in a mode, saved once per mode to `~/.config/loqctl/stock/<mode>.json`. The firmware cannot read the stock curve back once a custom one is written, so this is the only copy. A `<mode>.written` marker next to it records that loqctl has written in that mode (every apply and every `R` sets it), and the stock curve is never recorded again after that. This cannot be verified: a curve written by another tool (or by root, or `loqctl _fancurve`) before loqctl's first apply in a mode is recorded as stock. If the read before the first write fails, the apply still happens and says the stock curve was not recorded. `R` writes the stock curve back (verified like any apply) and deletes `active.json`, so `serve` stops re-applying a custom curve. With no recorded stock curve, `R` only deletes `active.json` and says the firmware restores the stock curve on the next mode change or power cycle. File errors during `R` are shown in the notice. Saved curves live in `~/.config/loqctl/curves/<name>.json` (`XDG_CONFIG_HOME` is respected, but `active.json` always lives in `~/.config/loqctl`, found from your user's passwd entry), listed after `stock` by name (a saved curve named `stock` shows as `stock (saved)`); one that fails validation or has the wrong point count shows a red "(invalid)" and cannot be staged. The staged curve is tracked by name. After every verified apply the dashboard writes the applied points to `~/.config/loqctl/active.json`. All files are written atomically with mode 0600, by your user only (never by root; nothing is saved while the dashboard runs as root).
@@ -312,6 +312,7 @@ Added:
 - The mode selector on top of Power, with limits grouped by CPU and GPU.
 - Range and Default columns on Power, live power graphs under the limits on tall terminals, and "↑ N more ↓ N more" when the list scrolls. An out-of-range value names the allowed range.
 - A slimmer Fans section: a graph box, one point line and a details table.
+- Fans: a Now line for live speeds and temperatures, CPU temperature ticks under every rail, and a step table next to the chart on wide screens (`t` on narrow ones). Help and the footer list only keys that work, and a missing page no longer repeats itself on the status line.
 - `t` opens a details view in place of the sensors toggle.
 - Battery cycle count and health, and the charge limit (read-only).
 - Battery charge type and rapid-charge state in the System box; `charge_type`, `rapid_charge` and `power_charge_mode` in `metrics` and `status`.

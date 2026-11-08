@@ -155,12 +155,12 @@ class Dashboard(FanPanel):
     HINTS = {
         "overview": ("Tab page", "t details", "m modes", "Space pause"),
         "main": ("↑↓ select", "←→ adjust", "Enter apply", "Tab page", "m modes"),
-        "fans": ("←→ step", "↑↓ speed", "Enter apply", "Tab page", "Esc back"),
+        "fans": ("←→ step", "↑↓ speed", "Enter apply", "t table", "Tab page"),
         "keyboard": ("1-4 zone", "←→↑↓ HSV", "e effect", "b bright", "Tab page"),
     }
     HINTS_READONLY = {
-        "main": ("←→ mode", "m modes", "Tab page"),
-        "fans": ("←→ step", "Tab page", "Esc back"),
+        "main": ("↑↓ select", "←→ mode", "m modes", "Tab page"),
+        "fans": ("←→ step", "t table", "Tab page"),
     }
     show_limits = False
     panel = "main"  # instances built without __init__ (tests) act as Power
@@ -375,18 +375,16 @@ class Dashboard(FanPanel):
             status, warn = "Firmware values are stale. Wait for the next refresh.", True
         else:
             status, warn = self.notice, False
-        if not status and self.page_missing():
-            status, warn = self.MISSING_TEXT[self.panel], True
         if not status and self.needs_unlock():
             status, warn = "Read-only. Press s to unlock.", True
         if len(status) > w - 3:  # cut at a word boundary
             status = status[: w - 3].rsplit(" ", 1)[0].rstrip(" ,;:.") if " " in status[: w - 3] else status[: w - 3]
         self.put(h - 2, 1, status, self.theme.WARN if warn else self.theme.TEXT)
-        keys = self.footer_hint(w - 3, state)
+        keys = "? or Esc close  q quit" if self.help else self.footer_hint(w - 3, state)
         self.put(h - 1, 1, keys, self.theme.ACCENT)
 
         if self.help:
-            self.draw_help()
+            self.draw_help(state)
         if self.show_results:
             self.draw_results()
         if self.show_limits:
@@ -805,7 +803,7 @@ class Dashboard(FanPanel):
         loads, uptime = metrics.get("load") or [], metrics.get("uptime_s")
         system = ([("Load", " ".join(fmt(v, decimals=2) for v in loads), text)] if loads else []) + (
             [("Uptime", f"{int(uptime // 3600)} h {int(uptime % 3600 // 60):02d} min", text)] if uptime is not None else [])
-        return [(h, rows) for h, rows in (("Temperatures", temps), ("Fans", fans), ("Battery", bat), ("Memory", mem),
+        return [(h, rows) for h, rows in (("Hottest sensors", temps), ("Fans", fans), ("Battery", bat), ("Memory", mem),
                                           ("System", system)) if rows]
 
     def draw_sensors(self, metrics, y, x, height, width):
@@ -818,7 +816,7 @@ class Dashboard(FanPanel):
             return
         # Drop whole sections from the end, then shorten the temperature list, until it fits.
         while len(sections) > 1 and sum(len(r) + 1 for _, r in sections) + len(sections) - 1 > room:
-            if sections[0][0] == "Temperatures" and len(sections[0][1]) > 3:
+            if sections[0][0] == "Hottest sensors" and len(sections[0][1]) > 3:
                 sections[0] = (sections[0][0], sections[0][1][:-1])
             else:
                 sections.pop()
@@ -942,9 +940,8 @@ class Dashboard(FanPanel):
         self.box(y, x, height, width, "Keyboard (LegionAura)", self.theme.GPU, status)
         ix, iw = x + 2, width - 4
         if not kb.available:
-            self.put(y + 2, ix, "Install LegionAura (see the README)", self.theme.WARN)
-            self.put(y + 3, ix, "for 4-zone RGB control.", self.theme.WARN)
-            self.put(y + 5, ix, "Esc returns to firmware controls.", self.theme.TEXT, dim=True)
+            self.put(y + 2, ix, "Keyboard lighting needs LegionAura on PATH."[:iw], self.theme.WARN)
+            self.put(y + 3, ix, "Get it from github.com/nivedck/LegionAura."[:iw], self.theme.TEXT)
             return
 
         # Effect row
@@ -1022,9 +1019,10 @@ class Dashboard(FanPanel):
             "←→        select a step",
             "↑↓        change its speed (Shift: five steps)",
             "Enter     apply   r  discard   R  stock curve",
-            "p         stage the next curve   W  save it",
-            "t         show or hide details",
-            "Edits need custom mode.",
+            "p         stage the next saved or stock curve",
+            "W         save the curve on screen",
+            "t         table instead of chart (narrow screens)",
+            "Now: is live; the step line is the curve setting.",
         ),
         "keyboard": (
             "1-4       select a zone",
@@ -1036,6 +1034,23 @@ class Dashboard(FanPanel):
         ),
     }
 
+    HELP_READONLY = {
+        "main": (
+            "↑↓        select a row (past the edge: change page)",
+            "←→        cycle the mode on the mode row",
+            "Enter     apply the chosen mode",
+            "m         every mode's limits   v  last results",
+            "Space     pause the graphs",
+            "Limits are editable in custom mode only.",
+        ),
+        "fans": (
+            "←→        select a step",
+            "t         table instead of chart (narrow screens)",
+            "W         save the curve on screen",
+            "Pick custom mode on Power to edit the curve.",
+        ),
+    }
+
     def page_missing(self):
         "What the current page needs when it cannot work, else an empty string."
         if self.panel == "fans" and not self.fan_points():
@@ -1044,13 +1059,17 @@ class Dashboard(FanPanel):
             return "install legionaura"
         return ""
 
-    MISSING_TEXT = {"fans": "The legion_laptop module is not loaded.", "keyboard": "LegionAura is not installed."}
+    MISSING_TEXT = {"fans": "Fan curves need the legion_laptop module.", "keyboard": "Keyboard lighting needs LegionAura."}
 
     def no_data(self, state):
         "True when nothing can be read or edited: the backend failed, or no sensor or firmware data has arrived."
         if state.get("error"):
             return True
         return self.panel in ("overview", "main") and not state.get("mode") and not (state.get("metrics") or {}).get("timestamp")
+
+    def wide_fans(self):
+        "True when the Fans box is wide enough to show the step table next to the chart (see draw_fans)."
+        return self.s.getmaxyx()[1] - self.NAV_W - 1 - 4 >= 90
 
     def needs_unlock(self):
         return (self.sudo_expired and self.panel in ("main", "fans") and not self.page_missing()
@@ -1062,12 +1081,22 @@ class Dashboard(FanPanel):
             entries = ["Tab page"]
         elif self.panel in self.HINTS_READONLY and self.locked(state):
             entries = list(self.HINTS_READONLY[self.panel])
+            if self.panel == "fans" and self.wide_fans():
+                entries.remove("t table")
         else:
             entries = list(self.HINTS.get(self.panel, self.HINTS["main"]))
             if self.panel == "main" and not self.pending:
                 entries.remove("Enter apply")
+            rows = self.rows(state) if self.panel == "main" else []
+            if rows and 0 < self.selected < len(rows) and self.fields.get(rows[self.selected]):
+                entries = ["Enter apply", "⌫ delete", "Esc clear", "Tab page"]  # typing a value
             if self.panel == "fans":
-                entries[entries.index("Enter apply")] = "Enter apply" if self.fan_edit is not None else "p curves"
+                if self.wide_fans():
+                    entries.remove("t table")  # the table is already beside the chart
+                if self.fan_edit is not None:
+                    entries.insert(entries.index("Enter apply") + 1, "r discard")
+                else:
+                    entries[entries.index("Enter apply")] = "p curves"
             if self.panel == "keyboard":
                 if self.keyboard.effect == "wave":
                     entries.insert(-1, "w wave")
@@ -1077,14 +1106,16 @@ class Dashboard(FanPanel):
             entries.pop()
         return "  ".join(["? help", *entries, "q quit"])
 
-    def help_lines(self):
-        missing = self.page_missing()
+    def help_lines(self, state=None):
+        "The global keys, then only the keys that work on this page right now."
+        if self.page_missing():
+            return (*self.HELP_GLOBAL, "", self.MISSING_TEXT[self.panel])
         page = self.HELP_PAGES.get(self.panel, self.HELP_PAGES["main"])
-        if missing:
-            page = (self.MISSING_TEXT[self.panel].replace("is not loaded", "is needed").replace("is not installed", "is needed"), *page)
+        if state is not None and self.locked(state) and self.panel in self.HELP_READONLY:
+            page = self.HELP_READONLY[self.panel]
         return (*self.HELP_GLOBAL, "", *page)
 
-    def draw_help(self):
+    def draw_help(self, state=None):
         "Fills the content area only, so the nav column and the status and key lines stay visible."
         h, w = self.s.getmaxyx()
         bx, by, bw, bh = self.NAV_W + 1, 1, w - self.NAV_W - 1, h - 3
@@ -1093,7 +1124,7 @@ class Dashboard(FanPanel):
         title = f"Help: {self.SECTION_LABELS.get(self.panel, 'Power')}"
         self.box(by, bx, bh, bw, title if bw >= len(title) + len(hint) + 10 else "", self.theme.ACCENT, right=hint)
         wrapped = []
-        for line in self.help_lines():
+        for line in self.help_lines(state):
             wrapped += textwrap.wrap(line, bw - 4, subsequent_indent=" " * 10, drop_whitespace=False) or [""]
         for i, line in enumerate(wrapped[: bh - 2]):
             self.put(by + 1 + i, bx + 2, line.rstrip(), self.theme.TEXT)
