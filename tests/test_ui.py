@@ -727,6 +727,30 @@ class UiTests(helpers.SysfsCase):
         dash.keyboard.available = True
         self.assertEqual(dash.sections(state)[-1], "keyboard")
 
+    def test_tab_leaves_every_page_and_draws_each_at_small_sizes(self):
+        state = {"metrics": {}, "attributes": {}, "modes": ["custom"], "mode": "custom"}
+        for h, w in ((20, 72), (24, 80)):
+            for key in (9, curses.KEY_BTAB):
+                puts = []
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+                dash.keyboard = m_keyboard.Keyboard(binary="/nonexistent/legionaura", config=self.root / "legionaura.json")
+                dash.sections = lambda state: ["overview", "main", "fans", "keyboard"]
+                dash.panel, dash.paused = "overview", True
+                seen = []
+                for _ in range(4):
+                    dash.fan, dash.fan_result, dash.fan_loading = {"available": False, "reason": "none"}, None, False
+                    dash.draw(state)
+                    self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w, dash.panel))
+                    seen.append(dash.panel)
+                    dash.handle(key, state)
+                    self.assertNotEqual(dash.panel, seen[-1], (h, w, key, seen))
+                self.assertEqual(sorted(seen), ["fans", "keyboard", "main", "overview"], (h, w, key))
+
     def test_esc_returns_to_overview_when_power_is_hidden(self):
         dash = self.dash()
         dash.rows = lambda state: []

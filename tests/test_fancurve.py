@@ -505,9 +505,9 @@ class FanCurveSurfaceTests(FanPanelFixture):
     def test_select_move_and_apply(self):
         dash = self.dash()
         state = {"mode": "custom"}
-        self.keys(dash, state, "f", "]", 9)
+        self.keys(dash, state, "f", "]", "]")
         self.assertEqual(dash.fan_sel, 2)
-        self.keys(dash, state, "[", curses.KEY_BTAB, curses.KEY_BTAB)
+        self.keys(dash, state, "[", "[", "[")
         self.assertEqual(dash.fan_sel, 2)
         self.keys(dash, state, "[", curses.KEY_LEFT, curses.KEY_LEFT, curses.KEY_LEFT)  # arrows stop at point 1
         self.assertEqual(dash.fan_sel, 0)

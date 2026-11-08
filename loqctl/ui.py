@@ -131,7 +131,7 @@ class Dashboard(FanPanel):
         "overview": ("Tab section", "↑↓ section", "t details", "m modes", "Space pause", "v results"),
         "main": ("Tab section", "↑↓ select", "←→ adjust", "Enter apply", "0-9 type", "Esc clear",
                  "d default", "r discard", "m modes", "Space pause", "v results"),
-        "fans": ("←→ point", "↑↓ speed", "Enter apply", "t details", "R stock", "Esc back", "r discard",
+        "fans": ("←→ point", "↑↓ speed", "Enter apply", "t details", "Esc back", "Tab section", "R stock", "r discard",
                  "W save", "p curves", "s sudo"),
         "keyboard": ("Tab section", "1–4 zone", "←→ adjust HSV", "↑↓ channel", "Enter apply", "Esc back", "e effect",
                      "b bright", "c copy-all", "Space live", "s sudo"),
@@ -769,7 +769,7 @@ class Dashboard(FanPanel):
 
     HELP_LINES = (
         "Global    ? help  q quit  s sudo authenticate (any page)",
-        "Sections  Tab next section (not on Fans)",
+        "Sections  Tab next section, Shift+Tab previous",
         "          ↑↓ leave Power and Keyboard at the edges",
         "          Space pause graphs (Power, Overview only)",
         "Overview  t details   Esc closes details",
@@ -784,7 +784,7 @@ class Dashboard(FanPanel):
         "          c copy color to all zones   Space live apply",
         "          Enter apply via legionaura",
         "Fans      f open fan curves (edits need custom mode)",
-        "          ←→ or Tab/[ ] select point",
+        "          ←→ or [ ] select point",
         "          ↑↓ next speed the fan stores (both fans)",
         "          Shift+↑↓ five steps   t details",
         "          Enter apply  r discard  R stock  p curve  W save",
@@ -1175,7 +1175,7 @@ class Dashboard(FanPanel):
         if ch == ord("?") and getattr(self, "panel", "main") not in ("main", "overview"):
             self.help = True
             return
-        if ch in (9, curses.KEY_BTAB) and self.panel != "fans":  # the fan panel keeps Tab for curves
+        if ch in (9, curses.KEY_BTAB):
             self.step_section(state, -1 if ch == curses.KEY_BTAB else 1)
             return
         if ch == ord("s") and self.panel in ("fans", "keyboard"):  # the status line offers it on every page
