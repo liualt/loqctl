@@ -2,9 +2,9 @@
 # Copyright (C) 2026 loqctl contributors
 """Fan curve panel for the dashboard (mixed into Dashboard).
 
-Temperatures are fixed and only a point's speed is edited, in steps the module can store. One
-speed drives both fans, and the graph plots fan 1 speed against the CPU up temperature of each
-point. GPU/IC temperatures, hysteresis and the per-point table sit behind the details key.
+Temperatures are fixed and only a step's speed is edited, in steps the module can store. One
+speed drives both fans. The graph shows that speed in percent on evenly spaced steps from cool to
+hot, like Lenovo Legion Toolkit; exact temperatures sit behind the details key and RPM is not shown.
 """
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ UNAVAILABLE = ("Fan curves need the LenovoLegionLinux legion_laptop module "
                "(load it with enable_platformprofile=0 next to lenovo-wmi-gamezone)")
 FAN_ERRORS = (ControlError, OSError, ValueError, http_client.HTTPException)
 BIG_STEPS = 5  # Shift+arrow
-BRAILLE = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))  # dot bit by [row][column]
 
 
 def move_speed(points, i, steps, scale):
@@ -155,7 +154,7 @@ class FanPanel:
             return f"point {j + 1} has the same speed"
         floor = scale.show(min_speed(points, i, scale))
         if direction < 0 and speed <= floor:
-            return f"it is at its {scale.text(scale.pwm(floor))} floor"
+            return f"it is at its {self.fan_pct_text(scale, scale.pwm(floor))} floor"
         if direction > 0 and speed >= scale.top:
             return "it is at the top speed"
         return "the firmware would store the same speed"
@@ -348,17 +347,21 @@ class FanPanel:
             self.fan_apply(state)
 
     # --- drawing ---
+    def fan_pct(self, scale, pwm):
+        """A stored speed as percent of the top speed, the only unit the page shows."""
+        value = scale.show(pwm)
+        return None if value is None else round(value * 100 / scale.top)
+
+    def fan_pct_text(self, scale, pwm):
+        value = self.fan_pct(scale, pwm)
+        return "N/A" if value is None else f"{value}%"
+
     def draw_fans(self, state, metrics, y, x, height, width):
         self.fan_take()
-        fans = metrics.get("fans") or []
-        parts = ["Fans"] + [f"F{n + 1} {f['rpm']:.0f} RPM" if f.get("rpm") is not None else f"F{n + 1} N/A"
-                            for n, f in enumerate(fans[:2])]
-        if not fans:
-            parts.append("RPM N/A")
-        cpu_temp = (metrics.get("cpu") or {}).get("temperature_c")
-        gpu = next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
-        gpu_temp = gpu.get("temperature_c")
-        parts += [f"{name} {t:.0f}°C" for name, t in (("CPU", cpu_temp), ("GPU", gpu_temp)) if t is not None]
+        scale = self.fan_scale()
+        now = [round(f["rpm"] * 100 / (scale.max_rpm or 1)) for f in (metrics.get("fans") or [])[:2]
+               if f.get("rpm") is not None]
+        parts = ["Fan curve"] + (["now " + " · ".join(f"{v}%" for v in now)] if now else [])
         ix, iw = x + 2, width - 4
         if not self.fan_points():
             loading = self.fan_loading
@@ -373,139 +376,87 @@ class FanPanel:
                 self.put(y + 2 + k, ix, line, self.theme.WARN)
             self.put(y + 3 + len(lines), ix, ("(" + self.fan.get("reason", "") + ")")[:iw], self.theme.TEXT, dim=True)
             return
-        scale = self.fan_scale()
-        unit = "Unit: " + scale.label
-        right = unit
-        title = fit_parts(parts, max(8, width - len(unit) - 10))
+        right = ""
         if self.fan_edit is not None:
-            room = width - len(title) - len(unit) - 14  # title, side padding and "Staged  · "
+            room = width - len(parts[0]) - 20
             name = self.fan_preset or ""
             if len(name) > room:
                 name = name[:max(0, room - 1)] + "…" if room > 1 else ""
-            right = f"Staged {name} · {unit}" if name else f"Staged · {unit}"
+            right = f"Staged {name}" if name else "Staged"
         self.box(y, x, height, width, fit_parts(parts, max(8, width - len(right) - 10)), self.theme.GPU, right)
         target = self.fan_target()
         inner = height - 2
-        table = self.fan_details and inner >= 10  # the point table takes the graph's place
-        top = y + 1
-        self.fan_point_line(target, scale, top, ix, iw)
-        if table:
-            self.fan_table(target, scale, top + 2, ix, iw)
-        elif inner - 5 >= 4:  # point line, axis, axis labels, 2 message rows
-            self.fan_graph(target, scale, cpu_temp, top + 1, ix, iw, inner - 5)
+        row = y + 1
+        if inner >= 12:
+            note = "Speed follows the hottest of CPU, GPU and heatsink."
+            self.put(row, ix, note[:iw], self.theme.TEXT, dim=True)
+            row += 1
+        self.fan_step_line(target, scale, row, ix, iw)
+        row += 1
+        graph_h = y + height - 3 - row - 2  # the axis and its caption sit under the graph
+        if graph_h >= 4:
+            self.fan_graph(target, scale, row, ix, iw, graph_h)
         self.fan_footer(state, target, scale, y + height - 3, ix, iw)
 
-    def fan_point_line(self, target, scale, y, x, w):
-        """The selected point on one line (with details on, every up/down temperature)."""
+    def fan_step_line(self, target, scale, y, x, w):
+        """The selected step: its speed, what it was before a staged edit, and with details on the
+        exact temperatures it starts at."""
         p = target[self.fan_sel]
-        head = f"Point {self.fan_sel + 1}/{len(target)}"
+        parts = [f"Step {self.fan_sel + 1} of {len(target)}", self.fan_pct_text(scale, p.get("fan1"))]
+        current = self.fan_points()
+        old = current[self.fan_sel] if self.fan_sel < len(current) else {}
+        for field, tag in (("fan1", ""), ("fan2", "fan 2 ")):
+            was = old.get(field)
+            if p.get(field) is not None and scale.show(was) != scale.show(p[field]):
+                parts[-1] += f" ({tag}was {self.fan_pct_text(scale, was)})"
         if self.fan_details:
-            def temps(sensor):
-                up, down = p.get(sensor + "_up"), p.get(sensor + "_down")
-                return "N/A" if up is None else f"{up}" + (f"/{down}" if down is not None else "") + "°C"
-            parts = [head, f"CPU {temps('cpu')}", f"GPU {temps('gpu')}", f"IC {temps('ic')}",
-                     f"Fan 1 {scale.text(p.get('fan1'))}", f"Fan 2 {scale.text(p.get('fan2'))}"]
-        else:
-            up = p.get("cpu_up")
-            parts = [head, 'N/A' if up is None else f'{up}°C', scale.text(p.get('fan1'))]
-            if p.get("fan2") is not None and scale.show(p["fan2"]) != scale.show(p.get("fan1")):
-                parts[-1] += f" · fan 2 {scale.text(p['fan2'])}"
-            current = self.fan_points()
-            old = current[self.fan_sel] if self.fan_sel < len(current) else {}
-            for field, tag in (("fan1", ""), ("fan2", "fan 2 ")):
-                was = old.get(field)
-                if p.get(field) is not None and scale.show(was) != scale.show(p[field]):
-                    parts[-1] += f" ({tag}was {scale.text(was)})"
+            parts += [f"{name} from {p[key]}°C" for name, key in (("CPU", "cpu_up"), ("GPU", "gpu_up"),
+                                                                  ("Heatsink", "ic_up")) if p.get(key) is not None]
+            if p.get("fan2") is not None and self.fan_pct(scale, p["fan2"]) != self.fan_pct(scale, p.get("fan1")):
+                parts.append(f"fan 2 {self.fan_pct_text(scale, p['fan2'])}")
         self.put(y, x, fit_parts(parts, w), self.theme.WARN, True)
 
-    def fan_graph(self, target, scale, cpu_temp, y, x, w, h):
-        """Fan 1 speed against CPU up temperature: straight segments between the points drawn
-        in braille dots (2x4 per cell), one marker per point with the selected one highlighted,
-        and a tick on the temperature axis at the live CPU temperature."""
-        label_w = 7
+    def fan_graph(self, target, scale, y, x, w, h):
+        """Speed in percent on the y axis and one vertical rail per step, evenly spaced from cool
+        to hot. Each step is a dot on its rail; the area under the curve is shaded and the selected
+        step is highlighted."""
+        label_w = 6
         gx, gw = x + label_w, max(10, w - label_w)
-        temps = [p["cpu_up"] for p in target if p.get("cpu_up") is not None]
-        lo_t = max(0, (min(temps, default=30) - 5) // 10 * 10)  # the live temperature must not stretch the axis
-        hi_t = max(min(130, -(-max(temps, default=100) // 10) * 10), lo_t + 20)
-        top = scale.top
-        if scale.unit == "rpm":
-            speeds = [scale.show(p[f]) for p in target for f in ("fan1", "fan2") if p.get(f) is not None]
-            top = max(1000, -(-int(max(speeds, default=1000) * 1.1) // 1000) * 1000)
-
-        def dot_x(t):
-            return round((clamp(t, lo_t, hi_t) - lo_t) / (hi_t - lo_t) * (gw * 2 - 1))
-
-        def dot_y(v):
-            return round((1 - clamp(v, 0, top) / top) * (h * 4 - 1))
-
         dim = self.theme.TEXT
-        step = next(s for s in (1, 2, 5, 10, 20, 25, 50, 500, 1000, 2000, 2500, 5000, 10 ** 9)
-                    if top / s <= max(2, min(5, h // 2)))
-        for r in range(y, y + h):
-            self.put(r, gx - 1, "│", dim, dim=True)
-        for value in range(0, top + 1, step):  # speed labels
-            r = y + dot_y(value) // 4
-            self.put(r, x, f"{value:>{label_w - 2}}", dim, dim=True)
+        n = len(target)
+        span = max(1, n - 1)
+        gap = max(1, (gw - 5) // span)
+        cols = [gx + 2 + min(i * gap, gw - 3) for i in range(n)]
+
+        def row_of(percent):
+            return round((1 - clamp(percent, 0, 100) / 100) * (h - 1))
+
+        for r in range(h):
+            self.put(y + r, gx - 1, "│", dim, dim=True)
+        step = next(s for s in (20, 25, 50, 100) if 100 // s <= max(1, h // 2))
+        for value in range(0, 101, step):
+            r = y + row_of(value)
+            self.put(r, x, f"{value}%".rjust(label_w - 2), dim, dim=True)
             self.put(r, gx - 1, "┤", dim, dim=True)
         self.put(y + h, gx - 1, "└" + "─" * gw, dim, dim=True)
-        self.put(y + h + 1, x, scale.label, dim, dim=True)
-        edge = 0  # first column past the last temperature label
-        for t in range(lo_t, hi_t + 1, 10):  # temperature ticks
-            c, label = gx + dot_x(t) // 2, f"{t}°C"
-            self.put(y + h, c, "┴", dim, dim=True)
-            lx = clamp(c - len(label) // 2, gx, gx + gw - len(label))
-            if lx >= edge:  # skip a label that would touch the previous one
-                self.put(y + h + 1, lx, label, dim, dim=True)
-                edge = lx + len(label) + 1
-        if cpu_temp is not None and lo_t <= cpu_temp <= hi_t:  # live CPU temperature
-            self.put(y + h, gx + dot_x(cpu_temp) // 2, "▲", self.theme.WARN, True)
-        marks = [(i, dot_x(p["cpu_up"]), dot_y(scale.show(p["fan1"]))) for i, p in enumerate(target)
-                 if p.get("cpu_up") is not None and p.get("fan1") is not None]
-        cells = {}
-        for (_, ax, ay), (_, bx, by) in zip(marks, marks[1:]):
-            n = max(abs(bx - ax), abs(by - ay), 1)
-            for k in range(n + 1):
-                dx, dy = round(ax + (bx - ax) * k / n), round(ay + (by - ay) * k / n)
-                cell = (dy // 4, dx // 2)
-                cells[cell] = cells.get(cell, 0) | BRAILLE[dy % 4][dx % 2]
-        for (r, c), bits in cells.items():
-            self.put(y + r, gx + c, chr(0x2800 + bits), self.theme.ACCENT)
-        for i, mx, my in sorted(marks, key=lambda m: m[0] == self.fan_sel):  # selected point on top
+        self.put(y + h + 1, gx, "cooler", dim, dim=True)
+        self.put(y + h + 1, gx + gw - len("hotter"), "hotter", dim, dim=True)
+        for i, c in enumerate(cols):
             chosen = i == self.fan_sel
-            self.put(y + my // 4, gx + mx // 2, "●", self.theme.WARN if chosen else self.theme.ACCENT, chosen)
-
-    def fan_table(self, target, scale, y, x, w):
-        """Every point's values; staged changes in the warning color."""
-        current = self.fan_points()
-        label_w = 7
-        cw = max(5, (w - label_w) // max(1, len(target)))
-        shown = max(1, (w - label_w) // cw)  # columns that fit; scroll so the selected point is drawn
-        first = clamp(self.fan_sel - shown + 1, 0, max(0, len(target) - shown)) if self.fan_sel >= shown else 0
-        rows = (("Point", None), ("CPU", ("cpu_up", "cpu_down")), ("GPU", ("gpu_up", "gpu_down")),
-                ("IC", ("ic_up", "ic_down")), ("Fan 1", ("fan1",)), ("Fan 2", ("fan2",)))
-        for r, (label, fields) in enumerate(rows):
-            self.put(y + r, x, label, self.theme.TEXT, dim=True)
-            for i, p in enumerate(target):
-                cx = x + label_w + (i - first) * cw
-                if i < first or cx + cw - 1 > x + w:
+            for r in range(h):
+                self.put(y + r, c, "┆", dim, dim=not chosen)
+        marks = [(c, self.fan_pct(scale, p.get("fan1")), i) for i, (c, p) in enumerate(zip(cols, target))
+                 if p.get("fan1") is not None]
+        for (ac, ap, _), (bc, bp, _) in zip(marks, marks[1:]):
+            for c in range(ac + 1, bc):
+                if c in cols:
                     continue
-                chosen = i == self.fan_sel
-                if fields is None:
-                    self.put(y + r, cx, f"{i + 1:>{cw - 1}}", self.theme.ACCENT, bold=chosen, dim=not chosen)
-                    continue
-                if fields[0] in ("fan1", "fan2"):
-                    value = scale.show(p.get(fields[0]))
-                    text = "N/A" if value is None else str(value)
-                else:
-                    up, down = p.get(fields[0]), p.get(fields[1])
-                    text = "N/A" if up is None else f"{up}" + (f"/{down}" if down is not None and cw >= 7 else "")
-                changed = i < len(current) and any(p.get(f) != current[i].get(f) for f in fields)
-                color = self.theme.WARN if changed else self.theme.TEXT
-                self.put(y + r, cx, f"{text:>{cw - 1}}"[: cw - 1], color, bold=chosen, dim=not (chosen or changed))
-        if first > 0:  # points scrolled out of view
-            self.put(y, x + label_w - 1, "‹", self.theme.ACCENT, dim=True)
-        if first + shown < len(target):
-            self.put(y, x + w - 1, "›", self.theme.ACCENT, dim=True)
+                top = row_of(ap + (bp - ap) * (c - ac) / (bc - ac))
+                for r in range(top, h):
+                    self.put(y + r, c, "▒" if r == top else "░", dim, dim=True)
+        for c, percent, i in sorted(marks, key=lambda m: m[2] == self.fan_sel):  # selected dot on top
+            chosen = i == self.fan_sel
+            self.put(y + row_of(percent), c, "●", self.theme.WARN if chosen else self.theme.ACCENT, chosen)
 
     def fan_footer(self, state, target, scale, y, x, w):
         lines = []
