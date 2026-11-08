@@ -36,7 +36,7 @@ function __loqctl_argn
     echo $n
 end
 
-set -l cmds tui status metrics capabilities limits fan mode set toggle profile kb doctor serve
+set -l cmds tui status metrics capabilities limits fan mode set battery toggle profile kb doctor serve
 complete -c loqctl -f
 complete -c loqctl -l socket -r -F -d 'Connect to an existing loqctl Unix socket'
 complete -c loqctl -l version -d 'Show the version'
@@ -44,6 +44,7 @@ complete -c loqctl -s h -l help -d 'Show help'
 complete -c loqctl -n "not __fish_seen_subcommand_from $cmds" -a "$cmds"
 complete -c loqctl -n '__fish_seen_subcommand_from metrics' -l watch -d 'Print one JSON line every SECONDS'
 complete -c loqctl -n '__fish_seen_subcommand_from serve' -l uid -r -d 'UID permitted to connect'
+complete -c loqctl -n '__fish_seen_subcommand_from battery; and test (__loqctl_argn) -eq 1' -a 'normal conservation rapid'
 complete -c loqctl -n '__fish_seen_subcommand_from toggle; and test (__loqctl_argn) -eq 1' -a 'fn_lock camera winkey logo_light port_light'
 complete -c loqctl -n '__fish_seen_subcommand_from profile; and test (__loqctl_argn) -eq 1' -a 'list save apply'
 complete -c loqctl -n '__fish_seen_subcommand_from mode' -a '(__loqctl_modes)'

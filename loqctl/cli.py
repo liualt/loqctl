@@ -52,7 +52,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Lenovo LOQ firmware controls and live terminal telemetry")
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--socket", help="Connect to an existing loqctl Unix socket")
-    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,fan,mode,set,toggle,profile,kb,doctor,serve}")
+    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,fan,mode,battery,set,toggle,profile,kb,doctor,serve}")
     commands.add_parser("tui", help="Open the dashboard (default)")
     for cmd in ("status", "metrics", "capabilities"):
         commands.add_parser(cmd, help="Print " + cmd + " as JSON")
@@ -61,6 +61,8 @@ def main(argv=None):
     commands.add_parser("fan", help="Print the fan curve and RPM as JSON")
     mode = commands.add_parser("mode", help="Read or set the platform mode")
     mode.add_argument("value", nargs="?", help="Mode to set; omit to print the current mode")
+    battery = commands.add_parser("battery", help="Read or set the battery charging mode")
+    battery.add_argument("value", nargs="?", help="normal, conservation or rapid; omit to print the current mode")
     setting = commands.add_parser("set", help="Set one firmware attribute, with readback verification")
     setting.add_argument("attribute", choices=FIELDS)
     setting.add_argument("value", type=int)
@@ -78,6 +80,8 @@ def main(argv=None):
     internal = commands.add_parser("_apply")
     internal.add_argument("changes", help="JSON list of [key, value] pairs")
     commands.add_parser("_capdata")
+    internal_battery = commands.add_parser("_battery")
+    internal_battery.add_argument("mode")
     internal_toggle = commands.add_parser("_toggle")
     internal_toggle.add_argument("name", choices=list(TOGGLES))
     internal_toggle.add_argument("value", type=int)
@@ -97,6 +101,8 @@ def main(argv=None):
             result = apply_batch(Hardware(), json.loads(args.changes))
         elif args.command == "_fancurve":
             result = Hardware().write_fancurve(json.loads(args.points))
+        elif args.command == "_battery":
+            result = Hardware().write_battery(args.mode)
         elif args.command == "_toggle":
             result = Hardware().set_toggle(args.name, args.value)
         elif args.command == "_capdata":
@@ -189,6 +195,8 @@ def main(argv=None):
                         result = json.loads(out)
             elif args.command == "mode":
                 result = backend.write("mode", args.value)
+            elif args.command == "battery":
+                result = backend.battery() if args.value is None else backend.write_battery(args.value)
             elif args.command == "set":
                 result = backend.write(args.attribute, args.value)
             elif args.command == "profile":

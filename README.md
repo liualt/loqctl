@@ -51,7 +51,7 @@ The completions are static files; Tab never runs loqctl or sudo.
 
 When sudo runs a user-writable file, any process running as you can gain root by editing it.
 
-loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_capdata`, `_fancurve`, `_toggle`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
+loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_battery`, `_capdata`, `_fancurve`, `_toggle`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
 
 Or run it in place with `python3 loqctl.py`.
 
@@ -164,6 +164,8 @@ loqctl fan                           # fan curve, speed unit and RPM as JSON
 loqctl doctor                        # which features this laptop supports, with hints
 loqctl mode                          # current mode and available modes
 sudo loqctl mode custom
+loqctl battery                       # charging mode: normal, conservation or rapid
+loqctl battery conservation          # sets it (through sudo or the server)
 sudo loqctl set ppt_pl1_spl 50
 loqctl toggle                        # device switches this laptop exposes, with state
 loqctl toggle fn_lock on             # also camera, winkey, logo_light, port_light
@@ -172,7 +174,7 @@ loqctl profile save gaming           # save the current mode, limits and fan cur
 loqctl profile apply gaming          # check the whole profile, then write it
 ```
 
-Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_capdata`, `_fancurve` and `_toggle` are internal, used via sudo by the dashboard.
+Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_battery`, `_capdata`, `_fancurve` and `_toggle` are internal, used via sudo by the dashboard.
 
 `sudo` may not find a `~/.local/bin` install; install system-wide as described above so `sudo loqctl ...` works and the file is root-owned.
 

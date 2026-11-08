@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import helpers
+from loqctl import battery as m_battery
 from loqctl import common as m_common
 from loqctl import hardware as m_hardware
 from loqctl import ui as m_ui
@@ -216,6 +217,50 @@ class HardwareTests(helpers.SysfsCase):
         self.assertEqual((self.attr / "current_value").read_text(), "50")
         with self.assertRaisesRegex(m_common.ControlError, r"'turbo'\. Choose one of .*balanced"):
             self.hw.set_mode("turbo")
+
+    def battery_files(self, conservation="0", rapid="0"):
+        legion = self.root / "devices/platform/legion"
+        ideapad = self.root / "bus/platform/drivers/ideapad_acpi/VPC2004:00"
+        legion.mkdir(parents=True)
+        ideapad.mkdir(parents=True)
+        (ideapad / "conservation_mode").write_text(conservation + "\n")
+        (legion / "rapidcharge").write_text(rapid + "\n")
+        return ideapad / "conservation_mode", legion / "rapidcharge"
+
+    def test_battery_mode_switch_clears_the_other_and_verifies(self):
+        conservation, rapid = self.battery_files(rapid="1")
+        self.assertEqual(self.hw.battery(), {"available": True, "mode": "rapid",
+                                             "choices": ["normal", "conservation", "rapid"]})
+        result = self.hw.write_battery("conservation")
+        self.assertEqual((conservation.read_text(), rapid.read_text()), ("1\n", "0\n"))
+        self.assertEqual((result["previous"], result["current"], result["verified"]), ("rapid", "conservation", True))
+        self.hw.write_battery("normal")
+        self.assertEqual((conservation.read_text(), rapid.read_text()), ("0\n", "0\n"))
+
+    def test_battery_rejects_bad_mode_and_missing_choice_and_reports_na(self):
+        self.assertEqual(self.hw.battery(), {"available": False, "mode": None, "choices": []})
+        with self.assertRaises(m_common.ControlError):
+            self.hw.write_battery("normal")
+        conservation, rapid = self.battery_files()
+        rapid.unlink()
+        self.assertEqual(self.hw.battery()["choices"], ["normal", "conservation"])
+        for bad in ("rapid", "2", 1, None):
+            with self.assertRaises(m_common.ControlError):
+                self.hw.write_battery(bad)
+        self.assertEqual(conservation.read_text(), "0\n")
+
+    def test_battery_failed_second_write_leaves_both_off(self):
+        conservation, rapid = self.battery_files(rapid="1")
+        real = m_battery._write
+
+        def fail_on_one(path, value):
+            if value == 1:
+                raise m_common.ControlError("Firmware rejected the write: boom")
+            real(path, value)
+        with patch.object(m_battery, "_write", fail_on_one):
+            with self.assertRaises(m_common.ControlError):
+                self.hw.write_battery("conservation")
+        self.assertEqual((conservation.read_text(), rapid.read_text()), ("0\n", "0\n"))
 
     def test_set_mode_rejects_non_str_and_empty_choices(self):
         for bad in (None, 5):
