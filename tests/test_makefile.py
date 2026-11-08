@@ -72,6 +72,14 @@ class MakefileTests(unittest.TestCase):
         self.make("uninstall")
         self.assertTrue(os.path.exists(self.link))
 
+    def test_uninstall_keeps_lib_dir_with_foreign_file(self):
+        self.make("install")
+        os.remove(self.link)
+        with open(self.link, "w") as f:
+            f.write("x")
+        self.make("uninstall")
+        self.assertTrue(os.path.exists(self.lib))
+
     def test_uninstall_removes_own_symlink(self):
         self.make("install")
         self.make("uninstall")

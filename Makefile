@@ -35,9 +35,10 @@ uninstall:
 	@if [ -L "$(DESTDIR)$(BINDIR)/loqctl" ] && [ "$$(readlink "$(DESTDIR)$(BINDIR)/loqctl")" = "$(LIBDIR)/loqctl.py" ]; then \
 		rm -f "$(DESTDIR)$(BINDIR)/loqctl"; \
 	elif [ -e "$(DESTDIR)$(BINDIR)/loqctl" ] || [ -L "$(DESTDIR)$(BINDIR)/loqctl" ]; then \
-		echo "$(DESTDIR)$(BINDIR)/loqctl is not loqctl's symlink, leaving it" >&2; \
-	fi
-	rm -rf "$(DESTDIR)$(LIBDIR)"
+		echo "$(DESTDIR)$(BINDIR)/loqctl is not loqctl's symlink, leaving it and $(DESTDIR)$(LIBDIR)" >&2; \
+		keep=1; \
+	fi; \
+	[ -n "$$keep" ] || rm -rf "$(DESTDIR)$(LIBDIR)"
 	rm -f "$(BASHCOMP)" "$(ZSHCOMP)" "$(FISHCOMP)"
 
 test:
