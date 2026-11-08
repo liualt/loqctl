@@ -56,7 +56,19 @@ class CompletionTests(unittest.TestCase):
                 os.makedirs(d)
                 with open(os.path.join(d, "choices"), "w") as f:
                     f.write("quiet performance\n")
+                open(os.path.join(d, "profile"), "w").close()
                 self.assertEqual(self._modes(shell, root, stderr=True), (["quiet", "performance"], ""))
+
+    def test_mode_choices_need_a_profile_file(self):
+        for shell in ("bash", "fish"):
+            if not shutil.which(shell):
+                continue
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory() as root:
+                d = os.path.join(root, "class", "platform-profile", "p0")
+                os.makedirs(d)
+                with open(os.path.join(d, "choices"), "w") as f:
+                    f.write("quiet performance\n")
+                self.assertEqual(self._modes(shell, root), ["low-power", "balanced", "performance", "max-power", "custom"])
 
     def test_zsh_file_parses(self):
         if shutil.which("zsh"):
@@ -98,7 +110,7 @@ class CompletionTests(unittest.TestCase):
                                          ("lenovo-wmi-gamezone", "platform-profile/platform-profile-1", "quiet performance")):
                     d = os.path.join(root, "class", dev)
                     os.makedirs(d)
-                    for fn, val in (("name", name), ("choices", modes)):
+                    for fn, val in (("name", name), ("choices", modes), ("profile", "balanced")):
                         with open(os.path.join(d, fn), "w") as f:
                             f.write(val + "\n")
                 os.makedirs(os.path.join(root, "firmware", "acpi"))

@@ -150,7 +150,7 @@ def battery_time(p, status, avg_rate, source, threshold=None, conserving=False):
     if kind is None or (name == "full" and conserving and threshold is None):
         return None, None
     kernel = scaled(p / f"time_to_{name}_now")
-    if kernel:
+    if kernel and not (name == "full" and threshold is not None and threshold < 100):  # the kernel ignores the limit
         minutes = kernel / 60
     elif not avg_rate or source is None:
         return None, None

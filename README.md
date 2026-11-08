@@ -65,7 +65,7 @@ A section list on the left (Overview, Power, Fans, Keyboard) picks the page on t
 
 | Key | Action |
 | --- | --- |
-| `Tab`, `Shift+Tab` | Next or previous page (`↑↓` on Overview; on Power and Keyboard `↑↓` also change page past the first or last row). |
+| `Tab`, `Shift+Tab` | Next or previous page. `↑↓` also change page: always on Overview, and on Power and Keyboard past the first or last row. |
 | `↑↓` | Select a control (Power) |
 | `←→` | Stage one step (on the mode row: cycle modes) |
 | `0-9` / `Backspace` | Type into the selected limit (custom mode); the old value is struck through |

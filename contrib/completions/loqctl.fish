@@ -4,7 +4,7 @@ function __loqctl_modes
     # Gamezone's class device first, then any other, then the legacy file (it lists "custom", which the kernel rejects).
     set -l src
     for f in /sys/class/platform-profile/*/choices
-        test -r $f; or continue
+        test -r $f; and test -e (string replace -r 'choices$' profile $f); or continue
         set -q src[1]; or set src $f
         set -l n (string replace -r 'choices$' name $f)
         if test -r $n; and test (string trim < $n) = lenovo-wmi-gamezone
