@@ -747,6 +747,20 @@ class FanCurveSurfaceTests(FanPanelFixture):
             dash.draw_fans({"mode": "performance"}, {}, 1, 0, 30, 110)
             request.assert_called_once()
 
+    def test_mode_change_during_a_read_still_reloads_the_curve(self):
+        dash = self.dash("balanced")
+        self.keys(dash, {"mode": "balanced"}, "f")
+        with dash.fan_lock:
+            dash.fan_loading = True  # a read is in flight when the mode changes
+        with patch.object(dash, "fan_request") as request:
+            dash.draw_fans({"mode": "performance"}, {}, 1, 0, 30, 110)
+            request.assert_not_called()
+        with dash.fan_lock:
+            dash.fan_loading = False  # the old read finished, still holding the balanced curve
+        with patch.object(dash, "fan_request") as request:
+            dash.draw_fans({"mode": "performance"}, {}, 1, 0, 30, 110)
+            request.assert_called_once()
+
     def test_unreadable_curve_files_report_why(self):
         for path in self.hwmon.glob("pwm1_auto_point*_pwm"):
             path.unlink()

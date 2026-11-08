@@ -359,9 +359,9 @@ class FanPanel:
     def draw_fans(self, state, metrics, y, x, height, width):
         self.fan_take()
         mode = state.get("mode")
-        if not self.fan_loading and getattr(self, "fan_drawn_mode", mode) != mode:
+        shown = self.fan.get("mode") if self.fan.get("available") else None
+        if not self.fan_loading and shown is not None and shown != mode:
             self.fan_request()  # each platform mode has its own curve, so the one on screen is stale
-        self.fan_drawn_mode = mode
         scale = self.fan_scale()
         now = [round(f["rpm"] * 100 / (scale.max_rpm or 1)) for f in (metrics.get("fans") or [])[:2]
                if f.get("rpm") is not None]
