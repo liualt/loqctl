@@ -1160,7 +1160,7 @@ class UiTests(helpers.SysfsCase):
         self.assertIn("100%", calls)
         self.assertEqual(calls.count("●") + calls.count("◉"), 5)
         self.assertEqual(calls.count("◉"), 1)  # the selected step has its own glyph
-        self.assertEqual([c for c in calls if c in ("88", "92", "99", "100")], ["88", "92", "92", "99", "100"])  # a tick per rail
+        self.assertEqual([c for c in calls if c in ("88", "92", "99", "100")], ["88", "92", "99", "100"])  # a run of 92s reads once
         self.assertIn("  °C", calls)  # the tick row is labelled once
         self.assertFalse(any("RPM" in c for c in calls))
 

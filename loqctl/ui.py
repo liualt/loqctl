@@ -159,7 +159,7 @@ class Dashboard(FanPanel):
         "keyboard": ("1-4 zone", "←→↑↓ HSV", "e effect", "b bright", "Tab page"),
     }
     HINTS_READONLY = {
-        "main": ("←→ mode", "m modes", "Tab page"),
+        "main": ("↑↓ select", "←→ mode", "m modes", "Tab page"),
         "fans": ("←→ step", "t table", "Tab page"),
     }
     show_limits = False
@@ -803,7 +803,7 @@ class Dashboard(FanPanel):
         loads, uptime = metrics.get("load") or [], metrics.get("uptime_s")
         system = ([("Load", " ".join(fmt(v, decimals=2) for v in loads), text)] if loads else []) + (
             [("Uptime", f"{int(uptime // 3600)} h {int(uptime % 3600 // 60):02d} min", text)] if uptime is not None else [])
-        return [(h, rows) for h, rows in (("Temperatures", temps), ("Fans", fans), ("Battery", bat), ("Memory", mem),
+        return [(h, rows) for h, rows in (("Hottest sensors", temps), ("Fans", fans), ("Battery", bat), ("Memory", mem),
                                           ("System", system)) if rows]
 
     def draw_sensors(self, metrics, y, x, height, width):
@@ -816,7 +816,7 @@ class Dashboard(FanPanel):
             return
         # Drop whole sections from the end, then shorten the temperature list, until it fits.
         while len(sections) > 1 and sum(len(r) + 1 for _, r in sections) + len(sections) - 1 > room:
-            if sections[0][0] == "Temperatures" and len(sections[0][1]) > 3:
+            if sections[0][0] == "Hottest sensors" and len(sections[0][1]) > 3:
                 sections[0] = (sections[0][0], sections[0][1][:-1])
             else:
                 sections.pop()
@@ -1021,8 +1021,8 @@ class Dashboard(FanPanel):
             "Enter     apply   r  discard   R  stock curve",
             "p         stage the next saved or stock curve",
             "W         save the curve on screen",
-            "t         step table instead of the chart",
-            "Now: is live; set is what the curve asks for.",
+            "t         table instead of chart (narrow screens)",
+            "Now: is live; the step line is the curve setting.",
         ),
         "keyboard": (
             "1-4       select a zone",
@@ -1045,7 +1045,7 @@ class Dashboard(FanPanel):
         ),
         "fans": (
             "←→        select a step",
-            "t         step table instead of the chart",
+            "t         table instead of chart (narrow screens)",
             "W         save the curve on screen",
             "Pick custom mode on Power to edit the curve.",
         ),
@@ -1067,6 +1067,10 @@ class Dashboard(FanPanel):
             return True
         return self.panel in ("overview", "main") and not state.get("mode") and not (state.get("metrics") or {}).get("timestamp")
 
+    def wide_fans(self):
+        "True when the Fans box is wide enough to show the step table next to the chart (see draw_fans)."
+        return self.s.getmaxyx()[1] - self.NAV_W - 1 - 4 >= 90
+
     def needs_unlock(self):
         return (self.sudo_expired and self.panel in ("main", "fans") and not self.page_missing()
                 and not self.backend.remote and os.geteuid() != 0)
@@ -1077,11 +1081,18 @@ class Dashboard(FanPanel):
             entries = ["Tab page"]
         elif self.panel in self.HINTS_READONLY and self.locked(state):
             entries = list(self.HINTS_READONLY[self.panel])
+            if self.panel == "fans" and self.wide_fans():
+                entries.remove("t table")
         else:
             entries = list(self.HINTS.get(self.panel, self.HINTS["main"]))
             if self.panel == "main" and not self.pending:
                 entries.remove("Enter apply")
+            rows = self.rows(state) if self.panel == "main" else []
+            if rows and 0 < self.selected < len(rows) and self.fields.get(rows[self.selected]):
+                entries = ["Enter apply", "⌫ delete", "Esc clear", "Tab page"]  # typing a value
             if self.panel == "fans":
+                if self.wide_fans():
+                    entries.remove("t table")  # the table is already beside the chart
                 if self.fan_edit is not None:
                     entries.insert(entries.index("Enter apply") + 1, "r discard")
                 else:

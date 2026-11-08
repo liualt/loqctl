@@ -441,15 +441,19 @@ class FanPanel:
         parts = [f"Step {self.fan_sel + 1} of {len(target)}"]
         if p.get("cpu_up") is not None:
             parts.append(f"at CPU {p['cpu_up']}°C")
-        parts.append(f"set {speed}")
-        apart = (self.fan_pct(scale, p.get("fan2")) != self.fan_pct(scale, p.get("fan1"))
-                 or self.fan_pct(scale, old.get("fan2")) != self.fan_pct(scale, old.get("fan1")))
-        if p.get("fan2") is not None and apart:  # fan 2 is named only when the fans differ, before or after
+        apart = p.get("fan2") is not None and (
+            self.fan_pct(scale, p.get("fan2")) != self.fan_pct(scale, p.get("fan1"))
+            or self.fan_pct(scale, old.get("fan2")) != self.fan_pct(scale, old.get("fan1")))
+        parts.append(f"fan 1 {speed}" if apart else f"both fans {speed}")
+        if apart:  # fan 2 is named only when the fans differ, before or after the edit
             fan2 = self.fan_pct_text(scale, p["fan2"])
             if scale.show(old.get("fan2")) != scale.show(p["fan2"]):
                 fan2 += f" (was {self.fan_pct_text(scale, old.get('fan2'))})"
             parts.append(f"fan 2 {fan2}")
-        self.put(y, x, fit_parts(parts, w), self.theme.WARN, True)
+        text = fit_parts(parts, w)
+        if text != " · ".join(parts):  # short of room: drop the old speeds before a whole fan
+            text = fit_parts([part.split(" (was ")[0] for part in parts], w)
+        self.put(y, x, text, self.theme.WARN, True)
 
     def fan_table(self, target, scale, y, x, w, h):
         """Every step: the CPU, GPU and heatsink temperatures it starts at and its speed. The
@@ -467,9 +471,11 @@ class FanPanel:
                 return "N/A" if p.get(key) is None else f"{p[key]}°"
 
             speed = self.fan_pct_text(scale, p.get("fan1"))
-            changed = scale.show(old.get("fan1")) != scale.show(p.get("fan1"))
-            if changed:
+            changed = any(scale.show(old.get(f)) != scale.show(p.get(f)) for f in ("fan1", "fan2"))
+            if scale.show(old.get("fan1")) != scale.show(p.get("fan1")):
                 speed = f"{self.fan_pct_text(scale, old.get('fan1'))} → {speed}"
+            if self.fan_pct(scale, p.get("fan2")) != self.fan_pct(scale, p.get("fan1")):
+                speed += f", fan 2 {self.fan_pct_text(scale, p.get('fan2'))}"
             line = f"{'▶' if chosen else ' '} {i + 1:<5}{temp('cpu_up'):>5}{temp('gpu_up'):>5}{temp('ic_up'):>6}  {speed}"
             self.put(y + 1 + i - start, x, line[:w], self.theme.WARN if changed else self.theme.ACCENT if chosen
                      else self.theme.TEXT, chosen)
@@ -496,16 +502,18 @@ class FanPanel:
             r = y + row_of(value)
             self.put(r, x, f"{value}%".rjust(label_w - 2), dim, dim=True)
             self.put(r, gx - 1, "┤", dim, dim=True)
-        self.put(y + h, gx - 1, "└" + "─" * gw, dim, dim=True)
-        # Tick labels: each step's CPU start temperature under its rail, skipping any that would touch the last one.
+        self.put(y + h, gx - 1, "└" + "─" * (cols[-1] - gx + 3 if cols else gw), dim, dim=True)
+        # Tick labels: the CPU temperature a step starts at, under its rail, only where it changes from the
+        # step before (a run of equal temperatures reads as one), the selected step always, none that touch.
         self.put(y + h + 1, x, "°C".rjust(label_w - 2), dim, dim=True)
-        end = 0
+        end, last = 0, None
         for i, (c, p) in enumerate(zip(cols, target)):
             if p.get("cpu_up") is None:
                 continue
             text = str(p["cpu_up"])
+            repeat, last = p["cpu_up"] == last, p["cpu_up"]
             at = c - (len(text) - 1) // 2
-            if at > end and at + len(text) <= gx + gw:
+            if (not repeat or i == self.fan_sel) and at > end and at + len(text) <= gx + gw:
                 self.put(y + h + 1, at, text, self.theme.WARN if i == self.fan_sel else dim, i == self.fan_sel,
                          dim=i != self.fan_sel)
                 end = at + len(text)
