@@ -281,7 +281,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | "Custom cannot be selected through the legacy platform_profile file" (older versions: "Firmware rejected the write: Invalid argument") | No platform-profile class device was found, and the kernel's legacy `/sys/firmware/acpi/platform_profile` refuses `custom`. Make sure `lenovo-wmi-gamezone` is loaded |
 | "RAPL needs root: run sudo loqctl serve" | CPU power reads are root-only on some kernels. Use the privileged server; do not run the TUI with `sudo -E` |
 | "A loqctl server is already running" | Another `loqctl serve` answers on the socket; stop it first. A stale socket is removed automatically |
-| "Read-only. Press s to unlock." or "sudo credentials expired" | The sudo cache expired (or you skipped it at start). The status line then shows "Read-only. Press s to unlock." on the Power and Fans pages, after any error or notice. Press `s` to authenticate; staged edits are kept |
+| "Read-only. Press s to unlock." or "sudo credentials expired" | The sudo cache expired (or you skipped it at start). The status line then shows "Read-only. Press s to unlock." on the Power and Fans pages when nothing else needs saying, and the footer adds `s unlock`. Press `s` to authenticate; staged edits are kept |
 | "Ignored stale API socket" | A server left its socket behind. loqctl reads locally; restart `sudo loqctl serve` if you want the server |
 | Stock-mode limits show N/A, "needs root" or "debugfs capability table not found" | The capdata table is root-only. Press `s` (or run `sudo loqctl serve`) so loqctl can read it once. "not found" means debugfs is not mounted (`sudo mount -t debugfs none /sys/kernel/debug`) or the driver exposes no `lenovo_wmi` capdata; custom mode still works |
 | "sudo credentials expired" while reading limits or applying | Press `s`; the table read is retried on the next start, staged edits are kept |
@@ -326,7 +326,7 @@ Added:
 Changed:
 
 - One key per action. Removed: `j`, `k`, `+`, `-`, `=`, `l`, `f` and `[` `]`. Use the arrows, `Tab` and `Esc`.
-- Help shows the current page's keys and the global keys inside the content area. The footer lists 4 or 5 keys for the page, and only working keys on a page that is unavailable.
+- Help shows the current page's keys and the global keys inside the content area. The footer lists only keys that work right now: read-only Power and Fans pages drop the edit keys, and an unavailable page says what it needs.
 
 Fixed:
 

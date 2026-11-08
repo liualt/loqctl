@@ -683,8 +683,8 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     self.assertEqual(sum(1 for y, x, t in calls if y == h - 1), 1, where)  # one footer line
                     foot = "".join(t for y, x, t in calls if y == h - 1)
                     self.assertIn("Tab page", foot, where)
-                    self.assertEqual("Enter apply" in foot, mode != "unavailable", where)  # no dead keys
-                    self.assertEqual("load legion_laptop" in foot, mode == "unavailable", where)
+                    self.assertEqual("Enter apply" in foot, mode == "custom", where)  # no dead keys
+                    self.assertEqual("needs legion_laptop" in foot, mode == "unavailable", where)
                     if mode == "unavailable":
                         title = next((x, x + len(t)) for y, x, t in calls if y == 1 and t.startswith(" Fan curve"))
                         label = next(x for y, x, t in calls if y == 1 and t == " Unavailable ")  
@@ -746,13 +746,13 @@ class FanCurveSurfaceTests(FanPanelFixture):
                 foot = plain[h - 1].rstrip()
                 self.assertTrue(foot.startswith(" ? help") and foot.endswith("q quit"), (where, foot))
                 if panel == "keyboard" and not missing:
-                    self.assertEqual([foot.index(k) for k in ("Enter apply", "e effect", "b bright", "w wave")],
-                                     sorted(foot.index(k) for k in ("Enter apply", "e effect", "b bright", "w wave")))
+                    self.assertEqual([foot.index(k) for k in ("1-4 zone", "e effect", "b bright")],
+                                     sorted(foot.index(k) for k in ("1-4 zone", "e effect", "b bright")))
                     self.assertIn("Tab page", foot, where)
                 if missing:
                     self.assertNotIn("Enter", foot, where)  # nothing to apply
                     self.assertIn("Tab page", foot, where)
-                    self.assertIn("load legion_laptop" if panel == "fans" else "install legionaura", foot, where)
+                    self.assertIn("needs legion_laptop" if panel == "fans" else "install legionaura", foot, where)
 
     def test_fan_page_ignores_f_and_brackets(self):
         dash = self.dash()
