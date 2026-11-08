@@ -141,7 +141,8 @@ class FanPanel:
         self.fan_edit = None if target == self.fan_points() else target
         self.fan_preset = None
         self.fan_cycle = None
-        self.notice = f"Step {i + 1} now {self.fan_pct_text(self.fan_scale(), target[i].get('fan1'))}. Press Enter to apply."
+        speed = next((target[i][f] for f in SPEEDS if target[i].get(f) is not None), None)
+        self.notice = f"Step {i + 1} now {self.fan_pct_text(self.fan_scale(), speed)}. Press Enter to apply."
 
     def fan_held_reason(self, points, i, direction):
         scale = self.fan_scale()
@@ -172,8 +173,8 @@ class FanPanel:
         failed = next((r for r in results if r["status"] != "APPLIED"), None)
         done = sum(r["status"] == "APPLIED" for r in results)
         if failed:
-            raise ControlError(f"Fan curve apply stopped after {done} writes: {failed.get('error') or failed['status']}. "
-                               "Press Enter to retry or r to discard.")
+            raise ControlError(f"Press Enter to retry or r to discard. Apply stopped after {done} writes: "
+                               f"{failed.get('error') or failed['status']}.")
         return done
 
     def fan_apply(self, state):
@@ -190,9 +191,10 @@ class FanPanel:
         points = [{f: p[f] for f in WRITABLE if p.get(f) is not None} for p in self.fan_edit]
         problems = self.fan_record_stock(state.get("mode"))
         steps = sum(a != b for a, b in zip(self.fan_edit, self.fan_points()))
-        self.fan_write(points)
+        done = self.fan_write(points)
         self.fan_edit = None
-        self.notice = f"Applied and verified {steps} step{'' if steps == 1 else 's'}."
+        self.notice = (f"Applied and verified {steps} step{'' if steps == 1 else 's'}." if done
+                       else "No change needed.")
         if problems:
             self.notice += " " + problems
         if os.geteuid() == 0:

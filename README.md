@@ -61,7 +61,7 @@ Or run it in place with `python3 loqctl.py`.
 loqctl
 ```
 
-A section list on the left (Overview, Power, Fans, Keyboard) picks the page on the right. Sections the laptop does not support are hidden. Overview shows telemetry only; Power holds the firmware controls.
+A section list on the left (Overview, Power, Fans, Keyboard) picks the page on the right. Sections the laptop does not support are hidden. Overview shows telemetry only; Power holds the firmware controls. The graph titles carry the scale (0-N W). With no sensor data Overview says so and points at `loqctl doctor`; CPU watts show … until the first sample.
 
 | Key | Action |
 | --- | --- |

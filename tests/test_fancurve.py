@@ -523,6 +523,15 @@ class FanCurveSurfaceTests(FanPanelFixture):
         self.assertIsNone(dash.fan_edit)
         self.assertEqual(dash.notice, "Applied and verified 1 step.")
 
+    def test_apply_with_no_results_says_no_change_needed(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        self.keys(dash, state, "f", curses.KEY_RIGHT, curses.KEY_UP)
+        self.assertIn("Step 2 now", dash.notice)
+        with patch.object(dash.backend, "write_fancurve", return_value=[]):
+            self.keys(dash, state, 10)
+        self.assertEqual(dash.notice, "No change needed.")
+
     def test_held_point_and_discard(self):
         dash = self.dash()
         state = {"mode": "custom"}
