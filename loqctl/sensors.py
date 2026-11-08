@@ -139,13 +139,15 @@ BATTERY_SMOOTH_S = 30
 BATTERY_MAX_MIN = 48 * 60
 
 
-def battery_time(p, status, avg_rate, source):
+def battery_time(p, status, avg_rate, source, threshold=None, conserving=False):
     """(minutes, "to empty" or "to full") for one battery, (None, None) when unknown.
 
     avg_rate is the smoothed power_now ("energy") or current_now ("charge"); only the matching
-    energy_* or charge_* files are used with it. Kernel time_to_* files win."""
+    energy_* or charge_* files are used with it. Kernel time_to_* files win. threshold is the charge
+    limit percent and conserving the ideapad conservation_mode flag; with only the flag the limit is
+    unknown, so there is no "to full" estimate."""
     kind, name = {"Discharging": ("to empty", "empty"), "Charging": ("to full", "full")}.get(status, (None, None))
-    if kind is None:
+    if kind is None or (name == "full" and conserving and threshold is None):
         return None, None
     kernel = scaled(p / f"time_to_{name}_now")
     if kernel:
@@ -157,8 +159,8 @@ def battery_time(p, status, avg_rate, source):
         if now_v is None or (name == "full" and full_v is None):
             return None, None
         target = full_v
-        if name == "full" and (limit := scaled(p / "charge_control_end_threshold")) is not None and 0 < limit < 100:
-            target = full_v * limit / 100  # charging stops at the limit, not at 100%
+        if name == "full" and threshold is not None and 0 < threshold < 100:
+            target = full_v * threshold / 100  # charging stops at the limit, not at 100%
         if name == "full" and target <= now_v:
             return None, None
         minutes = (now_v if name == "empty" else target - now_v) / avg_rate * 60
@@ -516,7 +518,7 @@ class Sensors:
                 status = read(p / "status")
                 charge_type = re.search(r"\[(\w+)\]", read(p / "charge_types") or "")
                 avg, source = self.battery_rate(p, status, now)
-                minutes, kind = battery_time(p, status, avg, source)
+                minutes, kind = battery_time(p, status, avg, source, threshold, conservation == "1")
                 battery_power = scaled(p / "power_now", 1e6)
                 battery.append({"charge_limit": limit, "charge_type": charge_type and charge_type[1],
                                 "rapid_charge": rapid, "power_charge_mode": read(legion / "powerchargemode"), "name": p.name, "percent": scaled(p / "capacity"),

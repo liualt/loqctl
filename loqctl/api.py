@@ -164,9 +164,9 @@ def request(path, method, endpoint, payload=None):
         conn.close()
 
 
-def serve_uid_warning(uid, environ):
-    if "SUDO_UID" not in environ and uid == 0:
-        return "Warning: serving for uid 0 because SUDO_UID is not set. Use --uid <your uid> so your user can connect."
+def serve_uid_warning(uid):
+    if uid == 0:
+        return "Warning: serving for uid 0 because SUDO_UID is missing or invalid. Use --uid <your uid> so your user can connect."
     return None
 
 
@@ -214,7 +214,7 @@ def serve(uid):
     prepare_socket_dir(directory)
     path = directory / "control.sock"
     prepare_socket_path(path)
-    warning = serve_uid_warning(uid, os.environ)
+    warning = serve_uid_warning(uid)
     if warning:
         print(warning, file=sys.stderr)
     sampler = Sampler()
