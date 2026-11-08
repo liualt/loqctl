@@ -273,8 +273,8 @@ class UiTests(Sim):
         dash = self.dash()
         dash.draw_controls(m_hardware.Hardware(self.root).capabilities(), 0, 0, 20, 70)
         text = self.text(dash)
-        self.assertRegex(text, r"CPU sustained / PL1 +60 W")
-        self.assertIn("custom default 60 · balanced limit from firmware table", text)
+        self.assertRegex(text, r"balanced +custom")  # the stock value, then what custom mode holds
+        self.assertRegex(text, r"CPU sustained / PL1 +60 W +50 W")
 
     def test_stock_row_without_table_is_na(self):
         dash = self.dash()
