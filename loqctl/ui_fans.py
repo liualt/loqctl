@@ -141,7 +141,7 @@ class FanPanel:
         self.fan_edit = None if target == self.fan_points() else target
         self.fan_preset = None
         self.fan_cycle = None
-        self.notice = "Edit staged. Press Enter to apply."
+        self.notice = f"Step {i + 1} now {self.fan_pct_text(self.fan_scale(), target[i].get('fan1'))}. Press Enter to apply."
 
     def fan_held_reason(self, points, i, direction):
         scale = self.fan_scale()
@@ -172,7 +172,8 @@ class FanPanel:
         failed = next((r for r in results if r["status"] != "APPLIED"), None)
         done = sum(r["status"] == "APPLIED" for r in results)
         if failed:
-            raise ControlError(f"Fan curve apply stopped after {done} writes: {failed.get('error') or failed['status']}")
+            raise ControlError(f"Fan curve apply stopped after {done} writes: {failed.get('error') or failed['status']}. "
+                               "Press Enter to retry or r to discard.")
         return done
 
     def fan_apply(self, state):
@@ -188,9 +189,10 @@ class FanPanel:
             return
         points = [{f: p[f] for f in WRITABLE if p.get(f) is not None} for p in self.fan_edit]
         problems = self.fan_record_stock(state.get("mode"))
-        done = self.fan_write(points)
+        steps = sum(a != b for a, b in zip(self.fan_edit, self.fan_points()))
+        self.fan_write(points)
         self.fan_edit = None
-        self.notice = f"Applied and verified {done} fan curve change(s)."
+        self.notice = f"Applied and verified {steps} step{'' if steps == 1 else 's'}."
         if problems:
             self.notice += " " + problems
         if os.geteuid() == 0:
@@ -380,11 +382,11 @@ class FanPanel:
             return
         right = ""
         if self.fan_edit is not None:
-            room = width - len(parts[0]) - 20
+            room = width - len(parts[0]) - 28
             name = self.fan_preset or ""
             if len(name) > room:
                 name = name[:max(0, room - 1)] + "…" if room > 1 else ""
-            right = f"Staged {name}" if name else "Staged"
+            right = f"Unsaved changes {name}" if name else "Unsaved changes"
         elif self.fan_locked(state):
             right = "Read-only"
         self.box(y, x, height, width, fit_parts(parts, max(8, width - len(right) - 10)), self.theme.GPU, right)
