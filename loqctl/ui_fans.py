@@ -311,8 +311,6 @@ class FanPanel:
             return
         count = len(self.fan_points())
         if not count:
-            if ch in (9, curses.KEY_BTAB):  # no curve to step through, so Tab moves on like other pages
-                self.step_section(state, -1 if ch == curses.KEY_BTAB else 1)
             return
         locked = self.fan_locked(state)
         if locked and self.fan_edit is not None:
@@ -323,9 +321,9 @@ class FanPanel:
         plain = {curses.KEY_UP: 1, curses.KEY_DOWN: -1}
         if ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
             self.fan_sel = clamp(self.fan_sel + (1 if ch == curses.KEY_RIGHT else -1), 0, count - 1)
-        elif ch in (9, ord("]")):
+        elif ch == ord("]"):
             self.fan_sel = (self.fan_sel + 1) % count
-        elif ch in (curses.KEY_BTAB, ord("[")):
+        elif ch == ord("["):
             self.fan_sel = (self.fan_sel - 1) % count
         elif ch == ord("t"):
             self.fan_details = not self.fan_details

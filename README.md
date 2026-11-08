@@ -65,7 +65,7 @@ A section list on the left (Overview, Power, Fans, Keyboard) picks the page on t
 
 | Key | Action |
 | --- | --- |
-| `Tab`, `Shift+Tab` | Next or previous section (`↑↓` on Overview; on Power and Keyboard `↑↓` also change section past the first or last row). On the fan panel `Tab` keeps selecting curve points |
+| `Tab`, `Shift+Tab` | Next or previous section (`↑↓` on Overview; on Power and Keyboard `↑↓` also change section past the first or last row). |
 | `↑↓` / `j k` | Select a control (Power) |
 | `←→` / `- +` | Stage one step (on the mode row: cycle modes) |
 | `0-9` / `Backspace` | Type into the selected limit (custom mode); the old value is struck through |
@@ -135,7 +135,7 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 | Key | Action |
 | --- | --- |
 | `←` / `→` | Select the previous or next point |
-| `Tab` / `]`, `Shift+Tab` / `[` | Select the next or previous point, wrapping around |
+| `]` / `[` | Select the next or previous point, wrapping around |
 | `↑` / `↓` | Move the point's speed for both fans to the next speed the fan stores (`Shift`: five steps) |
 | `t` | Show or hide the details |
 | `r` | Discard all edits |
