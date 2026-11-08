@@ -122,7 +122,7 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
   options legion_laptop enable_platformprofile=0
   softdep legion_laptop pre: lenovo_wmi_gamezone
   ```
-- Curves are editable only while the live platform mode is `custom`, like limits. Other modes show "Fan curves are locked in <mode> mode".
+- Curves are editable only while the live platform mode is `custom`, like limits. Other modes show that mode's curve read-only (labelled "Read-only", with "Select custom to edit" under the graph) and re-read it when the mode changes.
 - The firmware resets the curve when the mode changes and on reboot.
 - The panel shows a graph of fan 1 speed against the CPU up temperature of each point (straight segments between the points, one marker per point, the selected point highlighted, a `▲` tick on the temperature axis at the live CPU temperature) and one line for the selected point: its temperature and speed, fan 2 when it differs, and the live speed while an edit is staged. `t` shows the details: the GPU/IC temperatures and hysteresis of the selected point, and a table of every point (CPU/GPU/IC up/down temperatures and both fan speeds; staged changes in the warning color). "down" is the absolute lower temperature of a step (the `_temp_hyst` file).
 - Speeds are shown in the module's unit (`fancurve_speed_unit`): RPM for `rpm` (scaled with `fan1_max`), firmware levels 0-10 for `level`, percent otherwise. `↑`/`↓` move to the next speed the module can store, worked out from the module's conversion of the 256 pwm values: 100 RPM on `rpm` curves, one level on `level` curves, and 1 % on percent curves. loqctl writes the exact pwm value the module maps back to that speed, so readback matches.
