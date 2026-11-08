@@ -392,7 +392,10 @@ class FanPanelFixture(helpers.SysfsCase):
 
     def keys(self, dash, state, *keys):
         for key in keys:
-            dash.handle(ord(key) if isinstance(key, str) else key, state)
+            if key == "f":  # open the page, as Tab does on a full dashboard
+                dash.open_fans()
+            else:
+                dash.handle(curses.KEY_RIGHT if key == "]" else ord(key) if isinstance(key, str) else key, state)
 
 
 class FanCurveSurfaceTests(FanPanelFixture):
@@ -669,6 +672,10 @@ class FanCurveSurfaceTests(FanPanelFixture):
                                  and not t.startswith(("╭", "─")))
                     self.assertTrue(all(a[1] <= b[0] for a, b in zip(top, top[1:])), (where, top))  # title vs right label
                     self.assertEqual(sum(1 for y, x, t in calls if y == h - 1), 1, where)  # one footer line
+                    foot = "".join(t for y, x, t in calls if y == h - 1)
+                    self.assertIn("Tab page", foot, where)
+                    self.assertEqual("Enter apply" in foot, mode != "unavailable", where)  # no dead keys
+                    self.assertEqual("load legion_laptop" in foot, mode == "unavailable", where)
                     if mode == "unavailable":
                         title = next((x, x + len(t)) for y, x, t in calls if y == 1 and t.startswith(" Fan curve"))
                         label = next(x for y, x, t in calls if y == 1 and t == " Unavailable ")  
@@ -681,7 +688,69 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     if mode == "balanced":
                         self.assertIn("Select custom to edit.", drawn)
                         self.assertIn(" Read-only ", drawn)
-                    self.assertIn("t details", "".join(t for y, x, t in calls if y == h - 1), where)
+                    self.assertIn("Esc back", foot, where)
+
+    def test_help_and_footer_fit_the_screen_on_every_page(self):
+        state = dict(self.hw.capabilities(), metrics={"timestamp": time.time()})
+        for size in ((20, 72), (24, 80)):
+            h, w = size
+            for panel, missing in (("overview", False), ("main", False), ("fans", False), ("fans", True),
+                                   ("keyboard", False), ("keyboard", True)):
+                dash = self.dash()
+                self.keys(dash, state, "f")
+                if missing:
+                    dash.fan = {"available": False, "reason": "no hwmon"}
+                    dash.fan_result, dash.fan_loading = None, False
+                dash.panel = panel
+                dash.keyboard.available = not missing
+                dash.draw_keyboard = dash.draw_overview = dash.draw_main = lambda *a: None  # help covers them
+                dash.kb_seen = dash.keyboard.last_seq = 0
+                dash.paused = True
+                dash.s.getmaxyx.return_value = size
+                del dash.put, dash.box
+                screens = []
+                for helping in (False, True):
+                    dash.help = helping
+                    calls = []
+                    dash.put = lambda y, x, text, *a, **k: calls.append((y, x, str(text)))
+                    dash.draw(state)
+                    grid = {}
+                    for y, x, text in calls:
+                        for i, ch in enumerate(text):
+                            grid[y, x + i] = ch
+                    screens.append(["".join(grid.get((y, x), " ") for x in range(w)) for y in range(h)])
+                plain, helped = screens
+                where = (size, panel, missing)
+                nav = dash.NAV_W
+                self.assertEqual([r[:nav] for r in plain], [r[:nav] for r in helped], where)  # nav untouched
+                self.assertEqual(plain[h - 2:], helped[h - 2:], where)  # status and footer untouched
+                self.assertTrue(helped[1][nav + 1:].startswith("╭") and helped[1].endswith("╮"), where)
+                self.assertTrue(helped[h - 3][nav + 1:].startswith("╰") and helped[h - 3].endswith("╯"), where)
+                body = "\n".join(helped)
+                self.assertNotIn("more, resize", body, where)
+                for line in filter(None, dash.help_lines()):
+                    self.assertIn(line, body, where)  # every line of this page's help is whole
+                self.assertIn("? or Esc to close", body, where)
+                foot = plain[h - 1].rstrip()
+                self.assertTrue(foot.startswith(" ? help") and foot.endswith("q quit"), (where, foot))
+                if panel == "keyboard" and not missing:
+                    self.assertEqual([foot.index(k) for k in ("Enter apply", "e effect", "b bright", "w wave")],
+                                     sorted(foot.index(k) for k in ("Enter apply", "e effect", "b bright", "w wave")))
+                    self.assertIn("Tab page", foot, where)
+                if missing:
+                    self.assertNotIn("Enter", foot, where)  # nothing to apply
+                    self.assertIn("Tab page", foot, where)
+                    self.assertIn("load legion_laptop" if panel == "fans" else "install legionaura", foot, where)
+
+    def test_fan_page_ignores_f_and_brackets(self):
+        dash = self.dash()
+        state = {"mode": "custom"}
+        dash.open_fans()
+        for key in "f[]":
+            dash.handle(ord(key), state)
+        self.assertEqual((dash.panel, dash.fan_sel), ("fans", 0))
+        self.keys(dash, state, 27)
+        self.assertEqual(dash.panel, "main")
 
     def test_full_screen_marks_hidden_points_and_keeps_labels_apart(self):
         points = [dict(cpu_up=30 + 8 * i, cpu_down=0, gpu_up=30 + 8 * i, gpu_down=0, ic_up=40, ic_down=0,

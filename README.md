@@ -65,22 +65,20 @@ A section list on the left (Overview, Power, Fans, Keyboard) picks the page on t
 
 | Key | Action |
 | --- | --- |
-| `Tab`, `Shift+Tab` | Next or previous section (`↑↓` on Overview; on Power and Keyboard `↑↓` also change section past the first or last row). |
-| `↑↓` / `j k` | Select a control (Power) |
-| `←→` / `- +` | Stage one step (on the mode row: cycle modes) |
+| `Tab`, `Shift+Tab` | Next or previous page (`↑↓` on Overview; on Power and Keyboard `↑↓` also change page past the first or last row). |
+| `↑↓` | Select a control (Power) |
+| `←→` | Stage one step (on the mode row: cycle modes) |
 | `0-9` / `Backspace` | Type into the selected limit (custom mode); the old value is struck through |
 | `Enter` | Apply all staged edits, each write verified (refuses while a value is marked red). On the mode row: `←→` choose, `Enter` applies |
-| `Esc` | Clear the selected limit (custom mode, row unlocked) |
+| `Esc` | Go back one level: close an overlay or the Overview details, return from Fans or Keyboard to Power, or clear the selected limit (custom mode, row unlocked) |
 | `d` | Stage the firmware default for the selected control |
 | `r` | Discard staged edits |
-| `l` | Keyboard lighting panel |
-| `f` | Fan curve panel |
 | `m` | Mode limits overlay: every mode's firmware limits side by side (`Enter` / `Esc` / `m` closes). Columns use short names (low, bal, perf, max) and the live mode is bracketed |
 | `t` | Overview only: open or close the details view (CPU and GPU extras, voltages, temperatures, power, throttling). Esc also closes it |
 | `Space` | Pause telemetry |
 | `v` | Reopen the last apply results |
 | `s` | Authenticate sudo (shown when needed) |
-| `?` | Help (any panel) |
+| `?` | Help for the current page (any page) |
 | `q` | Quit |
 
 Power and temperature limits are only editable in **custom** mode. The other modes (low-power, balanced, performance, and max-power where the firmware offers it) are managed by the firmware, so the limit rows are dimmed and read-only there. To tune limits, select `custom` on the *Platform mode* row and press `Enter` to apply it. The limit rows then unlock with fresh values. Mode changes and limit edits are never applied together.
@@ -94,25 +92,25 @@ Firmware writes need root. You have two options:
 1. **Batched sudo (default).** At start loqctl runs `sudo -v` once (skipped when you are root, using the server, nothing is writable, or sudo is already cached). All staged edits are then applied in a single `sudo -n` call with per-item results. When the sudo cache expires, a banner appears and `s` re-authenticates; edits stay staged. The dashboard itself never runs as root and never asks for a password inside curses.
 2. **Privileged server (recommended for frequent tuning).** Run `sudo loqctl serve` in another terminal. The dashboard then connects to it automatically and never needs to leave the screen. See [Local HTTP API](#local-http-api).
 
-### Keyboard panel (`l`)
+### Keyboard panel
 
 | Key | Action |
 | --- | --- |
 | `1`–`4` | Select zone |
-| `↑↓` / `j` `k` | Choose H / S / V channel |
-| `←→` / `-` `+` `=` | Nudge channel (`H` / `L` for fine steps) |
+| `↑↓` | Choose H / S / V channel |
+| `←→` | Nudge channel (`H` / `L` for fine steps) |
 | `e` | Cycle effect: static → breath → wave → hue → off |
 | `b` | Toggle brightness low/high |
 | `w` | Wave direction ltr/rtl |
 | `c` | Copy the selected zone color to all four |
 | `Space` | Toggle live apply |
 | `Enter` | Apply via `legionaura` |
-| `Esc` / `l` | Back |
+| `Esc` | Back |
 | `q` | Quit |
 
 Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the real RGB. Settings are read from `~/.config/legionaura/config.json`.
 
-### Fan curves (`f`)
+### Fan curves
 
 Fan curves are read and written through the [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux) `legion_laptop` kernel module (loqctl does not copy its code; it only uses the hwmon files the module exposes). Without the module the panel says so and shows fan RPM only.
 
@@ -135,7 +133,6 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 | Key | Action |
 | --- | --- |
 | `←` / `→` | Select the previous or next point |
-| `]` / `[` | Select the next or previous point, wrapping around |
 | `↑` / `↓` | Move the point's speed for both fans to the next speed the fan stores (`Shift`: five steps) |
 | `t` | Show or hide the details |
 | `r` | Discard all edits |
@@ -143,7 +140,7 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 | `p` | Stage the next curve (`stock`, then saved curves); the notice and the panel title name it; nothing is written until `Enter` |
 | `R` | Reset: write the recorded stock curve for the current mode and delete `active.json` (custom mode only) |
 | `W` | Save the staged (or live) curve as `curves/saved-YYYYmmdd-HHMMSS.json` |
-| `f` / `Esc` | Back (staged edits are kept) |
+| `Esc` | Back (staged edits are kept) |
 | `q` | Quit |
 
 Curves: `stock` is the live curve loqctl read just before its first write in a mode, saved once per mode to `~/.config/loqctl/stock/<mode>.json`. The firmware cannot read the stock curve back once a custom one is written, so this is the only copy. A `<mode>.written` marker next to it records that loqctl has written in that mode (every apply and every `R` sets it), and the stock curve is never recorded again after that. This cannot be verified: a curve written by another tool (or by root, or `loqctl _fancurve`) before loqctl's first apply in a mode is recorded as stock. If the read before the first write fails, the apply still happens and says the stock curve was not recorded. `R` writes the stock curve back (verified like any apply) and deletes `active.json`, so `serve` stops re-applying a custom curve. With no recorded stock curve, `R` only deletes `active.json` and says the firmware restores the stock curve on the next mode change or power cycle. File errors during `R` are shown in the notice. Saved curves live in `~/.config/loqctl/curves/<name>.json` (`XDG_CONFIG_HOME` is respected, but `active.json` always lives in `~/.config/loqctl`, found from your user's passwd entry), listed after `stock` by name (a saved curve named `stock` shows as `stock (saved)`); one that fails validation or has the wrong point count shows a red "(invalid)" and cannot be staged. The staged curve is tracked by name. After every verified apply the dashboard writes the applied points to `~/.config/loqctl/active.json`. All files are written atomically with mode 0600, by your user only (never by root; nothing is saved while the dashboard runs as root).
@@ -325,6 +322,11 @@ Added:
 - Bash, zsh and fish completions.
 - `make install` is atomic.
 - `make install`, `make uninstall` and `make test`.
+
+Changed:
+
+- One key per action. Removed: `j`, `k`, `+`, `-`, `=`, `l`, `f` and `[` `]`. Use the arrows, `Tab` and `Esc`.
+- Help shows the current page's keys and the global keys inside the content area. The footer lists 4 or 5 keys for the page, and only working keys on a page that is unavailable.
 
 Fixed:
 
