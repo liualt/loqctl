@@ -24,7 +24,7 @@ _loqctl() {
             local modes="low-power balanced performance max-power custom" f src=""
             # Gamezone's class device first, then any other, then the legacy file (it lists "custom", which the kernel rejects).
             for f in /sys/class/platform-profile/*/choices; do
-                [[ -r $f ]] || continue
+                [[ -r $f && -e ${f%choices}profile ]] || continue
                 [[ -z $src ]] && src=$f
                 [[ -r ${f%choices}name && $(< "${f%choices}name") == lenovo-wmi-gamezone ]] && { src=$f; break; }
             done
