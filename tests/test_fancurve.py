@@ -554,7 +554,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.put = lambda y, x, text, *a, **k: calls.append(str(text))
         dash.draw_fans = dash.box = Mock()
         dash.draw({"mode": "custom"})
-        hint = next(c for c in calls if "Esc back" in c)
+        hint = next(c for c in calls if "q quit" in c)
         self.assertIn("q quit", hint[:77])
 
     def test_invalid_staged_curve_is_not_written(self):
@@ -684,7 +684,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     foot = "".join(t for y, x, t in calls if y == h - 1)
                     self.assertIn("Tab page", foot, where)
                     self.assertEqual("Enter apply" in foot, mode == "custom", where)  # no dead keys
-                    self.assertEqual("needs legion_laptop" in foot, mode == "unavailable", where)
+                    self.assertNotIn("needs legion_laptop", foot, where)  # a reason is not a key
                     if mode == "unavailable":
                         title = next((x, x + len(t)) for y, x, t in calls if y == 1 and t.startswith(" Fan curve"))
                         label = next(x for y, x, t in calls if y == 1 and t == " Unavailable ")  
@@ -752,7 +752,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
                 if missing:
                     self.assertNotIn("Enter", foot, where)  # nothing to apply
                     self.assertIn("Tab page", foot, where)
-                    self.assertIn("needs legion_laptop" if panel == "fans" else "install legionaura", foot, where)
+                    self.assertNotIn("Esc back", foot, where)
 
     def test_fan_page_ignores_f_and_brackets(self):
         dash = self.dash()

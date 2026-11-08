@@ -106,7 +106,7 @@ class FanPanel:
         self.fan_sel = clamp(self.fan_sel, 0, max(0, len(points) - 1))
         self.fan_refresh_options()
         if self.panel == "fans":
-            self.notice = "Fan curve loaded. Esc returns." if points else self.fan.get("reason", "")
+            self.notice = "" if points else self.fan.get("reason", "")
 
     def fan_points(self):
         return self.fan.get("points") or [] if self.fan.get("available") else []

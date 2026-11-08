@@ -155,7 +155,7 @@ class Dashboard(FanPanel):
         "overview": ("Tab page", "t details", "m modes", "Space pause"),
         "main": ("↑↓ select", "←→ adjust", "Enter apply", "Tab page", "m modes"),
         "fans": ("←→ step", "↑↓ speed", "Enter apply", "Tab page", "Esc back"),
-        "keyboard": ("1-4 zone", "↑↓ H/S/V", "e effect", "b bright", "Tab page"),
+        "keyboard": ("1-4 zone", "←→↑↓ HSV", "e effect", "b bright", "Tab page"),
     }
     HINTS_READONLY = {
         "main": ("←→ mode", "m modes", "Tab page"),
@@ -341,8 +341,9 @@ class Dashboard(FanPanel):
         if len(model) > room:
             model = model[: max(room - 1, 0)].rsplit(" ", 1)[0]
             model = model + "…" if model else ""
-        mid = f"{model}  ·  {mode}" if model and mode else model or mode or "Waiting for firmware"
+        mid = f"{model}  ·  {mode}" if model and mode else model or mode or ("Error: see the status line" if state.get("error") else "Waiting for firmware")
         mx = max(len(title) + 1, (w - len(mid)) // 2)
+        self.put(0, mx - 1, " " * (len(mid) + 2), self.theme.OK)
         self.put(0, mx, mid, self.theme.OK, bold=not model and bool(mode))
         if model and mode:
             self.put(0, mx + len(model) + 5, mode, self.theme.OK, True)
@@ -363,13 +364,15 @@ class Dashboard(FanPanel):
         stamp = metrics.get("timestamp")
         stale = stamp is not None and time.time() - stamp > 5
         if state.get("error"):
-            status, warn = f"{str(state['error']).rstrip('. ')}; fix that and restart loqctl.", True
+            status, warn = f"{str(state['error']).rstrip('. ')}. Run loqctl doctor for details.", True
         elif stale:
             status, warn = "Sensor data is stale. Check that the backend is running.", True
         elif state.get("stale"):
             status, warn = "Firmware values are stale. Wait for the next refresh.", True
         else:
             status, warn = self.notice, False
+        if not status and self.page_missing():
+            status, warn = self.MISSING_TEXT[self.panel], True
         if not status and self.needs_unlock():
             status, warn = "Read-only. Press s to unlock.", True
         if len(status) > w - 3:  # cut at a word boundary
@@ -507,7 +510,7 @@ class Dashboard(FanPanel):
                      self.theme.BAD if hot else self.theme.TEXT, bold=hot, dim=not hot)
             list_top += 1
         visible = max(3, height - detail_h - 3 - (list_top - y - 2))
-        lw = min(max([len(state["attributes"][k]["label"]) for k in shown if k in state["attributes"]] + [8]) + 1, max(8, width - 18))
+        lw = min(max([len((state.get("attributes") or {})[k]["label"]) for k in shown if k in (state.get("attributes") or {})] + [8]) + 1, max(8, width - 18))
         at = next((i for i, (row, _) in enumerate(entries) if row == self.selected), 0)
         if not any(isinstance(row, int) for row, _ in entries[at + 1:]):
             at = len(entries) - 1  # on the last editable row, scroll the read-only rows into view
@@ -528,7 +531,7 @@ class Dashboard(FanPanel):
                 continue
             chosen = row == self.selected
             marker = "▶" if chosen else " "
-            item = state["attributes"][key]
+            item = (state.get("attributes") or {})[key]
             label, current, unit = item["label"], item.get("effective_value"), item["unit"]
             staged = self.pending.get(key)
             value = "N/A" if current is None else f"{current}{unit_sep(unit)}{unit}"
@@ -578,7 +581,7 @@ class Dashboard(FanPanel):
             elif self.locked(state):
                 self.put(detail_y + 2, x + 2, "Select custom to edit", self.theme.TEXT, dim=True)
         elif self.locked(state):
-            item, mode = state["attributes"][key], state.get("mode") or "N/A"
+            item, mode = (state.get("attributes") or {})[key], state.get("mode") or "N/A"
             if item.get("effective_value") is not None:
                 note = fit_parts([f"custom default {fmt(item['default_value'])}", f"{mode} limit from firmware table"],
                                  width - 4)
@@ -589,7 +592,7 @@ class Dashboard(FanPanel):
                          f"Locked in {mode} mode; select custom to edit"),
                      self.theme.TEXT, dim=True)
         else:
-            item = state["attributes"][key]
+            item = (state.get("attributes") or {})[key]
             step = item["scalar_increment"]
             step_txt = "N/A" if step is None else "any int" if not step else str(step)
             if item.get("current_value") is None:
@@ -782,7 +785,7 @@ class Dashboard(FanPanel):
 
     def draw_keyboard(self, y, x, height, width):
         kb = self.keyboard
-        status = "applies as you edit" if self.kb_live else "Preview off"
+        status = "changes apply now" if self.kb_live else "Preview off"
         if not kb.available:
             status = "Missing"
         self.box(y, x, height, width, "Keyboard (LegionAura)", self.theme.GPU, status)
@@ -814,7 +817,7 @@ class Dashboard(FanPanel):
             chosen = zi == self.kb_zone
             zx = ix + zi * max(12, iw // 4)
             border = "▶" if chosen else " "
-            self.put(y + 5, zx, f"{border}Z{zi + 1}", self.theme.GPU if chosen else self.theme.TEXT, bold=chosen)
+            self.put(y + 5, zx, f"[Z{zi + 1}]" if chosen else f" Z{zi + 1} ", self.theme.GPU if chosen else self.theme.TEXT, bold=chosen)
             if self.theme.enabled:
                 self.put(y + 6, zx, "████", pair, True)
             self.put(y + 7, zx, f"#{hexcolor}", self.theme.TEXT, dim=not chosen)
@@ -840,14 +843,13 @@ class Dashboard(FanPanel):
 
         tip_y = min(y + height - 3, cy + 5)
         self.put(tip_y, ix, fit_parts(["Hardware shows the true color.", "UI uses your terminal theme only."], iw, " "), self.theme.TEXT, dim=True)
-        self.put(tip_y + 1, ix, f"config {kb.config}"[:iw], self.theme.TEXT, dim=True)
 
     HELP_GLOBAL = (
         "Tab       next page   Shift+Tab  previous page",
         "Esc       back one level, close a box, clear a row",
         "s         authenticate sudo (Power, Fans, Keyboard)",
         "?         this help   q  quit",
-        "LOCAL, ROOT or API at the top right: running as you, as root, or against the daemon",
+        "Top right: LOCAL, ROOT or API (how loqctl runs)",
     )
     HELP_PAGES = {
         "overview": (
@@ -877,7 +879,7 @@ class Dashboard(FanPanel):
             "1-4       select a zone",
             "↑↓        pick H, S or V (past the edge: change page)",
             "←→        nudge it   H L  fine steps",
-            "Enter     apply   Space  live apply",
+            "Enter     apply   Space  toggle live apply",
             "e b w     effect, brightness, wave direction",
             "c         copy this zone's color to all zones",
         ),
@@ -891,14 +893,22 @@ class Dashboard(FanPanel):
             return "install legionaura"
         return ""
 
+    MISSING_TEXT = {"fans": "The legion_laptop module is not loaded.", "keyboard": "LegionAura is not installed."}
+
+    def no_data(self, state):
+        "True when nothing can be read or edited: the backend failed, or no sensor or firmware data has arrived."
+        if state.get("error"):
+            return True
+        return self.panel in ("overview", "main") and not state.get("mode") and not (state.get("metrics") or {}).get("timestamp")
+
     def needs_unlock(self):
-        return (self.sudo_expired and self.panel in ("main", "fans")
+        return (self.sudo_expired and self.panel in ("main", "fans") and not self.page_missing()
                 and not self.backend.remote and os.geteuid() != 0)
 
     def footer_hint(self, width, state):
         missing = self.page_missing()
-        if missing:
-            entries = [missing, "Tab page", "Esc back"]
+        if missing or self.no_data(state):
+            entries = ["Tab page"]
         elif self.panel in self.HINTS_READONLY and self.locked(state):
             entries = list(self.HINTS_READONLY[self.panel])
         else:
@@ -914,7 +924,9 @@ class Dashboard(FanPanel):
 
     def help_lines(self):
         missing = self.page_missing()
-        page = (f"This page needs: {missing}.",) if missing else self.HELP_PAGES.get(self.panel, self.HELP_PAGES["main"])
+        page = self.HELP_PAGES.get(self.panel, self.HELP_PAGES["main"])
+        if missing:
+            page = (self.MISSING_TEXT[self.panel].replace("is not loaded", "is needed").replace("is not installed", "is needed"), *page)
         return (*self.HELP_GLOBAL, "", *page)
 
     def draw_help(self):
@@ -925,8 +937,11 @@ class Dashboard(FanPanel):
         hint = "? or Esc to close"
         title = f"Help: {self.SECTION_LABELS.get(self.panel, 'Power')}"
         self.box(by, bx, bh, bw, title if bw >= len(title) + len(hint) + 10 else "", self.theme.ACCENT, right=hint)
-        for i, line in enumerate(self.help_lines()[: bh - 2]):
-            self.put(by + 1 + i, bx + 2, line[: bw - 4], self.theme.TEXT)
+        wrapped = []
+        for line in self.help_lines():
+            wrapped += textwrap.wrap(line, bw - 4, subsequent_indent=" " * 10, drop_whitespace=False) or [""]
+        for i, line in enumerate(wrapped[: bh - 2]):
+            self.put(by + 1 + i, bx + 2, line.rstrip(), self.theme.TEXT)
 
     def draw_results(self):
         h, w = self.s.getmaxyx()

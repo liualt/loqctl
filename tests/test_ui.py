@@ -973,19 +973,27 @@ class UiTests(helpers.SysfsCase):
             for panel in ("overview", "fans", "keyboard"):
                 self.assertNotIn("Ready", self.draw_rows(h, w, panel, {})[h - 2], (h, w, panel))
             locked = {"mode": "balanced"}
-            for panel in ("main", "fans"):
-                rows = self.draw_rows(h, w, panel, locked, expired=True)
-                self.assertIn("Read-only. Press s to unlock.", rows[h - 2], (h, w, panel))
-                self.assertIn("s unlock", rows[h - 1], (h, w, panel))
+            rows = self.draw_rows(h, w, "main", locked, expired=True)
+            self.assertIn("Read-only. Press s to unlock.", rows[h - 2], (h, w))
+            self.assertIn("s unlock", rows[h - 1], (h, w))
+            rows = self.draw_rows(h, w, "fans", locked, expired=True)  # no curve: nothing to unlock
+            self.assertIn("legion_laptop module is not loaded", rows[h - 2], (h, w))
+            self.assertNotIn("unlock", rows[h - 1], (h, w))
             rows = self.draw_rows(h, w, "main", {**locked, "stale": True}, expired=True)
             self.assertEqual(rows[h - 2].strip(), "Firmware values are stale. Wait for the next refresh.")
             rows = self.draw_rows(h, w, "main", {"error": "Backend down"})
-            self.assertIn("Backend down; fix that and restart loqctl.", rows[h - 2])
+            self.assertIn("Backend down. Run loqctl doctor for details.", rows[h - 2])
+            self.assertEqual(rows[h - 1].strip(), "? help  Tab page  q quit")  # no dead keys while the backend is down
+
+    def test_power_page_survives_an_empty_state(self):
+        for h, w in ((20, 72), (24, 80)):
+            rows = self.draw_rows(h, w, "main", {"attributes": None, "mode": None})
+            self.assertIn("Mode unreadable", "".join(rows))
 
     def test_footer_lists_only_working_keys(self):
         for h, w in ((20, 72), (24, 80)):
             foot = self.draw_rows(h, w, "fans", {"mode": "balanced"})[h - 1]
-            self.assertIn("needs legion_laptop", foot)
+            self.assertEqual(foot.strip(), "? help  Tab page  q quit")
             self.assertNotIn("Enter apply", foot)
             foot = self.draw_rows(h, w, "main", {"mode": "balanced"})[h - 1]
             self.assertIn("←→ mode", foot)
