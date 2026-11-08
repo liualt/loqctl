@@ -645,6 +645,32 @@ class FanCurveSurfaceTests(FanPanelFixture):
         self.assertIn(f"Step {count} of {count}", "".join(cells.values()))
         self.assertEqual(sum(c in "●◉" for c in cells.values()), count)
 
+    def test_fans_layout_uses_the_space_it_has(self):
+        dash = self.dash()
+        self.keys(dash, {"mode": "custom"}, "f")
+        dash.fan_take()
+        points = dash.fan_target()
+        points[1] = dict(points[1], fan2=points[1]["fan1"] + 40)  # the fans differ
+        dash.fan_edit = points
+        cells = {}
+        dash.put = lambda y, x, text, *a, **k: cells.update({(y, x + i): c for i, c in enumerate(str(text))})
+
+        def rows(height, width):
+            cells.clear()
+            dash.draw_fans({"mode": "custom"}, {}, 1, 0, height, width)
+            return ["".join(cells.get((r, c), " ") for c in range(width)).rstrip() for r in range(height + 1)]
+
+        small = rows(21, 62)  # the Fans box at 80x24
+        self.assertIn("Chart: fan 1", small[4])
+        self.assertTrue(small[5].lstrip().startswith("100%"))  # the legend sits right above the chart, no blank row
+        self.assertFalse(any(not r for r in small[2:19]))
+        tall = rows(47, 62)
+        self.assertEqual(sum("┤" in r for r in tall), 11)  # a label every 10%
+        self.assertEqual(sum("│" in r or "┤" in r for r in tall), 21)  # the chart stops growing
+        self.assertTrue(any(r.startswith("    Step   CPU") for r in tall))  # the step table fills the rest
+        wide = rows(40, 182)
+        self.assertLessEqual(max(r.rindex("┆") for r in wide if "┆" in r), 2 + 100)  # the chart width is capped
+
     def test_unavailable_or_empty_curve_lets_tab_leave_and_draws_without_error(self):
         state = {"mode": "custom", "model": "LOQ", "metrics": {"timestamp": time.time()}}
         for key in (9, m_ui.curses.KEY_BTAB):
