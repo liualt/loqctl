@@ -73,6 +73,7 @@ DESCRIBE = {
     "gpu_temp": "GPU temperature where it starts to throttle",
 }
 MODE_SHORT = {"low-power": "low", "balanced": "bal", "performance": "perf", "max-power": "max"}
+ROW_SHORT = {**MODE_SHORT, "balanced": "balanced"}  # the Power mode row has room for the one long name
 
 
 class Theme:
@@ -479,8 +480,13 @@ class Dashboard(FanPanel):
         else:
             choice = "  ".join(names)
             if len(choice) > width - 14:  # abbreviate so every mode, custom included, stays visible
-                names = [(f"[{MODE_SHORT.get(m, m)}]" if m == live else MODE_SHORT.get(m, m)) for m in modes]
-                choice = fit_parts(names, width - 14, " ")
+                for table in (ROW_SHORT, MODE_SHORT):
+                    names = [(f"[{table.get(m, m)}]" if m == live else table.get(m, m)) for m in modes]
+                    choice = "  ".join(names)
+                    if len(choice) <= width - 14:
+                        break
+                else:
+                    choice = fit_parts(names, width - 14, " ")
         chosen = self.selected == 0
         self.put(y + 1, x + 1, f"{'▶' if chosen else ' '} {'Mode':<7}{choice}"[: width - 3],
                  self.theme.WARN if staged_mode is not None else (self.theme.ACCENT if chosen else self.theme.TEXT),
@@ -535,6 +541,8 @@ class Dashboard(FanPanel):
             label, current, unit = item["label"], item.get("effective_value"), item["unit"]
             staged = self.pending.get(key)
             value = "N/A" if current is None else f"{current}{unit_sep(unit)}{unit}"
+            if current is None and self.needs_unlock():
+                value = "N/A (press s)"
             if self.locked(state):
                 line = f"{marker} {label:<{lw}} {value}"
                 self.put(yy, x + 1, line[: width - 3], self.theme.TEXT, bold=chosen, dim=True)
@@ -776,8 +784,11 @@ class Dashboard(FanPanel):
             left = room - len(lines) - 1
             more = more or left < 1 or len(found) > left
             if left >= 1:
-                lines.append((name, head, True))
-                lines += (found or [("  N/A", text, False)])[:left]
+                if found:
+                    lines.append((name, head, True))
+                    lines += found[:left]
+                else:
+                    lines.append((f"{name}: N/A", head, True))
         if more or len(lines) > room:
             lines = lines[:max(0, min(len(lines), room - 1))] + [("…", text, False)]
         for i, (line, color, bold) in enumerate(lines):

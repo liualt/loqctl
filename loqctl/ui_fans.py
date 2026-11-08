@@ -402,7 +402,7 @@ class FanPanel:
         row += 1
         graph_h = y + height - 3 - row - 2  # the axis and its caption sit under the graph
         if graph_h >= 4:
-            self.fan_graph(target, scale, row, ix, iw, graph_h)
+            self.fan_graph(target, scale, row, ix, min(iw, 72), graph_h)  # a wider chart only spreads the dots out
         self.fan_footer(state, target, scale, y + height - 3, ix, iw)
 
     def fan_step_line(self, target, scale, y, x, w):
@@ -448,8 +448,11 @@ class FanPanel:
             self.put(r, x, f"{value}%".rjust(label_w - 2), dim, dim=True)
             self.put(r, gx - 1, "┤", dim, dim=True)
         self.put(y + h, gx - 1, "└" + "─" * gw, dim, dim=True)
-        self.put(y + h + 1, gx, "cooler °C", dim, dim=True)
-        self.put(y + h + 1, gx + gw - len("hotter °C"), "hotter °C", dim, dim=True)
+        lo, hi = (target[0].get("cpu_up"), target[-1].get("cpu_up")) if target else (None, None)
+        cool = f"cooler {lo}°C" if lo is not None else "cooler °C"
+        hot = f"hotter {hi}°C" if hi is not None else "hotter °C"
+        self.put(y + h + 1, gx, cool, dim, dim=True)
+        self.put(y + h + 1, gx + gw - len(hot), hot, dim, dim=True)
         for i, c in enumerate(cols):
             chosen = i == self.fan_sel
             for r in range(h):
@@ -465,7 +468,7 @@ class FanPanel:
                     self.put(y + r, c, "▒" if r == top else "░", dim, dim=True)
         for c, percent, i in sorted(marks, key=lambda m: m[2] == self.fan_sel):  # selected dot on top
             chosen = i == self.fan_sel
-            self.put(y + row_of(percent), c, "●", self.theme.WARN if chosen else self.theme.ACCENT, chosen)
+            self.put(y + row_of(percent), c, "◉" if chosen else "●", self.theme.WARN if chosen else self.theme.ACCENT, chosen)
 
     def fan_footer(self, state, target, scale, y, x, w):
         lines = []

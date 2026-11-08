@@ -837,7 +837,7 @@ class UiTests(helpers.SysfsCase):
                     self.assertIn("Enter / Esc / m closes", joined)
                     self.assertTrue(text[h - 2].startswith(" Read-only"), (h, w))  # box stays off the status row
                 else:
-                    self.assertRegex(joined, r"Mode\s+low \[bal\] perf max custom")
+                    self.assertRegex(joined, r"Mode\s+low\s+\[balanced\]\s+perf\s+max\s+custom")
                     self.assertEqual(joined.count("Select custom to edit"), 1, (h, w))
                     status = text[h - 2]
                     self.assertIn("Error" if case == "error" else "Live", text[1])
@@ -1107,9 +1107,11 @@ class UiTests(helpers.SysfsCase):
         points = [{"cpu_up": t, "fan1": 40 + i} for i, t in enumerate((88, 92, 92, 99, 100))]
         dash.fan_graph(points, Scale("rpm", 10000), 0, 0, 60, 8)
         self.assertIn("100%", calls)
-        self.assertEqual(calls.count("●"), 5)
-        self.assertIn("cooler °C", calls)  # axis words only; the step line carries the temperature
-        self.assertFalse(any(re.search(r"\d\s*°C|RPM", c) for c in calls))
+        self.assertEqual(calls.count("●") + calls.count("◉"), 5)
+        self.assertEqual(calls.count("◉"), 1)  # the selected step has its own glyph
+        self.assertIn("cooler 88°C", calls)  # the axis ends name the first and last trigger temperature
+        self.assertIn("hotter 100°C", calls)
+        self.assertFalse(any(re.search(r"\d\s*°C|RPM", c) for c in calls if not c.startswith(("cooler", "hotter"))))
 
     def test_arrows_leave_power_and_keyboard_at_the_edges(self):
         dash = self.dash()
