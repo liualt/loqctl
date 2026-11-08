@@ -256,6 +256,7 @@ class UiTests(Sim):
         dash.theme = m_ui.Theme(False)
         dash.history = {k: m_ui.collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
         dash.pending, dash.fields, dash.invalid, dash.selected = {}, {}, set(), 1
+        dash.sudo_expired = False
         dash.s = Mock()
         dash.s.getmaxyx.return_value = (h, w)
         dash.box = Mock()
@@ -272,7 +273,7 @@ class UiTests(Sim):
         dash = self.dash()
         dash.draw_controls(m_hardware.Hardware(self.root).capabilities(), 0, 0, 20, 70)
         text = self.text(dash)
-        self.assertIn("CPU sustained / PL1    60 W", text)
+        self.assertRegex(text, r"CPU sustained / PL1 +60 W")
         self.assertIn("custom default 60 · balanced limit from firmware table", text)
 
     def test_stock_row_without_table_is_na(self):
@@ -284,7 +285,7 @@ class UiTests(Sim):
         state["mode_limits_error"] = "needs root"
         dash.draw_controls(state, 0, 0, 20, 70)
         text = self.text(dash)
-        self.assertIn("CPU sustained / PL1    N/A", text)
+        self.assertRegex(text, r"CPU sustained / PL1 +N/A")
         self.assertIn("Stock limits need root once per boot: press s", text)
 
     def test_limits_overlay(self):
@@ -309,7 +310,7 @@ class UiTests(Sim):
         dash = self.dash(42, 100)
         dash.view = "summary"
         marks = []
-        dash.chart_rows = lambda y, x, w, h, key, ceiling, color, markers=(): marks.append((key, [v for v, _ in markers]))
+        dash.chart_rows = lambda y, x, w, h, key, ceiling, color, markers=(), floor=0: marks.append((key, [v for v, _ in markers]))
         dash.history["cpu_w"].extend([20, 45])
         dash.history["gpu_w"].extend([30, 80])
         metrics = {"cpu": {"cores": {}}, "gpu": {"devices": [{"power_limit_w": 140}]}}
