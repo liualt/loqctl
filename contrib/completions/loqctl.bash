@@ -14,9 +14,10 @@ _loqctl() {
         return
     fi
     case $cmd in
-        "") COMPREPLY=($(compgen -W "tui status metrics capabilities limits fan mode set kb doctor serve --socket --version -h --help" -- "$cur")) ;;
+        "") COMPREPLY=($(compgen -W "tui status metrics capabilities limits fan mode set toggle kb doctor serve --socket --version -h --help" -- "$cur")) ;;
         metrics) COMPREPLY=($(compgen -W "--watch -h" -- "$cur")) ;;
         serve) COMPREPLY=($(compgen -W "--uid -h" -- "$cur")) ;;
+        toggle) [[ $COMP_CWORD -eq $((i + 1)) ]] && COMPREPLY=($(compgen -W "fn_lock camera winkey logo_light port_light" -- "$cur")) ;;
         mode)
             local modes="low-power balanced performance max-power custom" f src=""
             # Gamezone's class device first, then any other, then the legacy file (it lists "custom", which the kernel rejects).
