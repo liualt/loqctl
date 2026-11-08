@@ -729,6 +729,9 @@ class UiTests(helpers.SysfsCase):
 
     def test_tab_leaves_every_page_and_draws_each_at_small_sizes(self):
         state = {"metrics": {}, "attributes": {}, "modes": ["custom"], "mode": "custom"}
+        point = dict(cpu_up=40, cpu_down=0, gpu_up=40, gpu_down=0, ic_up=40, ic_down=0, accel=1, decel=1)
+        loaded = {"available": True, "mode": "custom",
+                  "points": [dict(point, fan1=f, fan2=f) for f in (0, 80, 180)]}
         for h, w in ((20, 72), (24, 80)):
             for key in (9, curses.KEY_BTAB):
                 puts = []
@@ -743,12 +746,14 @@ class UiTests(helpers.SysfsCase):
                 dash.panel, dash.paused = "overview", True
                 seen = []
                 for _ in range(4):
-                    dash.fan, dash.fan_result, dash.fan_loading = {"available": False, "reason": "none"}, None, False
+                    dash.fan, dash.fan_result, dash.fan_loading = loaded, None, False
+                    dash.fan_sel = 1
                     dash.draw(state)
                     self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w, dash.panel))
                     seen.append(dash.panel)
                     dash.handle(key, state)
                     self.assertNotEqual(dash.panel, seen[-1], (h, w, key, seen))
+                    self.assertEqual(dash.fan_sel, 1, (h, w, key, seen))
                 self.assertEqual(sorted(seen), ["fans", "keyboard", "main", "overview"], (h, w, key))
 
     def test_esc_returns_to_overview_when_power_is_hidden(self):
