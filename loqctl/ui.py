@@ -403,6 +403,10 @@ class Dashboard(FanPanel):
             self.view = "summary" if self.view == "details" else "details"
 
     def draw_overview(self, state, metrics, y, x, height, width):
+        if self.view != "details" and not metrics and not state.get("mode"):
+            self.box(y, x, height, width, "Overview", self.theme.INFO)
+            self.put(y + 2, x + 2, "No sensor data yet. Run loqctl doctor."[: width - 4], self.theme.WARN)
+            return
         if self.view == "details":
             self.draw_details(metrics, y, x, height, width)
         else:
@@ -414,8 +418,7 @@ class Dashboard(FanPanel):
     def draw_controls(self, state, y, x, height, width):
         pending_n = len(self.pending)
         stamp = (state.get("metrics") or {}).get("timestamp")
-        fresh = "No data" if stamp is None and not state.get("mode") else "Stale" if (
-            state.get("stale") or stamp is not None and time.time() - stamp > 5) else "Live"
+        fresh = "No data" if stamp is None and not state.get("mode") else "Stale" if state.get("stale") else "Live"
         right = f"{pending_n} staged" if pending_n else fresh
         if self.invalid:
             right = (f"{pending_n} staged" if pending_n else "") + f"{', ' if pending_n else ''}{len(self.invalid)} invalid"
@@ -507,8 +510,8 @@ class Dashboard(FanPanel):
             if any(attrs[k].get("effective_value") is None for k in shown if k in attrs):
                 reason = state.get("mode_limits_error")
                 note = limit_note(state, {k: attrs[k] for k in shown if k in attrs}) or (
-                    reason if reason and not reason.startswith("needs root") else
-                    "Stock limits need root once per boot: press s")
+                    "Stock limits need root once per boot: press s" if reason and reason.startswith("needs root")
+                    and os.geteuid() != 0 else reason or "N/A")
                 self.put(list_top + len(window), x + 2, note[: width - 4], self.theme.WARN)
 
         # Detail footer inside the box
@@ -533,7 +536,7 @@ class Dashboard(FanPanel):
                 note = fit_parts([f"custom default {fmt(item['default_value'])}", f"{mode} limit from firmware table"],
                                  width - 4)
             else:
-                note = f"{key}: no value"
+                note = f"{FIELDS[key][0]}: {state.get('mode_limits_error') or 'no value'}"
             self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN if item.get("effective_value") is not None else self.theme.TEXT)
             self.put(detail_y + 2, x + 2, (lambda long: long if len(long) <= width - 4 else "Select custom on the mode row to edit")(
                          f"Locked in {mode} mode; select custom to edit"),
@@ -556,8 +559,9 @@ class Dashboard(FanPanel):
     def telemetry_box(self, y, x, height, width, name, color, parts, key, ceiling, chart_color, marks,
                       note="", alert=None):
         """One box: the numbers go in the title, one power graph fills the inside, an optional note takes the last row."""
-        self.box(y, x, height, width, name, color)
-        room = width - len(name) - 8
+        scale = f"0-{ceiling:.0f} W" if key else ""
+        self.box(y, x, height, width, name, color, scale)
+        room = width - len(name) - 8 - (len(scale) + 4 if scale else 0)
         text = fit_parts(parts, room) if room > 0 and len(parts[0]) <= room else ""
         if text:
             self.put(y, x + len(name) + 4, f"{text} ", alert if alert is not None else color, alert is not None)
@@ -581,24 +585,21 @@ class Dashboard(FanPanel):
             return (attrs.get(key) or {}).get("effective_value")
 
         # Split right column into cpu / gpu / sys with flexible heights.
-        cpu_h = max(7, height * 38 // 100)
-        gpu_h = max(6, height * 32 // 100)
-        if cpu_h + gpu_h > height - 6:
-            gpu_h = max(6, height - cpu_h - 6)
-        sys_h = height - cpu_h - gpu_h
-        if sys_h < 5:
-            sys_h = 5
-            gpu_h = max(5, height - cpu_h - sys_h)
+        # System is sized to its content: bar, power, fans, then load and uptime when there is room.
+        sys_h = 6 if height >= 18 else 5
+        cpu_h = max(7, (height - sys_h) * 55 // 100)
+        gpu_h = max(5, height - sys_h - cpu_h)
 
         # CPU
         throttled = bool((throttle.get("cpu") or {}).get("active"))
         # Short boxes have no spare row for "Waiting"; a real reason replaces the graph's bottom row.
         source = cpu.get("power_source") or ""
-        reason = source if cpu.get("power_w") is None and not source.startswith("Waiting") else ""
+        sampling = cpu.get("power_w") is None and source.startswith("Waiting")
+        reason = source if cpu.get("power_w") is None and not sampling else ""
         pl1, pl2 = limit("ppt_pl1_spl"), limit("ppt_pl2_sppt")
         self.telemetry_box(
             y, x, cpu_h, width, "CPU", self.theme.OK,
-            (["THROTTLE"] if throttled else []) + [fmt(cpu.get("temperature_c"), "°C"), fmt(cpu.get("power_w"), "W", 1),
+            (["THROTTLE"] if throttled else []) + [fmt(cpu.get("temperature_c"), "°C"), "…" if sampling else fmt(cpu.get("power_w"), "W", 1),
                                                  fmt(None if cpu.get("clock_mhz") is None else cpu["clock_mhz"] / 1000, "GHz", 1)],
             "cpu_w", max(pl2 or 0, max((v for v in self.history["cpu_w"] if v is not None), default=0), 1), self.theme.WARN,
             [(v, c) for v, c in ((pl1, self.theme.WARN), (pl2, self.theme.BAD)) if v is not None],
@@ -638,16 +639,16 @@ class Dashboard(FanPanel):
         bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}".strip()
         health = battery.get("health_percent")
         left = battery_left(battery)
-        parts = ([f"{power}  {bat}"] + ([left] if left else []) + [f"limit {battery.get('charge_limit') or 'N/A'}"]
+        parts = ([f"{power}  {bat}"] + [f"limit {battery.get('charge_limit') or 'N/A'}"] + ([left] if left else [])
                  + ([f"health {health:.0f}%"] if health is not None else [])
                  + ([f"charge {battery['charge_type'].replace('_', ' ')}"] if battery.get("charge_type") else [])
                  + ([f"rapid {battery['rapid_charge']}"] if battery.get("rapid_charge") else []))
         self.put(sy + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
-        if sys_h >= 6:
+        if sys_h >= 5:
             fans = metrics.get("fans") or []
             fan_txt = "  ".join(f"{f['name']} {fmt(f['rpm'], 'RPM')}" for f in fans) if fans else "Fans N/A"
             self.put(sy + 3, ix, fan_txt[:iw], self.theme.TEXT, dim=True)
-        if sys_h >= 7:
+        if sys_h >= 6:
             loads = metrics.get("load") or []
             uptime = metrics.get("uptime_s")
             up = f"  up {int(uptime // 3600)}h{int(uptime % 3600 // 60):02d}m" if uptime is not None else ""

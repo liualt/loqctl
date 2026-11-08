@@ -1148,6 +1148,29 @@ class ViewTests(unittest.TestCase):
         dash.draw_telemetry({}, {"cpu": {"power_w": None, "power_source": "Waiting for RAPL samples"}}, 0, 0, 22, 80)
         self.assertNotIn("Waiting", "\n".join(t for _, _, t in calls))
 
+    def test_overview_keeps_fans_and_explains_no_data_at_small_sizes(self):
+        metrics = {"cpu": {"power_w": None, "power_source": "Waiting for RAPL samples"}, "ac_online": True,
+                   "fans": [{"name": "fan1", "rpm": 2100}], "load": [0.5, 0.4, 0.3], "uptime_s": 4000,
+                   "battery": [{"percent": 80, "status": "Charging", "charge_limit": "80%"}]}
+        for h, w in ((20, 72), (24, 80)):
+            for data, wanted in ((metrics, ("fan1 2100 RPM", "limit 80%", "0-")), ({}, ("No sensor data yet. Run loqctl doctor.",))):
+                grid = [[" "] * w for _ in range(h)]
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, text, n, attr=0: grid[y].__setitem__(
+                    slice(x, x + len(text[:n])), text[:n])
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+                dash.panel, dash.view = "overview", "summary"
+                dash.draw({"metrics": data, "attributes": {}, "modes": []})
+                text = "\n".join("".join(r) for r in grid)
+                for needle in wanted:
+                    self.assertIn(needle, text, (h, w))
+                if data:
+                    self.assertNotIn("N/A W", text)
+                    self.assertEqual(text.count("load 0.50"), h >= 24)
+
     def test_details_view_draws_na(self):
         dash, calls = self.stub_dash()
         dash.draw_details({"temperatures": [{"group": "cpu", "label": "Core 0", "c": None}],
