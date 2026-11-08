@@ -289,6 +289,13 @@ class UiTests(helpers.SysfsCase):
         missing = dash.help_lines({"mode": "custom"})
         self.assertEqual(missing[-1], "Fan curves need the legion_laptop module.")
         self.assertFalse(any(line.startswith(("←→", "↑↓", "Enter")) for line in missing))
+        dash.panel = "overview"
+        self.assertFalse(any(line.startswith("s ") for line in dash.help_lines({"mode": "custom"})))
+        dash.panel = "main"
+        with patch.object(m_ui.os, "geteuid", return_value=1000):
+            self.assertTrue(any(line.startswith("s ") for line in dash.help_lines({"mode": "custom"})))
+        dash.backend.remote = True
+        self.assertFalse(any(line.startswith("s ") for line in dash.help_lines({"mode": "custom"})))
 
     def test_invalid_value_says_the_allowed_range(self):
         self.add_attr("ppt_pl2_sppt", 60, 50, 100, 5, 60)
@@ -1154,6 +1161,32 @@ class UiTests(helpers.SysfsCase):
                             "Hardware shows the true color."))
         self.assertIn("zone 1  HSV picker", rows)
         self.assertFalse(any("swatch" in r for r in rows))
+        top = next(i for i, r in enumerate(rows) if r.startswith("brightness"))
+        self.assertTrue(rows[top + 1].startswith("zones"))  # no blank rows between the groups on a short screen
+        self.assertTrue(rows[rows.index("zone 1  HSV picker") - 1].startswith("#"))
+
+    def test_power_error_marks_last_known_values_and_footer_offers_s(self):
+        for h, w in ((20, 72), (24, 80)):
+            puts = []
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append(text[:n])
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            dash.panel = "main"
+            self.add_attr("ppt_pl1_spl", 55, 5, 80, 1, 55)
+            state = {**self.hw.capabilities(), "mode": "balanced", "mode_limits_error": "needs root: stock limits"}
+            with patch.object(m_ui.os, "geteuid", return_value=1000):
+                dash.draw(state)
+                self.assertTrue(any("s unlock" in t for t in puts), (h, w))
+                puts.clear()
+                dash.draw({**state, "error": "API connection failed: socket missing"})
+            self.assertTrue(any("last known" in t for t in puts), (h, w))
+
+    def test_backend_error_names_the_cause(self):
+        self.assertIn("socket missing", m_backend.Backend.cause(FileNotFoundError(2, "No such file")))
+        self.assertIn("permission denied", m_backend.Backend.cause(PermissionError(13, "denied")))
 
     def test_overview_arrows_switch_section_but_never_edit(self):
         dash = self.dash()
