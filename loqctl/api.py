@@ -105,6 +105,8 @@ def _api_classes():
                     self.reply(200, self.server.hardware.capabilities())
                 elif self.path == "/v1/fancurve":
                     self.reply(200, self.server.hardware.fancurve())
+                elif self.path == "/v1/toggles":
+                    self.reply(200, self.server.hardware.toggles())
                 else:
                     self.reply(404, {"error": "Unknown endpoint"})
 
@@ -120,6 +122,8 @@ def _api_classes():
                         value = self.server.hardware.set_mode(body["mode"])
                     elif self.path.startswith("/v1/attributes/") and set(body) == {"value"}:
                         value = self.server.hardware.set_value(self.path[len("/v1/attributes/"):], body["value"])
+                    elif self.path.startswith("/v1/toggles/") and set(body) == {"value"}:
+                        value = self.server.hardware.set_toggle(self.path[len("/v1/toggles/"):], body["value"])
                     elif self.path == "/v1/fancurve" and set(body) == {"points"}:
                         value = self.server.hardware.write_fancurve(body["points"])
                     else:

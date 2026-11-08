@@ -33,6 +33,13 @@ class ApiTests(helpers.SysfsCase):
                 with self.assertRaises(m_common.ControlError):
                     m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", payload)
             self.assertEqual((self.attr / "current_value").read_text().strip(), "70")
+            led = self.root / "devices/platform/legion/winkey"
+            led.parent.mkdir(parents=True)
+            led.write_text("0")
+            self.assertEqual(m_api.request(path, "GET", "/v1/toggles")[0]["name"], "winkey")
+            self.assertTrue(m_api.request(path, "POST", "/v1/toggles/winkey", {"value": 1})["verified"])
+            with self.assertRaises(m_common.ControlError):
+                m_api.request(path, "POST", "/v1/toggles/winkey", {"value": 2})
             m_api.request(path, "POST", "/v1/mode", {"mode": "balanced"})
             with self.assertRaises(m_common.ControlError):
                 m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", {"value": 60})

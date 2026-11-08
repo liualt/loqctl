@@ -14,7 +14,8 @@ _loqctl() {
         return
     fi
     case $cmd in
-        "") COMPREPLY=($(compgen -W "tui status metrics capabilities limits fan mode set profile kb doctor serve --socket --version -h --help" -- "$cur")) ;;
+        toggle) [[ $COMP_CWORD -eq $((i + 1)) ]] && COMPREPLY=($(compgen -W "fn_lock camera winkey logo_light port_light" -- "$cur")) ;;
+        "") COMPREPLY=($(compgen -W "tui status metrics capabilities limits fan mode set toggle profile kb doctor serve --socket --version -h --help" -- "$cur")) ;;
         metrics) COMPREPLY=($(compgen -W "--watch -h" -- "$cur")) ;;
         serve) COMPREPLY=($(compgen -W "--uid -h" -- "$cur")) ;;
         profile) [[ $COMP_CWORD -eq $((i + 1)) ]] && COMPREPLY=($(compgen -W "list save apply" -- "$cur")) ;;
