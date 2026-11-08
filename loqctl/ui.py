@@ -1251,10 +1251,10 @@ class Dashboard(FanPanel):
         else:
             self.invalid.discard(key)
 
-    def sudo_call(self, args):
+    def sudo_call(self, args, timeout=30):
         """Run an internal subcommand through `sudo -n`; flags the expiry banner when it lapsed."""
         try:
-            return sudo_run(args)
+            return sudo_run(args, timeout)
         except SudoExpired as exc:
             self.sudo_expired = True
             raise ControlError("sudo credentials expired. Press s to re-authenticate; edits stay staged.") from exc

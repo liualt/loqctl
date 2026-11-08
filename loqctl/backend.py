@@ -9,7 +9,7 @@ import time
 
 from .api import http_client, request, socket_alive
 from .capdata import fetch_via_sudo, load_cache, save_cache
-from .common import ControlError, socket_path
+from .common import FANCURVE_TIMEOUT, ControlError, socket_path
 from .hardware import Hardware
 from .sensors import Sampler, Sensors
 
@@ -96,7 +96,7 @@ class Backend:
 
     def write_fancurve(self, points):
         if self.remote:
-            return request(self.path, "POST", "/v1/fancurve", {"points": points})
+            return request(self.path, "POST", "/v1/fancurve", {"points": points}, timeout=FANCURVE_TIMEOUT)
         return self.hardware.write_fancurve(points)
 
     def close(self):

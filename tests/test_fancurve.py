@@ -86,6 +86,9 @@ class FanCurveTests(unittest.TestCase):
         self.root = helpers.make_root(self)
         self.hwmon = make_hwmon(self.root)
         self.pct = m_fan.Scale("percent")
+        patcher = patch.object(m_fan, "READBACK_WAIT", 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def fields(self, errors):
         return {(i, f) for i, f, _ in errors}
@@ -139,6 +142,10 @@ class FanCurveTests(unittest.TestCase):
         low = edit(NECN_STOCK, {(9, "fan1"): RPM.pwm(2900), (9, "fan2"): RPM.pwm(3000)})
         floors = [(i, f) for i, f, m in m_fan.validate_curve(low, RPM) if "needs at least 3000 RPM" in m]
         self.assertEqual(floors, [(9, "fan1")])
+        # A speed already loaded from firmware skips the floor; a changed one does not.
+        self.assertNotIn("needs at least", " ".join(m for *_, m in m_fan.validate_curve(low, RPM, low)))
+        moved = edit(low, {(9, "fan1"): RPM.pwm(2800)})
+        self.assertIn((9, "fan1"), self.fields(m_fan.validate_curve(moved, RPM, low)))
 
     def test_scale_matches_module_rounding(self):
         # The module stores ceil(pwm * max_rpm / 25500) and reads back floor(byte * 25500 / max_rpm).
@@ -225,6 +232,21 @@ class FanCurveTests(unittest.TestCase):
         self.assertEqual(outside.read_text(), "1")
         with self.assertRaises(m_common.ControlError):
             m_fan._path(self.hwmon, "fan1_target", 1)
+
+    def test_stale_first_readback_is_read_again(self):
+        real = m_fan.read_curve
+        reads = []
+
+        def stale_once(hwmon):
+            reads.append(1)
+            curve = real(hwmon)
+            return copy.deepcopy(self.before) if len(reads) == 2 else curve
+
+        self.before = real(self.hwmon)
+        with patch.object(m_fan, "read_curve", stale_once):
+            results = m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 90}), self.pct)
+        self.assertEqual([r["status"] for r in results], ["APPLIED"])
+        self.assertEqual(len(reads), 3)  # the curve, the stale read, the good read
 
     def test_readback_verification_per_unit(self):
         with patch.object(m_fan, "_write_file"):

@@ -83,13 +83,19 @@ class SudoExpired(ControlError):
     pass
 
 
+FANCURVE_TIMEOUT = 90  # seconds for a fan-curve write, through sudo or the API
+
+
 def sudo_run(args, timeout=30):
     """Run `loqctl.py <args>` as root via `sudo -n`; returns stdout, raises ControlError."""
     command = ["sudo", "-n", "--", sys.executable, "-I", ENTRY, *args]
     try:
         result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        raise ControlError("sudo timed out.") from exc
+        # Only sudo is killed; the root child cannot be signalled from here and may still finish the
+        # write. Stopping it mid-write would be worse, so say what to trust instead.
+        raise ControlError(f"sudo timed out after {timeout} s. A write may still finish: check the values "
+                           "after the next refresh before retrying.") from exc
     stderr = (result.stderr or "").strip()
     if result.returncode:
         if "password is required" in stderr or "a terminal is required" in stderr:

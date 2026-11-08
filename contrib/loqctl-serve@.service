@@ -1,0 +1,17 @@
+# Example unit. Enable with: systemctl enable --now loqctl-serve@1000
+# The instance (%i) is the UID that may connect. Edit ExecStart to your install path.
+# This file and the program it runs must be owned by root and not writable by others.
+[Unit]
+Description=loqctl privileged server for UID %i
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/loqctl serve --uid %i
+Restart=on-failure
+RestartSec=5
+# serve creates and removes /run/loqctl-%i itself, so no RuntimeDirectory here.
+NoNewPrivileges=yes
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
