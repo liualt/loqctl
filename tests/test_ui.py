@@ -978,7 +978,7 @@ class UiTests(helpers.SysfsCase):
                 dash.handle(ord("s"), state)
             self.assertEqual(calls, [panel])
 
-    def test_fan_graph_axis_fits_the_curve_not_the_live_temperature(self):
+    def test_fan_graph_shows_percent_and_no_temperatures(self):
         from loqctl.fancurve import Scale
         dash = self.dash()
         dash.fan_sel = 0
@@ -986,11 +986,10 @@ class UiTests(helpers.SysfsCase):
         calls = []
         dash.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append(str(text))
         points = [{"cpu_up": t, "fan1": 40 + i} for i, t in enumerate((88, 92, 92, 99, 100))]
-        dash.fan_graph(points, Scale("rpm", 10000), 61, 0, 0, 60, 8)
-        self.assertNotIn("50°C", calls)
-        self.assertNotIn("60°C", calls)
-        self.assertIn("80°C", calls)
-        self.assertNotIn("▲", calls)  # 61 °C is off the axis, so no tick
+        dash.fan_graph(points, Scale("rpm", 10000), 0, 0, 60, 8)
+        self.assertIn("100%", calls)
+        self.assertEqual(calls.count("●"), 5)
+        self.assertFalse(any("°C" in c or "RPM" in c for c in calls))
 
     def test_arrows_leave_power_and_keyboard_at_the_edges(self):
         dash = self.dash()
