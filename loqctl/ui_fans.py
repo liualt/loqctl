@@ -405,21 +405,28 @@ class FanPanel:
         row += 1
         self.fan_step_line(target, scale, row, ix, iw)
         row += 1
-        bottom = y + height - 3  # the footer's two rows
+        lines = self.fan_footer_lines(state, target, scale, iw)
+        bottom = y + height - 1 - max(1, len(lines))  # the footer takes the rows its notes need, at least one
+        if any(self.fan_pct(scale, p.get("fan2")) != self.fan_pct(scale, p.get("fan1")) for p in target
+               if p.get("fan2") is not None):
+            self.put(row, ix, fit_parts(["Chart: fan 1", "fan 2 differs, see the step line"], iw), self.theme.TEXT, dim=True)
+            row += 1
         table_w = 36
-        if iw >= 90:  # wide: chart and table side by side
-            graph_w = iw - table_w - 3
-            self.fan_table(target, scale, row + 1, ix + graph_w + 3, table_w, bottom - row - 1)
+        wide = iw >= 90
+        graph_w = min(iw - table_w - 3, 100) if wide else iw  # a very wide box leaves the rest blank
+        if wide:  # chart and table side by side
+            self.fan_table(target, scale, row, ix + graph_w + 3, table_w, bottom - row)
+        if self.fan_details and not wide:
+            self.fan_table(target, scale, row, ix, min(iw, table_w + 10), bottom - row)
         else:
-            graph_w = iw
-        if self.fan_details and iw < 90:
-            self.fan_table(target, scale, row + 1, ix, min(iw, table_w + 10), bottom - row - 1)
-        else:
-            graph_h = bottom - row - 2  # the axis and its tick labels sit under the graph
+            graph_h = min(bottom - row - 2, 21)  # the axis and its tick labels sit under the graph
             if graph_h >= 4:
-                self.fan_graph(target, scale, row + 1 if graph_h >= 8 else row, ix, graph_w,
-                               graph_h - 1 if graph_h >= 8 else graph_h)
-        self.fan_footer(state, target, scale, bottom, ix, iw)
+                self.fan_graph(target, scale, row, ix, graph_w, graph_h)
+            below = bottom - (row + graph_h + 2)
+            if not wide and below >= len(target) + 1:  # a tall box has the step table under the chart
+                self.fan_table(target, scale, row + graph_h + 2, ix, min(iw, table_w + 10), below)
+        for k, (text, color) in enumerate(lines[-2:]):
+            self.put(bottom + k, ix, text[:iw], color)
 
     def fan_now_line(self, metrics, scale, w):
         "Live readings, labelled as such: the fans' speed now and the temperatures the curve follows."
@@ -506,7 +513,7 @@ class FanPanel:
 
         for r in range(h):
             self.put(y + r, gx - 1, "│", dim, dim=True)
-        step = next(s for s in (20, 25, 50, 100) if 100 // s <= max(1, h // 2))
+        step = next(s for s in (10, 20, 25, 50, 100) if 100 // s <= max(1, h // 2))
         for value in range(0, 101, step):
             r = y + row_of(value)
             self.put(r, x, f"{value}%".rjust(label_w - 2), dim, dim=True)
@@ -543,7 +550,7 @@ class FanPanel:
             chosen = i == self.fan_sel
             self.put(y + row_of(percent), c, "◉" if chosen else "●", self.theme.WARN if chosen else self.theme.ACCENT, chosen)
 
-    def fan_footer(self, state, target, scale, y, x, w):
+    def fan_footer_lines(self, state, target, scale, w):
         lines = []
         if self.fan_locked(state):
             mode = state.get("mode")
@@ -555,5 +562,4 @@ class FanPanel:
         errors = validate_curve(target, scale, self.fan_points())
         if self.fan_edit is not None and errors:
             lines.append((errors[0][2], self.theme.BAD))
-        for k, (text, color) in enumerate(lines[-2:]):
-            self.put(y + k, x, text[:w], color)
+        return lines
