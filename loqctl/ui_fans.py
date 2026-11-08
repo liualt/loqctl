@@ -242,7 +242,16 @@ class FanPanel:
         if stock is not None:
             reason = check_curve(self.fan_points(), stock, self.fan_scale())
             if reason:
-                self.notice = f"The recorded stock curve no longer fits this firmware, so nothing was written: {reason}"
+                # Still stop serve re-applying the custom curve; the firmware restores stock on the next mode
+                # change or power cycle.
+                try:
+                    clear_active()
+                    cleared = "serve will no longer re-apply your custom curve; the firmware restores the stock one on the next mode change or power cycle."
+                except OSError as exc:
+                    cleared = f"Clearing active.json also failed: {exc.strerror or exc}"
+                self.notice = f"The recorded stock curve fails a check, so it was not written ({reason}). {cleared}"
+                if marker:
+                    self.notice += " " + marker
                 return
         try:
             if stock is None:

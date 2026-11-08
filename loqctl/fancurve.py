@@ -282,11 +282,13 @@ def write_curve(hwmon, target, scale=None):
     if not current:
         raise ControlError("No fan curve files found.")
     merged = merge_curve(current, target)
-    # merge_curve keeps None for a file that exists but cannot be read; do not drop the value silently
+    # merge_curve keeps None for a file that is missing or cannot be read; do not drop the value silently
     for i, want in enumerate(target):
         for f in WRITABLE:
-            if want.get(f) is not None and current[i][f] is None and _path(hwmon, f, i + 1).exists():
-                raise ControlError(f"Cannot read point {i + 1} {LABELS[f]}, so it cannot be changed.")
+            if want.get(f) is not None and current[i][f] is None:
+                if _path(hwmon, f, i + 1).exists():
+                    raise ControlError(f"Cannot read point {i + 1} {LABELS[f]}, so it cannot be changed.")
+                raise ControlError(f"This model has no point {i + 1} {LABELS[f]} setting; leave it out of the curve.")
     errors = validate_curve(merged, scale)
     if errors:
         raise ControlError(errors[0][2] + (f" ({len(errors) - 1} more problems)" if len(errors) > 1 else ""))

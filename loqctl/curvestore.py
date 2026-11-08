@@ -182,12 +182,14 @@ def curve_options(mode, current, scale=None):
 class Reapplier:
     """Sampler hook for `serve`: re-write active.json when the firmware would have reset it."""
     RESUME_GAP = 10  # seconds that BOOTTIME gains on MONOTONIC across a suspend
+    RETRIES = 3  # later polls (5 s apart) that retry a failed re-apply, e.g. EBUSY just after resume
 
     def __init__(self, hardware, uid, log=None):
         self.hardware, self.uid = hardware, uid
         self.log = log or (lambda message: print(message, flush=True))
         self.mode = self.gap = None
         self.missing = False
+        self.retry = None  # (reason, tries left) after a failed write, while the mode stays custom
 
     def __call__(self, caps):
         mode = caps.get("mode")
@@ -195,27 +197,48 @@ class Reapplier:
         resumed = self.gap is not None and gap - self.gap >= self.RESUME_GAP
         entered = mode == "custom" and self.mode != "custom"
         self.mode, self.gap = mode, gap
-        if mode == "custom" and (entered or resumed):
+        if mode != "custom":
+            self.retry = None
+        elif entered or resumed:
+            self.retry = None
             self.apply("resume" if resumed and not entered else "custom mode")
+        elif self.retry:
+            reason, left = self.retry
+            self.retry = None
+            self.apply(reason, left)
 
-    def apply(self, reason):
+    def apply(self, reason, tries=RETRIES):
+        """Write active.json; after a failed write, try again on the next `tries` polls."""
+        if not self._write(reason):
+            if tries:
+                self.retry = (reason, tries - 1)
+                self.log(f"fancurve: will retry on the next poll ({tries} {'try' if tries == 1 else 'tries'} left)")
+            else:
+                self.log(f"fancurve: gave up re-applying after {reason}")
+
+    def _write(self, reason):
+        """False only when a field write failed (for example EBUSY just after resume), which may pass later."""
         try:
             path = active_path(self.uid)
             if not os.path.lexists(path):
                 if not self.missing:
                     self.log(f"fancurve: nothing to re-apply after {reason}: no ~/.config/loqctl/active.json")
                 self.missing = True
-                return
+                return True
             self.missing = False
             points = read_curve_file(path, self.uid)
+            # ControlError here means the file or curve was refused before any write: retrying cannot help
             results = self.hardware.write_fancurve(points)
-            failed = next((r for r in results if r["status"] != "APPLIED"), None)
-            if failed:
-                self.log(f"fancurve: re-apply after {reason} stopped: {failed.get('error') or failed['status']}")
-            else:
-                self.log(f"fancurve: re-applied {path.name} after {reason} ({len(results)} changes)")
         except ControlError as exc:
             self.log(f"fancurve: skipped re-apply after {reason}: {exc}")
+            return True
         except Exception as exc:  # str(exc) can carry the user's paths; strerror and the type name do not
             detail = exc.strerror if isinstance(exc, OSError) and exc.strerror else type(exc).__name__
             self.log(f"fancurve: skipped re-apply after {reason}: {detail}")
+            return True
+        failed = next((r for r in results if r["status"] != "APPLIED"), None)
+        if failed:
+            self.log(f"fancurve: re-apply after {reason} stopped: {failed.get('error') or failed['status']}")
+            return False
+        self.log(f"fancurve: re-applied {path.name} after {reason} ({len(results)} changes)")
+        return True

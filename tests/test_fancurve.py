@@ -214,6 +214,13 @@ class FanCurveTests(unittest.TestCase):
                 m_fan.write_curve(self.hwmon, edit(CURVE, {(0, "cpu_up"): 50}), self.pct)
         write.assert_not_called()
 
+    def test_value_for_a_field_with_no_file_is_refused(self):
+        (self.hwmon / "pwm3_auto_point2_temp").unlink()
+        with patch.object(m_fan, "_write_file") as write:
+            with self.assertRaisesRegex(m_common.ControlError, "no point 2 .* setting"):
+                m_fan.write_curve(self.hwmon, edit(CURVE, {(1, "fan1"): 90}), self.pct)
+        write.assert_not_called()
+
     def test_symlink_and_foreign_path_rejected(self):
         outside = self.root / "outside"
         outside.write_text("1")
@@ -1109,6 +1116,33 @@ class ReapplyTests(helpers.SysfsCase):
         self.tick("custom")
         self.assertIn("skipped", self.log[-1])
 
+    def test_failed_write_retries_on_later_polls_while_custom(self):
+        real = self.hw.write_fancurve
+        busy = [{"status": "FAILED", "error": "Device or resource busy"}]
+        with patch.object(self.hw, "write_fancurve", side_effect=[busy, busy, real(m_store.read_curve_file(self.active))]) as write:
+            self.tick("custom")
+            self.assertIn("3 tries left", self.log[-1])
+            self.tick("custom")
+            self.assertIn("2 tries left", self.log[-1])
+            self.tick("custom")
+        self.assertIn("re-applied active.json", self.log[-1])
+        self.assertEqual(write.call_count, 3)
+        self.tick("custom")
+        self.assertEqual(write.call_count, 3)
+        with patch.object(self.hw, "write_fancurve", return_value=busy) as write:
+            self.tick("balanced")
+            self.tick("custom")
+            for _ in range(6):
+                self.tick("custom")
+        self.assertEqual(write.call_count, 1 + m_store.Reapplier.RETRIES)
+        self.assertEqual(self.log[-1], "fancurve: gave up re-applying after custom mode")
+        with patch.object(self.hw, "write_fancurve", return_value=busy) as write:
+            self.tick("balanced")
+            self.tick("custom")
+            self.tick("balanced")  # leaving custom drops the pending retry
+            self.tick("balanced")
+        self.assertEqual(write.call_count, 1)
+
     def test_xdg_elsewhere_still_reapplies(self):
         self.assertFalse((self.config / "loqctl/active.json").exists())
         self.tick("custom")
@@ -1353,8 +1387,10 @@ class FanPanelPresetTests(FanPanelFixture):
         with patch.object(self.hw, "write_fancurve") as write:
             self.keys(dash, state, "R")
             write.assert_not_called()
-            self.assertIn("no longer fits", dash.notice)
-            self.assertTrue(self.active.exists())
+            self.assertIn("was not written", dash.notice)
+            self.assertIn("no longer re-apply", dash.notice)
+            self.assertFalse(self.active.exists())
+            self.active.write_text("{}")
             with patch.object(os, "geteuid", return_value=0):
                 self.keys(dash, state, "R")
             write.assert_not_called()
