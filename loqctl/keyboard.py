@@ -13,6 +13,9 @@ import time
 from .colors import hex_to_rgb, rgb_to_hex
 from .common import LEGIONAURA, LEGIONAURA_CONFIG, ControlError, clamp
 
+ZONE_EFFECTS = ("static", "breath")  # the effects that use the four zone colors
+
+
 class Keyboard:
     """Lenovo 4-zone RGB via LegionAura. Config lives in ~/.config/legionaura/."""
 
@@ -77,12 +80,17 @@ class Keyboard:
         if data.get("waveDir") in ("ltr", "rtl"):
             found["wave_dir"] = data["waveDir"]
         zones = data.get("zones")
+        # LegionAura saves 000000 zones for effects that ignore colors (wave, hue, off). Keep the colors
+        # already known, so cycling back to static or breath sends them instead of black.
+        if found.get("effect", self.effect) not in ZONE_EFFECTS:
+            zones = None
         if isinstance(zones, list) and len(zones) >= self.ZONES:
             try:
                 found["zones"] = [rgb_to_hex(*hex_to_rgb(zone)) for zone in zones[:self.ZONES]]
             except (ControlError, TypeError, AttributeError):
                 pass
-        missing = [name for name in self.FIELDS if name not in found]
+        missing = [name for name in self.FIELDS if name not in found
+                   and not (name == "zones" and found.get("effect", self.effect) not in ZONE_EFFECTS)]
         with self._cond:
             for name, value in found.items():
                 setattr(self, name, value)
