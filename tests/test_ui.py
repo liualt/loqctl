@@ -889,7 +889,7 @@ class UiTests(helpers.SysfsCase):
                     self.assertTrue(drawn and all(t.rstrip(" │").endswith("APPLIED") for t in drawn), (h, w))
                     self.assertTrue(any("Enter / Esc closes" in t for t in text), (h, w))
                 else:
-                    self.assertIn("CUSTOM", text[0], (h, w))
+                    self.assertIn("custom mode", text[0], (h, w))
                     self.assertIn("API", text[0], (h, w))
 
     def test_failed_poll_shows_error_and_na_readings(self):
@@ -937,6 +937,36 @@ class UiTests(helpers.SysfsCase):
                     self.assertTrue(any(t.strip().startswith("BAT1") and "cycles 77" in t for t in texts), (h, w))
                 self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w, view))
 
+    def test_wide_overview_has_sensors_column_and_temperature_graphs(self):
+        metrics = {"timestamp": time.time(), "cpu": {"temperature_c": 61.0, "power_w": 20.0},
+                   "gpu": {"devices": [{"temperature_c": 50, "power_w": 5.0}]},
+                   "temperatures": [{"group": "cpu", "label": "Core 0", "c": 55.0},
+                                    {"group": "cpu", "label": "Package id 0", "c": 63.0},
+                                    {"group": "nvme", "label": "Composite", "c": 40.0}],
+                   "fans": [{"name": "Fan 1", "rpm": 2600.0}], "battery": [{"percent": 80.0, "status": "Charging"}],
+                   "ac_online": True, "memory": {"used_mib": 4096, "total_mib": 16384}, "load": [0.5, 0.4, 0.3]}
+        state = {"mode": "custom", "metrics": metrics,
+                 "attributes": {"cpu_temp": {"label": "CPU temperature limit", "unit": "°C", "effective_value": 95}}}
+        for (h, w), wide in (((40, 120), True), ((24, 80), False)):
+            puts = []
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append((y, x, text[:n]))
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+            dash.panel = "overview"
+            dash.draw(state)
+            text = "\n".join(t for _, _, t in puts)
+            self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
+            self.assertEqual(" Sensors " in text, wide, (h, w))
+            self.assertEqual("limit 95" in text, wide, (h, w))  # the CPU temperature graph marks the throttle limit
+            if wide:  # one row per sensor group, holding its hottest reading
+                self.assertIn("63°C", text)
+                self.assertNotIn("55°C", text)
+            self.assertNotIn("limit N/A", text)  # an unknown charge limit is left out, not shown as N/A
+            self.assertNotIn("AC N/A", text)
+
     def test_paused_and_stale_are_marked_on_screen(self):
         for h, w in ((20, 72), (24, 80)):
             for paused, stale, panel in ((True, False, "main"), (False, True, "main"), (True, False, "overview"),
@@ -951,7 +981,7 @@ class UiTests(helpers.SysfsCase):
                 dash.paused, dash.notice, dash.panel = paused or panel in ("fans", "keyboard"), "Ready.", panel
                 dash.draw({"metrics": {}, "attributes": {}, "modes": [], "stale": stale})
                 texts = [t for _, _, t in puts]
-                self.assertEqual(any("GRAPHS PAUSED" in t for t in texts), paused, (h, w))
+                self.assertEqual(any("graphs paused" in t for t in texts), paused, (h, w))
                 self.assertEqual(any(t.startswith("Firmware values are stale.") for t in texts), stale, (h, w))
                 self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
 
@@ -1175,8 +1205,8 @@ class ViewTests(unittest.TestCase):
         dash.chart_rows = Mock()
         dash.draw_telemetry(self.state(), metrics, 1, 20, 42, 70)
         text = "\n".join(t for _, _, t in calls)
-        self.assertIn("THROTTLE · 72°C · 45.2 W · 4.1 GHz", text)
-        self.assertIn("80.1 W · N/A", text)  # missing GPU temperature and clock
+        self.assertIn("throttling · 72°C · 45.2 W · 4.1 GHz", text)
+        self.assertIn("temp N/A · 80.1 W", text)  # a missing reading says what it is; no clock, no slot
         self.assertIn("throttle: sw_power_cap", text)
         self.assertIn("PL1 55", text)
         self.assertEqual([c.args[4] for c in dash.chart_rows.call_args_list], ["cpu_w", "gpu_w"])
@@ -1185,7 +1215,7 @@ class ViewTests(unittest.TestCase):
         dash.chart_rows.reset_mock()
         dash.draw_telemetry({}, {"cpu": {}}, 1, 40, 22, 60)  # no limits, small box
         self.assertEqual([c.args[5] for c in dash.chart_rows.call_args_list], [60])  # history max, not 1
-        self.assertIn("N/A · N/A · N/A", "\n".join(t for _, _, t in calls))
+        self.assertIn("temp N/A · power N/A", "\n".join(t for _, _, t in calls))
 
     def test_cpu_power_reason_at_box_heights(self):
         reason = "RAPL needs root: run sudo loqctl serve"

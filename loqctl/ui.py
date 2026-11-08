@@ -171,7 +171,7 @@ class Dashboard(FanPanel):
         self.apply_results = []
         self.show_results = False
         self.notice = backend.notice or ""
-        self.history = {k: collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
+        self.history = {k: collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w", "cpu_t", "gpu_t")}
         self.last_timestamp = None
         self.fields = {}  # key -> raw text typed for that row
         self.invalid = set()  # keys whose field text is invalid
@@ -256,13 +256,15 @@ class Dashboard(FanPanel):
                 plot.append(SPARK[min(7, max(0, round(value / max(1, ceiling) * 7)))])
         self.put(y, x, "".join(plot).rjust(width), color)
 
-    def chart_rows(self, y, x, width, height, key, ceiling=100, color=1, markers=()):
-        """Multi-row bar chart (eighth blocks), right-aligned; markers are (value, color) lines."""
+    def chart_rows(self, y, x, width, height, key, ceiling=100, color=1, markers=(), floor=0):
+        """Multi-row bar chart (eighth blocks), right-aligned; markers are (value, color) lines.
+        The bottom row stands for `floor`, so a temperature graph spends its rows where it moves."""
         width, height = max(0, width), max(0, height)
         if not width or not height:
             return
-        ceiling = max(1, ceiling)
-        values = list(self.history[key])[-width:]
+        ceiling = max(1, ceiling - floor)
+        values = [None if v is None else v - floor for v in list(self.history[key])[-width:]]
+        markers = [(None if v is None else v - floor, c) for v, c in markers]
         pad = width - len(values)
         eighths = [None if v is None else round(clamp(v / ceiling, 0, 1) * height * 8) for v in values]
         marks = {}
@@ -304,8 +306,9 @@ class Dashboard(FanPanel):
         if not stamp or stamp == self.last_timestamp:
             return
         for key, value in (("cpu", cpu.get("utilization_pct")), ("gpu", gpu.get("utilization_pct")),
-                           ("cpu_w", cpu.get("power_w")), ("gpu_w", gpu.get("power_w"))):
-            self.history[key].append(value)
+                           ("cpu_w", cpu.get("power_w")), ("gpu_w", gpu.get("power_w")),
+                           ("cpu_t", cpu.get("temperature_c")), ("gpu_t", gpu.get("temperature_c"))):
+            self.history.setdefault(key, collections.deque(maxlen=240)).append(value)
         self.last_timestamp = stamp
 
     def draw(self, state):
@@ -327,10 +330,10 @@ class Dashboard(FanPanel):
 
         # Header
         model = state.get("model") or ""
-        mode = (state.get("mode") or "").upper()
-        access = "API" if self.backend.remote else "ROOT" if os.geteuid() == 0 else "LOCAL"
+        mode = f"{state['mode']} mode" if state.get("mode") else ""
+        access = "API" if self.backend.remote else "root" if os.geteuid() == 0 else "local"
         if self.paused and self.panel in ("overview", "main"):  # Space toggles it only there
-            access = "GRAPHS PAUSED"
+            access = f"graphs paused · {access}"
         title = f" loqctl {VERSION} "
         self.put(0, 0, "━" * (w - 1), self.theme.ACCENT, dim=True)
         self.put(0, 1, title, self.theme.ACCENT, True)
@@ -613,13 +616,18 @@ class Dashboard(FanPanel):
                      self.theme.TEXT, dim=True)
 
     def telemetry_box(self, y, x, height, width, name, color, parts, key, ceiling, chart_color, marks,
-                      note="", alert=None, names=()):
-        """One box: the numbers go in the title, one power graph fills the inside, an optional note takes the last row."""
+                      note="", alert=None, names=(), unit="W", floor=0):
+        """One box: the numbers go in the title, one graph fills the inside, an optional note takes the last row."""
+        if key:
+            self.history.setdefault(key, collections.deque(maxlen=240))
         span = min(width - 4, self.history[key].maxlen) if key else 0  # one sample a second
-        scale = f"0-{ceiling:.0f} W, {span // 60} min" if span >= 120 else f"0-{ceiling:.0f} W, {span} s" if key else ""
-        self.box(y, x, height, width, name, color, scale)
+        top = f"{ceiling:.0f}{'' if unit == '°C' else ' '}{unit}"
+        scale = (f"{floor:.0f}-{top}, {span // 60} min" if span >= 120 else f"{floor:.0f}-{top}, {span} s") if key else ""
         room = width - len(name) - 8 - (len(scale) + 4 if scale else 0)
-        text = fit_parts(parts, room) if room > 0 and len(parts[0]) <= room else ""
+        if parts and room < len(parts[0]):  # the reading matters more than the scale
+            scale, room = "", width - len(name) - 8
+        self.box(y, x, height, width, name, color, scale)
+        text = fit_parts(parts, room) if parts and room > 0 and len(parts[0]) <= room else ""
         if text:
             self.put(y, x + len(name) + 4, f"{text} ", alert if alert is not None else color, alert is not None)
         ix, iw = x + 2, width - 4
@@ -628,46 +636,65 @@ class Dashboard(FanPanel):
             self.put(y + height - 2, ix, note, self.theme.TEXT, dim=True)
             rows -= 1
         if key and rows > 0:
-            self.chart_rows(y + 1, ix, iw, rows, key, ceiling, chart_color, marks)
+            self.chart_rows(y + 1, ix, iw, rows, key, ceiling, chart_color, marks, floor)
             labels = {}  # limit names at the right edge, on the line they mark
             for (value, mark_color), name in zip(marks, names):
-                line = min(rows - 1, int(clamp(value / max(1, ceiling), 0, 1) * rows))
+                line = min(rows - 1, int(clamp((value - floor) / max(1, ceiling - floor), 0, 1) * rows))
                 labels.setdefault(line, []).append((f"{name} {value:g}", mark_color))
             for line, found in labels.items():
                 text = " ".join(t for t, _ in found)
                 if len(text) < iw:
                     self.put(y + rows - line, ix + iw - len(text), text, found[-1][1], True)
 
+    @staticmethod
+    def reading(value, unit, decimals=0, what=""):
+        "One title reading; a missing one names what it is, so a bare N/A never stands alone."
+        return fmt(value, unit, decimals) if value is not None else f"{what} N/A".strip()
+
     def draw_telemetry(self, state, metrics, y, x, height, width):
+        """Wide screens: power (and on tall ones temperature) graphs on the left, every other
+        reading in a Sensors column on the right. Narrow screens stack CPU, GPU and System."""
+        if width >= 96:
+            sw = clamp(width * 36 // 100, 34, 44)
+            self.draw_sensors(metrics, y, x + width - sw, height, sw)
+            width -= sw
+            temp_h = clamp(height // 4, 7, 10) if height >= 28 else 0
+            self.power_boxes(state, metrics, y, x, height - temp_h, width)
+            if temp_h:
+                self.temp_boxes(state, metrics, y + height - temp_h, x, temp_h, width)
+            return
+        sys_h = 6 if height >= 18 else 5
+        self.power_boxes(state, metrics, y, x, height - sys_h, width)
+        self.system_box(metrics, y + height - sys_h, x, sys_h, width)
+
+    def power_boxes(self, state, metrics, y, x, height, width):
+        "The CPU and GPU power graphs with their limits, sharing `height`."
         cpu = metrics.get("cpu") or {}
         gpu = next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
         gpu_meta = metrics.get("gpu") or {}
-        memory = metrics.get("memory") or {}
         throttle = metrics.get("throttle") or {}
         attrs = state.get("attributes") or {}
 
         def limit(key):
             return (attrs.get(key) or {}).get("effective_value")
 
-        # Split right column into cpu / gpu / sys with flexible heights.
-        # System is sized to its content: bar, power, fans, then load and uptime when there is room.
-        sys_h = 6 if height >= 18 else 5
-        cpu_h = max(7, (height - sys_h) * 55 // 100)
-        gpu_h = max(5, height - sys_h - cpu_h)
-        cpu_h, gpu_h = min(cpu_h, 13), min(gpu_h, 10)  # tall charts are sparse; System takes the rest
-        sys_h = height - cpu_h - gpu_h
+        cpu_h = max(5, height * 55 // 100)
+        gpu_h = height - cpu_h
 
-        # CPU
+        def clock(dev):
+            return [] if dev.get("clock_mhz") is None else [fmt(dev["clock_mhz"] / 1000, "GHz", 1)]
+
+        # CPU. Short boxes have no spare row for "Waiting"; a real reason replaces the graph's bottom row.
         throttled = bool((throttle.get("cpu") or {}).get("active"))
-        # Short boxes have no spare row for "Waiting"; a real reason replaces the graph's bottom row.
         source = cpu.get("power_source") or ""
         sampling = cpu.get("power_w") is None and source.startswith("Waiting")
         reason = source if cpu.get("power_w") is None and not sampling else ""
         pl1, pl2 = limit("ppt_pl1_spl"), limit("ppt_pl2_sppt")
         self.telemetry_box(
             y, x, cpu_h, width, "CPU", self.theme.OK,
-            (["THROTTLE"] if throttled else []) + [fmt(cpu.get("temperature_c"), "°C"), "…" if sampling else fmt(cpu.get("power_w"), "W", 1),
-                                                 fmt(None if cpu.get("clock_mhz") is None else cpu["clock_mhz"] / 1000, "GHz", 1)],
+            (["throttling"] if throttled else []) + [self.reading(cpu.get("temperature_c"), "°C", what="temp"),
+                                                     "…" if sampling else self.reading(cpu.get("power_w"), "W", 1, "power")]
+            + clock(cpu),
             "cpu_w", max(pl2 or 0, max((v for v in self.history["cpu_w"] if v is not None), default=0), 1), self.theme.WARN,
             [(v, c) for v, c in ((pl1, self.theme.WARN), (pl2, self.theme.BAD)) if v is not None],
             reason, self.theme.BAD if throttled else None, [n for n, v in (("PL1", pl1), ("PL2", pl2)) if v is not None])
@@ -679,8 +706,8 @@ class Dashboard(FanPanel):
             reasons = gpu.get("throttle") or []
             self.telemetry_box(
                 gy, x, gpu_h, width, "GPU", self.theme.GPU,
-                (["THROTTLE"] if reasons else []) + [fmt(gpu.get("temperature_c"), "°C"), fmt(gpu.get("power_w"), "W", 1),
-                                                   fmt(None if gpu.get("clock_mhz") is None else gpu["clock_mhz"] / 1000, "GHz", 1)],
+                (["throttling"] if reasons else []) + [self.reading(gpu.get("temperature_c"), "°C", what="temp"),
+                                                       self.reading(gpu.get("power_w"), "W", 1, "power")] + clock(gpu),
                 "gpu_w", max(ctgp or 0, plimit or 0, max((v for v in self.history["gpu_w"] if v is not None), default=0), 1), self.theme.WARN,
                 [(v, c) for v, c in ((ctgp, self.theme.WARN), (plimit, self.theme.BAD)) if v is not None],
                 ("throttle: " + ", ".join(reasons)) if reasons else "", self.theme.BAD if reasons else None,
@@ -690,40 +717,116 @@ class Dashboard(FanPanel):
                                ["Asleep" if gpu_meta.get("suspended") else "Offline"], None, 1, 0, (),
                                gpu_meta.get("error") or "", None)
 
-        ix, iw = x + 2, width - 4
+    def temp_boxes(self, state, metrics, y, x, height, width):
+        "CPU and GPU temperature graphs side by side, each with the firmware limit where it throttles."
+        attrs = state.get("attributes") or {}
+        gpu = next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
+        left = width // 2
+        for bx, bw, name, color, now, key, limit_key in (
+                (x, left, "CPU temp", self.theme.OK, (metrics.get("cpu") or {}).get("temperature_c"), "cpu_t", "cpu_temp"),
+                (x + left, width - left, "GPU temp", self.theme.GPU, gpu.get("temperature_c"), "gpu_t", "gpu_temp")):
+            limit = (attrs.get(limit_key) or {}).get("effective_value")
+            self.telemetry_box(y, bx, height, bw, name, color, [self.reading(now, "°C")], key,
+                               max(100, limit or 0), self.theme.heat(now),
+                               [(limit, self.theme.BAD)] if limit is not None else [], names=["limit"], unit="°C",
+                               floor=30)
 
-        # System
-        sy = gy + gpu_h
-        used, total = memory.get("used_mib"), memory.get("total_mib")
-        mem_right = ""
-        if used is not None and total:
-            mem_right = f"{used / 1024:.1f}/{total / 1024:.1f} GiB"
-        self.box(sy, x, sys_h, width, "System", self.theme.INFO, mem_right)
-        if used is not None and total:
-            self.bar(sy + 1, ix, iw, used / total * 100, self.theme.INFO)
+    TEMP_GROUPS = {"cpu": "CPU", "gpu": "GPU", "ec": "Embedded controller", "nvme": "SSD", "ram": "RAM",
+                   "wifi": "Wi-Fi", "acpi": "Board"}
+
+    def sensor_sections(self, metrics):
+        "[(heading, [(label, value, color)])] for the Sensors column, most important first; empty sections left out."
+        text = self.theme.TEXT
+        hottest = {}
+        for t in metrics.get("temperatures") or []:
+            if t.get("c") is not None:
+                group = self.TEMP_GROUPS.get(t.get("group"), str(t.get("group") or "Other").capitalize())
+                hottest[group] = max(hottest.get(group, t["c"]), t["c"])
+        temps = [(name, fmt(c, "°C"), self.theme.heat(c)) for name, c in hottest.items()]
+        fans = [(f["name"], fmt(f["rpm"], " RPM"), text) for f in metrics.get("fans") or [] if f.get("rpm") is not None]
         battery = next(iter(metrics.get("battery") or []), {})
         ac = metrics.get("ac_online")
-        power = "AC" if ac else "Battery" if ac is False else "AC N/A"
-        bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}".strip()
-        health = battery.get("health_percent")
-        left = battery_left(battery)
-        parts = ([f"{power}  {bat}"] + [f"limit {battery.get('charge_limit') or 'N/A'}"] + ([left] if left else [])
-                 + ([f"health {health:.0f}%"] if health is not None else [])
-                 + ([f"charge {battery['charge_type'].replace('_', ' ')}"] if battery.get("charge_type") else [])
-                 + ([f"rapid {battery['rapid_charge']}"] if battery.get("rapid_charge") else []))
+        bat = []
+        if battery.get("percent") is not None:
+            bat.append(("Charge", fmt(battery["percent"], "%"), self.theme.OK if ac else self.theme.WARN))
+        if ac is not None or battery.get("status"):
+            bat.append(("Source", "AC power" if ac else "Battery" if ac is False else battery["status"], text))
+            if battery.get("status") and ac is not None:
+                bat.append(("Status", battery["status"], text))
+        if battery_left(battery):
+            bat.append(("Time", battery_left(battery), text))
+        if battery.get("health_percent") is not None:
+            bat.append(("Health", fmt(battery["health_percent"], "%"), text))
+        if battery.get("charge_limit"):
+            bat.append(("Charge limit", battery["charge_limit"], text))
+        memory = metrics.get("memory") or {}
+        used, total = memory.get("used_mib"), memory.get("total_mib")
+        mem = [("Used", f"{used / 1024:.1f} of {total / 1024:.1f} GiB", text)] if used is not None and total else []
+        loads, uptime = metrics.get("load") or [], metrics.get("uptime_s")
+        system = ([("Load", " ".join(fmt(v, decimals=2) for v in loads), text)] if loads else []) + (
+            [("Uptime", f"{int(uptime // 3600)} h {int(uptime % 3600 // 60):02d} min", text)] if uptime is not None else [])
+        return [(h, rows) for h, rows in (("Temperatures", temps), ("Fans", fans), ("Battery", bat), ("Memory", mem),
+                                          ("System", system)) if rows]
+
+    def draw_sensors(self, metrics, y, x, height, width):
+        "Every reading the graphs leave out, as label and value rows; the details view (t) has the full lists."
+        self.box(y, x, height, width, "Sensors", self.theme.INFO, "t details")
+        ix, iw, room = x + 2, width - 4, height - 2
+        sections = self.sensor_sections(metrics)
+        if not sections:
+            self.put(y + 1, ix, "No sensor data yet."[:iw], self.theme.WARN)
+            return
+        # Drop whole sections from the end, then shorten the temperature list, until it fits.
+        while len(sections) > 1 and sum(len(r) + 1 for _, r in sections) + len(sections) - 1 > room:
+            if sections[0][0] == "Temperatures" and len(sections[0][1]) > 3:
+                sections[0] = (sections[0][0], sections[0][1][:-1])
+            else:
+                sections.pop()
+        row = y + 1
+        for n, (heading, rows) in enumerate(sections):
+            if n:
+                row += 1
+            self.put(row, ix, heading[:iw], self.theme.INFO, bold=True)
+            row += 1
+            for label, value, color in rows:
+                if row >= y + height - 1:
+                    return
+                value = value[:iw - 2]
+                self.put(row, ix, label[: iw - len(value) - 1], self.theme.TEXT)
+                self.put(row, ix + iw - len(value), value, color)
+                row += 1
+
+    def system_box(self, metrics, y, x, height, width):
+        "Narrow screens: memory, battery, fans and load in one box under the graphs."
+        ix, iw = x + 2, width - 4
+        memory = metrics.get("memory") or {}
+        used, total = memory.get("used_mib"), memory.get("total_mib")
+        mem_right = f"{used / 1024:.1f}/{total / 1024:.1f} GiB" if used is not None and total else ""
+        self.box(y, x, height, width, "System", self.theme.INFO, mem_right)
+        if used is not None and total:
+            self.bar(y + 1, ix, iw, used / total * 100, self.theme.INFO)
+        battery = next(iter(metrics.get("battery") or []), {})
+        ac = metrics.get("ac_online")
+        bat = f"{fmt(battery['percent'], '%')} {battery.get('status') or ''}".strip() if battery.get("percent") is not None else ""
+        power = ("AC" if ac else "Battery" if ac is False else "") + (f"  {bat}" if bat else "")
+        left, health = battery_left(battery), battery.get("health_percent")
+        parts = ([power.strip()] if power.strip() else ["Battery N/A"]) + (
+            [f"limit {battery['charge_limit']}"] if battery.get("charge_limit") else []) + ([left] if left else []) + (
+            [f"health {health:.0f}%"] if health is not None else []) + (
+            [f"charge {battery['charge_type'].replace('_', ' ')}"] if battery.get("charge_type") else [])
         if ac and len("  ".join(parts)) + 6 <= iw:  # spell it out when the whole line still fits
             parts[0] = parts[0].replace("AC", "AC power", 1)
-        self.put(sy + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
-        if sys_h >= 5:
-            fans = metrics.get("fans") or []
-            fan_txt = "  ".join(f"{f['name']} {fmt(f['rpm'], 'RPM')}" for f in fans) if fans else "Fans N/A"
-            self.put(sy + 3, ix, fan_txt[:iw], self.theme.TEXT, dim=True)
-        if sys_h >= 6:
-            loads = metrics.get("load") or []
-            uptime = metrics.get("uptime_s")
-            up = f"  up {int(uptime // 3600)}h{int(uptime % 3600 // 60):02d}m" if uptime is not None else ""
-            self.put(sy + 4, ix, ("load " + " ".join(fmt(v, decimals=2) for v in loads) + up)[:iw],
-                     self.theme.TEXT, dim=True)
+        self.put(y + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
+        if height >= 5:
+            fans = [f for f in metrics.get("fans") or [] if f.get("rpm") is not None]
+            fan_txt = "  ".join(f"{f['name']} {fmt(f['rpm'], ' RPM')}" for f in fans) if fans else "Fans N/A"
+            self.put(y + 3, ix, fan_txt[:iw], self.theme.TEXT)
+        if height >= 6:
+            loads, uptime = metrics.get("load") or [], metrics.get("uptime_s")
+            up = f"up {int(uptime // 3600)} h {int(uptime % 3600 // 60):02d} min" if uptime is not None else ""
+            parts = (["load " + " ".join(fmt(v, decimals=2) for v in loads)] if loads else []) + ([up] if up else [])
+            if parts:
+                self.put(y + 4, ix, fit_parts(parts, iw, "  "), self.theme.TEXT, dim=True)
 
     def draw_details(self, metrics, y, x, height, width):
         self.box(y, x, height, width, "Details", self.theme.INFO, "t or Esc: back")
@@ -857,7 +960,7 @@ class Dashboard(FanPanel):
         "Esc       back one level, close a box, clear a row",
         "s         authenticate sudo (Power, Fans, Keyboard)",
         "?         this help   q  quit",
-        "Top right: LOCAL, ROOT or API (how loqctl runs)",
+        "Top right: local, root or API (how loqctl runs)",
     )
     HELP_PAGES = {
         "overview": (
