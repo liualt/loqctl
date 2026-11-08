@@ -914,6 +914,23 @@ class UiTests(helpers.SysfsCase):
                     self.assertIn("custom mode", text[0], (h, w))
                     self.assertIn("API", text[0], (h, w))
 
+    def test_header_model_cut_on_a_space_keeps_the_whole_word(self):
+        for h, w in ((20, 72), (24, 80)):
+            room = w - len("API") - 4 - (len(f" loqctl {m_ui.VERSION} ") + 1) - len("custom mode") - 5
+            for pad in range(3):  # slide the cut across a space
+                model = "x" * pad + " ab" * 20
+                grid = [[" "] * w for _ in range(h)]
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = lambda y, x, t, n, a=0: [grid[y].__setitem__(x + i, c) for i, c in enumerate(t[:n])]
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+                dash.panel = "main"
+                dash.draw({"metrics": {}, "attributes": {}, "modes": [], "mode": "custom", "model": model, "mode_limits": None})
+                want = model[:room - 1].rstrip() if model[room - 1] == " " else model[:room - 1].rsplit(" ", 1)[0]
+                self.assertIn(want.strip() + "…  ·  custom mode", "".join(grid[0]), (h, w, pad))
+
     def test_failed_poll_shows_error_and_na_readings(self):
         backend = m_backend.Backend(str(self.root / "none.sock"))
         backend.stop = Mock(is_set=Mock(side_effect=[False, True]))

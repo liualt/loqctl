@@ -414,7 +414,10 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual((bat(206)["time_remaining_min"], bat(206)["time_kind"]), (None, None))  # at the limit
         self.put(d + "energy_now", "30000000")
         self.put(d + "time_to_full_now", "1800")
-        self.assertEqual(bat(210)["time_remaining_min"], 30)
+        self.assertEqual(bat(210)["time_remaining_min"], 24)  # the kernel's 30 ignores the 80% limit
+        (self.root / d / "charge_control_end_threshold").unlink()
+        self.assertEqual(bat(211)["time_remaining_min"], 30)
+        self.put(d + "charge_control_end_threshold", "80")
         (self.root / d / "time_to_full_now").unlink()
         (self.root / d / "charge_control_end_threshold").unlink()
         for status, power in (("Not charging", "15000000"), ("Full", "15000000"), ("Charging", "0")):

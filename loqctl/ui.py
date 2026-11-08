@@ -343,7 +343,8 @@ class Dashboard(FanPanel):
         self.put(0, 1, title, self.theme.ACCENT, True)
         room = w - len(access) - 4 - (len(title) + 1) - len(mode) - 5
         if len(model) > room:
-            model = model[: max(room - 1, 0)].rsplit(" ", 1)[0]
+            keep = max(room - 1, 0)
+            model = model[:keep] if model[keep:keep + 1] == " " else model[:keep].rsplit(" ", 1)[0]
             model = model + "…" if model else ""
         mid = f"{model}  ·  {mode}" if model and mode else model or mode or ("" if state.get("error") else "Waiting for firmware")
         mx = max(len(title) + 1, (w - len(mid)) // 2)
