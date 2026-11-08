@@ -564,6 +564,7 @@ class UiTests(helpers.SysfsCase):
 
     def test_empty_state_does_not_crash_handle(self):
         dashboard = self.dashboard()
+        dashboard.backend.fancurve = lambda: {"available": False}  # Tab opens Fans, which reads it in a thread
         dashboard.panel = "main"
         dashboard.keyboard = m_keyboard.Keyboard(binary="/usr/bin/false",
                                           config=self.root / "missing.json")
@@ -1014,6 +1015,7 @@ class UiTests(helpers.SysfsCase):
         with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
                 patch.object(curses, "has_colors", return_value=False):
             dash = m_ui.Dashboard(screen, Mock(notice="", remote=False), sudo_ok=not expired)
+        dash.keyboard = m_keyboard.Keyboard(binary="/usr/bin/true", config=self.root / "legionaura.json")  # not the host's PATH
         dash.panel, dash.paused = panel, True
         if fan:
             dash.fan = fan
