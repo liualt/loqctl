@@ -15,7 +15,7 @@ import threading
 from threading import Lock
 
 from .api import http_client
-from .common import ControlError, _lazy, clamp, fit_parts, fmt
+from .common import FANCURVE_TIMEOUT, ControlError, _lazy, clamp, fit_parts, fmt
 from .curvestore import (check_curve, clear_active, curve_options, mark_written, read_stock, save_active, save_named,
                          save_stock)
 from .fancurve import SPEEDS, WRITABLE, Scale, merge_curve, min_speed, validate_curve
@@ -295,7 +295,7 @@ class FanPanel:
         self.fan_refresh_options()
 
     def run_sudo_fancurve(self, points):
-        stdout, stderr = self.sudo_call(["_fancurve", json.dumps(points)])
+        stdout, stderr = self.sudo_call(["_fancurve", json.dumps(points)], FANCURVE_TIMEOUT)
         try:
             results = json.loads(stdout)
             if not isinstance(results, list) or not all(isinstance(r, dict) and "status" in r for r in results):

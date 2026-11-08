@@ -234,7 +234,7 @@ loqctl kb apply
 sudo loqctl serve
 ```
 
-Serves HTTP over a Unix socket at `/run/loqctl-UID/control.sock`. Only that user and root can connect (checked with peer credentials); the socket is mode `0600` in a root-owned directory. There is no TCP listener. Stop it with Ctrl+C. If a server crashed and left a stale `control.sock`, the next start removes it; it refuses to start if a live server answers on it or if the path is not a socket. Clients ignore a stale socket and fall back to local access.
+Serves HTTP over a Unix socket at `/run/loqctl-UID/control.sock`. Only that user and root can connect (checked with peer credentials); the socket is mode `0600` in a root-owned directory. There is no TCP listener. Stop it with Ctrl+C or SIGTERM; a write already running finishes first (up to 120 s). If a server crashed and left a stale `control.sock`, the next start removes it; it refuses to start if a live server answers on it or if the path is not a socket. Clients ignore a stale socket and fall back to local access.
 
 ```sh
 curl --unix-socket /run/loqctl-$(id -u)/control.sock http://localhost/v1/status
@@ -256,6 +256,8 @@ curl --unix-socket /run/loqctl-$(id -u)/control.sock \
 The server allows the user in `SUDO_UID`. If you start it as root without sudo, pass `--uid UID` so your user can connect.
 
 Note: `/v1/status` returns the server's sampler snapshot (refreshed by its polling), while `/v1/capabilities` reads the firmware fresh on each request. There is no `/v1/limits`; per-mode limits are part of the `/v1/capabilities` and `/v1/status` payloads (`mode_limits`, `mode_limits_error`).
+
+A fan-curve POST can take a minute: the module rewrites the whole curve for every point written. loqctl waits up to 90 s for it; give your client a similar timeout. The reply is a list of per-field results, and a 200 status does not mean every field was written: check each result's `status`. If a client gives up early, the write may still finish, so read `/v1/fancurve` before retrying.
 
 Use `--socket PATH` to point the CLI or dashboard at a specific socket. Without it, a socket that does not accept connections is ignored with a notice and loqctl reads locally.
 
