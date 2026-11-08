@@ -334,7 +334,8 @@ class Dashboard(FanPanel):
 
         # Header
         model = state.get("model") or ""
-        mode = f"{state['mode']} mode" if state.get("mode") else ""
+        shown_mode = state.get("mode") or (self.fan.get("mode") if self.fan.get("available") else None)
+        mode = f"{shown_mode} mode" if shown_mode else ""
         access = "API" if self.backend.remote else "root" if os.geteuid() == 0 else "local"
         if self.paused and self.panel in ("overview", "main"):  # Space toggles it only there
             access = f"graphs paused · {access}"
@@ -543,11 +544,11 @@ class Dashboard(FanPanel):
         if room - len(entries) >= 9 and width >= 60:  # a tall screen shows the draw next to its limits
             chart_h = room - len(entries) - 1
             room -= chart_h + 1
-        visible = max(3, room)
+        visible = max(0, room)  # only the rows that fit; never over the detail strip
         at = next((i for i, (row, _) in enumerate(entries) if row == self.selected), 0)
         if not any(isinstance(row, int) for row, _ in entries[at + 1:]):
             at = len(entries) - 1  # on the last editable row, scroll the read-only rows into view
-        cue = len(entries) > visible
+        cue = len(entries) > visible and visible > 1
         if cue:
             visible -= 1  # the last row says how much is above and below
         start = max(0, at - visible + 1)
@@ -909,13 +910,13 @@ class Dashboard(FanPanel):
             items.append(row("  battery", [na(power.get("battery_w"), " W"), power.get("battery_status") or "N/A"]))
         for b in metrics.get("battery") or []:
             wh = [f"{b['full_wh']:.1f}/{b['design_wh']:.1f} Wh"] if None not in (b.get("full_wh"), b.get("design_wh")) else []
-            items.append(row(f"  {b['name'][:8]}", [f"health {na(b.get('health_percent'), '%', 0)}",
+            items.append(row(f"  {(b.get('name') or '')[:8]}", [f"health {na(b.get('health_percent'), '%', 0)}",
                                                     f"cycles {na(b.get('cycles'), '', 0)}"] + ([battery_left(b)] if battery_left(b) else []) + wh))
         for u in power.get("usbc") or []:
-            items.append(row(f"  {u['name'][:6]}", [na(u["watts"], " W"), na(u["volts"], " V", 2), na(u["amps"], " A", 2)]))
-        temps = [(f"  {t['group']:<6} {t['label'][:24]:<24} {na(t['c'], '°C')}", self.theme.heat(t["c"]), False)
+            items.append(row(f"  {(u.get('name') or '')[:6]}", [na(u.get("watts"), " W"), na(u.get("volts"), " V", 2), na(u.get("amps"), " A", 2)]))
+        temps = [(f"  {t.get('group') or '':<6} {(t.get('label') or '')[:24]:<24} {na(t.get('c'), '°C')}", self.theme.heat(t.get("c")), False)
                  for t in metrics.get("temperatures") or []]
-        volts = [(f"  {v['label'][:30]:<30} {na(v['v'], ' V', 3)}", text, False) for v in metrics.get("voltages") or []]
+        volts = [(f"  {(v.get('label') or '')[:30]:<30} {na(v.get('v'), ' V', 3)}", text, False) for v in metrics.get("voltages") or []]
         room, more = height - 2, False
         # Power keeps its place; temperatures and voltages take what is left, shortest first to go.
         for name, found in (("Power", items), ("Temperatures", temps), ("Voltages", volts)):
