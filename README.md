@@ -61,26 +61,24 @@ Or run it in place with `python3 loqctl.py`.
 loqctl
 ```
 
-A section list on the left (Overview, Power, Fans, Keyboard) picks the page on the right. Sections the laptop does not support are hidden. Overview shows telemetry only; Power holds the firmware controls.
+A section list on the left (Overview, Power, Fans, Keyboard) picks the page on the right. Sections the laptop does not support are hidden. Overview shows telemetry only; Power holds the firmware controls. The graph titles carry the scale and time span (0-N W, 2 min), and the PL1/PL2 (CPU) and CTGP/limit (GPU) lines are labelled with their values at the right edge. On terminals 110 columns or wider, Overview adds a Sensors column (the hottest reading per sensor group, fan speeds, battery, memory, load and uptime). From 31 rows it also adds CPU and GPU temperature graphs marked with the firmware temperature limit. The badge at the top right says how loqctl runs: local as you, root as root, API against the daemon. Power lists the limits with Range and Default columns when the terminal is wide enough. In a stock mode the columns show that mode's value next to the custom setting. When the list is longer than the screen, its last row says how many limits are above and below (↑ 2 more  ↓ 6 more). When rows are left over, live CPU and GPU power graphs with the limit lines sit under the list. Read-only legion_laptop values that repeat a listed limit are left out. With no sensor data Overview says so and points at `loqctl doctor`; CPU watts show … until the first sample.
 
 | Key | Action |
 | --- | --- |
-| `Tab`, `Shift+Tab` | Next or previous section (`↑↓` on Overview; on Power and Keyboard `↑↓` also change section past the first or last row). On the fan panel `Tab` keeps selecting curve points |
-| `↑↓` / `j k` | Select a control (Power) |
-| `←→` / `- +` | Stage one step (on the mode row: cycle modes) |
+| `Tab`, `Shift+Tab` | Next or previous page (`↑↓` on Overview; on Power and Keyboard `↑↓` also change page past the first or last row). |
+| `↑↓` | Select a control (Power) |
+| `←→` | Stage one step (on the mode row: cycle modes) |
 | `0-9` / `Backspace` | Type into the selected limit (custom mode); the old value is struck through |
 | `Enter` | Apply all staged edits, each write verified (refuses while a value is marked red). On the mode row: `←→` choose, `Enter` applies |
-| `Esc` | Clear the selected limit (custom mode, row unlocked) |
+| `Esc` | Go back one level: close an overlay or the Overview details, return from Fans or Keyboard to Power, or clear the selected limit (custom mode, row unlocked) |
 | `d` | Stage the firmware default for the selected control |
 | `r` | Discard staged edits |
-| `l` | Keyboard lighting panel |
-| `f` | Fan curve panel |
-| `m` | Mode limits overlay: every mode's firmware limits side by side (`Enter` / `Esc` / `m` closes) |
+| `m` | Mode limits overlay: every mode's firmware limits side by side (`Enter` / `Esc` / `m` closes). Columns use short names (low, bal, perf, max) and the live mode is bracketed |
 | `t` | Overview only: open or close the details view (CPU and GPU extras, voltages, temperatures, power, throttling). Esc also closes it |
 | `Space` | Pause telemetry |
 | `v` | Reopen the last apply results |
 | `s` | Authenticate sudo (shown when needed) |
-| `?` | Help (any panel) |
+| `?` | Help for the current page (any page) |
 | `q` | Quit |
 
 Power and temperature limits are only editable in **custom** mode. The other modes (low-power, balanced, performance, and max-power where the firmware offers it) are managed by the firmware, so the limit rows are dimmed and read-only there. To tune limits, select `custom` on the *Platform mode* row and press `Enter` to apply it. The limit rows then unlock with fresh values. Mode changes and limit edits are never applied together.
@@ -94,27 +92,27 @@ Firmware writes need root. You have two options:
 1. **Batched sudo (default).** At start loqctl runs `sudo -v` once (skipped when you are root, using the server, nothing is writable, or sudo is already cached). All staged edits are then applied in a single `sudo -n` call with per-item results. When the sudo cache expires, a banner appears and `s` re-authenticates; edits stay staged. The dashboard itself never runs as root and never asks for a password inside curses.
 2. **Privileged server (recommended for frequent tuning).** Run `sudo loqctl serve` in another terminal. The dashboard then connects to it automatically and never needs to leave the screen. See [Local HTTP API](#local-http-api).
 
-### Keyboard panel (`l`)
+### Keyboard panel
 
 | Key | Action |
 | --- | --- |
 | `1`–`4` | Select zone |
-| `↑↓` / `j` `k` | Choose H / S / V channel |
-| `←→` / `-` `+` `=` | Nudge channel (`H` / `L` for fine steps) |
+| `↑↓` | Choose H / S / V channel |
+| `←→` | Nudge channel (`H` / `L` for fine steps) |
 | `e` | Cycle effect: static → breath → wave → hue → off |
 | `b` | Toggle brightness low/high |
 | `w` | Wave direction ltr/rtl |
 | `c` | Copy the selected zone color to all four |
 | `Space` | Toggle live apply |
 | `Enter` | Apply via `legionaura` |
-| `Esc` / `l` | Back |
+| `Esc` | Back |
 | `q` | Quit |
 
 Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the real RGB. Settings are read from `~/.config/legionaura/config.json`.
 
-### Fan curves (`f`)
+### Fan curves
 
-Fan curves are read and written through the [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux) `legion_laptop` kernel module (loqctl does not copy its code; it only uses the hwmon files the module exposes). Without the module the panel says so and shows fan RPM only.
+Fan curves are read and written through the [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux) `legion_laptop` kernel module (loqctl does not copy its code; it only uses the hwmon files the module exposes). Without the module the page says what to load and has no keys of its own.
 
 - Load the module with `enable_platformprofile=0` next to the mainline `lenovo-wmi-gamezone` driver, so gamezone stays the single platform-profile provider (loqctl keeps using it). Also make gamezone load first, or the module's `legion_wmi` driver claims the gamezone WMI device and every limit reads N/A (see Troubleshooting). `/etc/modprobe.d/legion_laptop.conf`:
 
@@ -122,9 +120,9 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
   options legion_laptop enable_platformprofile=0
   softdep legion_laptop pre: lenovo_wmi_gamezone
   ```
-- Curves are editable only while the live platform mode is `custom`, like limits. Other modes show "Fan curves are locked in <mode> mode".
+- Curves are editable only while the live platform mode is `custom`, like limits. Other modes show that mode's curve read-only (labelled "Read-only", with "Select custom to edit" under the graph) and re-read it when the mode changes.
 - The firmware resets the curve when the mode changes and on reboot.
-- The panel shows a graph of fan 1 speed against the CPU up temperature of each point (straight segments between the points, one marker per point, the selected point highlighted, a `▲` tick on the temperature axis at the live CPU temperature) and one line for the selected point: its temperature and speed, fan 2 when it differs, and the live speed while an edit is staged. `t` shows the details: the GPU/IC temperatures and hysteresis of the selected point, and a table of every point (CPU/GPU/IC up/down temperatures and both fan speeds; staged changes in the warning color). "down" is the absolute lower temperature of a step (the `_temp_hyst` file).
+- The page opens with a "Now" line holding the live fan speeds (percent of the top speed; RPM only when the top speed is unknown, or on the table view) and the CPU and GPU temperatures. Under it, one line for the selected step: the CPU temperature it starts at, the speed it sets and, after an edit, the old speed. Fan 2 is named when the two fans differ. The chart shows each step's speed in percent on evenly spaced rails, labelled with the CPU temperature each step starts at. The selected step is `◉` and the others `●`. When the box is 90 columns or wider, a table of every step sits next to the chart (CPU, GPU and heatsink start temperatures and the speed; a staged speed shows as `old → new`). On narrower screens `t` swaps the chart for that table. The top right corner reads "Unsaved changes" only while an edit is pending. Enter reports "Applied and verified N steps." (or what failed and what to do next) on the status line, which stays until the next key.
 - Speeds are shown in the module's unit (`fancurve_speed_unit`): RPM for `rpm` (scaled with `fan1_max`), firmware levels 0-10 for `level`, percent otherwise. `↑`/`↓` move to the next speed the module can store, worked out from the module's conversion of the 256 pwm values: 100 RPM on `rpm` curves, one level on `level` curves, and 1 % on percent curves. loqctl writes the exact pwm value the module maps back to that speed, so readback matches.
 - Temperatures are fixed: up and down temperatures are shown but not editable. Each point has one speed, edited in the curve's unit. Setting it writes the same speed to fan 1 and fan 2, each held between its neighbours' speeds, its safety floor and the top speed.
 - A point's speed never crosses its neighbours: it stays between the previous and next point's speed.
@@ -135,15 +133,14 @@ Fan curves are read and written through the [LenovoLegionLinux](https://github.c
 | Key | Action |
 | --- | --- |
 | `←` / `→` | Select the previous or next point |
-| `Tab` / `]`, `Shift+Tab` / `[` | Select the next or previous point, wrapping around |
 | `↑` / `↓` | Move the point's speed for both fans to the next speed the fan stores (`Shift`: five steps) |
-| `t` | Show or hide the details |
+| `t` | Show the step table in place of the chart (narrow screens; wide ones show both) and the live RPM |
 | `r` | Discard all edits |
 | `Enter` | Apply; refuses and selects the first problem point if the curve does not validate |
 | `p` | Stage the next curve (`stock`, then saved curves); the notice and the panel title name it; nothing is written until `Enter` |
 | `R` | Reset: write the recorded stock curve for the current mode and delete `active.json` (custom mode only) |
 | `W` | Save the staged (or live) curve as `curves/saved-YYYYmmdd-HHMMSS.json` |
-| `f` / `Esc` | Back (staged edits are kept) |
+| `Esc` | Back to Power (staged edits are kept) |
 | `q` | Quit |
 
 Curves: `stock` is the live curve loqctl read just before its first write in a mode, saved once per mode to `~/.config/loqctl/stock/<mode>.json`. The firmware cannot read the stock curve back once a custom one is written, so this is the only copy. A `<mode>.written` marker next to it records that loqctl has written in that mode (every apply and every `R` sets it), and the stock curve is never recorded again after that. This cannot be verified: a curve written by another tool (or by root, or `loqctl _fancurve`) before loqctl's first apply in a mode is recorded as stock. If the read before the first write fails, the apply still happens and says the stock curve was not recorded. `R` writes the stock curve back (verified like any apply) and deletes `active.json`, so `serve` stops re-applying a custom curve. With no recorded stock curve, `R` only deletes `active.json` and says the firmware restores the stock curve on the next mode change or power cycle. File errors during `R` are shown in the notice. Saved curves live in `~/.config/loqctl/curves/<name>.json` (`XDG_CONFIG_HOME` is respected, but `active.json` always lives in `~/.config/loqctl`, found from your user's passwd entry), listed after `stock` by name (a saved curve named `stock` shows as `stock (saved)`); one that fails validation or has the wrong point count shows a red "(invalid)" and cannot be staged. The staged curve is tracked by name. After every verified apply the dashboard writes the applied points to `~/.config/loqctl/active.json`. All files are written atomically with mode 0600, by your user only (never by root; nothing is saved while the dashboard runs as root).
@@ -199,7 +196,7 @@ Writes check the firmware's min, max and step, write once, then read the value b
 | `gpu_nv_cpu_boost` | GPU power taken from the CPU boost budget | W |
 | `gpu_temp` | GPU temperature limit | °C |
 
-Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show that mode's firmware limits. sysfs `current_value` only holds the custom settings (the firmware returns them in every mode), so loqctl reads the real per-mode defaults from the firmware capability table that the kernel dumps in debugfs (`/sys/kernel/debug/lenovo_wmi/*/capdata`, root only). It reads the table as root once (via sudo, or directly under `sudo loqctl serve`) and caches it per product and BIOS version in `~/.cache/loqctl/mode-limits.json`, so later starts need no sudo. Press `m` for a mode-by-mode overlay, or run `loqctl limits` for the same data as JSON (`{mode: {attribute: value}}`; custom is the live value, plus an `error` key when the table is unavailable). Without the table the stock-mode values show N/A and the overlay says "Stock-mode limits need root: press `s` or run `sudo loqctl serve`".
+Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show that mode's firmware limits. sysfs `current_value` only holds the custom settings (the firmware returns them in every mode), so loqctl reads the real per-mode defaults from the firmware capability table that the kernel dumps in debugfs (`/sys/kernel/debug/lenovo_wmi/*/capdata`, root only). It reads the table as root once (via sudo, or directly under `sudo loqctl serve`) and caches it per product and BIOS version in `~/.cache/loqctl/mode-limits.json`, so later starts need no sudo. Press `m` for a mode-by-mode overlay, or run `loqctl limits` for the same data as JSON (`{mode: {attribute: value}}`; custom is the live value, plus an `error` key when the table is unavailable). Without the table the stock-mode values show N/A and the Power page and overlay say "Stock limits need root once per boot: press `s`".
 
 The cache is read first and only reread when the product name or BIOS version differs, so a BIOS update triggers one new sudo fetch. To force a refresh, delete `~/.cache/loqctl/mode-limits.json` (`XDG_CACHE_HOME` is respected). The cache is written by your user, mode 0600. Read-back confirms the configuration, not real workload wattage.
 
@@ -286,7 +283,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | "Custom cannot be selected through the legacy platform_profile file" (older versions: "Firmware rejected the write: Invalid argument") | No platform-profile class device was found, and the kernel's legacy `/sys/firmware/acpi/platform_profile` refuses `custom`. Make sure `lenovo-wmi-gamezone` is loaded |
 | "RAPL needs root: run sudo loqctl serve" | CPU power reads are root-only on some kernels. Use the privileged server; do not run the TUI with `sudo -E` |
 | "A loqctl server is already running" | Another `loqctl serve` answers on the socket; stop it first. A stale socket is removed automatically |
-| "sudo not authenticated" or "sudo credentials expired" | The sudo cache expired (or you skipped it at start). Press `s` to authenticate; staged edits are kept |
+| "Read-only. Press s to unlock." or "sudo credentials expired" | The sudo cache expired (or you skipped it at start). The status line then shows "Read-only. Press s to unlock." on the Power and Fans pages when nothing else needs saying, and the footer adds `s unlock`. Press `s` to authenticate; staged edits are kept |
 | "Ignored stale API socket" | A server left its socket behind. loqctl reads locally; restart `sudo loqctl serve` if you want the server |
 | Stock-mode limits show N/A, "needs root" or "debugfs capability table not found" | The capdata table is root-only. Press `s` (or run `sudo loqctl serve`) so loqctl can read it once. "not found" means debugfs is not mounted (`sudo mount -t debugfs none /sys/kernel/debug`) or the driver exposes no `lenovo_wmi` capdata; custom mode still works |
 | "sudo credentials expired" while reading limits or applying | Press `s`; the table read is retried on the next start, staged edits are kept |
@@ -313,8 +310,11 @@ Added:
 
 - A section list (Overview, Power, Fans, Keyboard) around the existing panels.
 - One graph per Overview box, with the numbers in the title.
+- On wide terminals, a Sensors column next to the Overview graphs. On tall ones, CPU and GPU temperature graphs with their throttle limits.
 - The mode selector on top of Power, with limits grouped by CPU and GPU.
+- Range and Default columns on Power, live power graphs under the limits on tall terminals, and "↑ N more ↓ N more" when the list scrolls. An out-of-range value names the allowed range.
 - A slimmer Fans section: a graph box, one point line and a details table.
+- Fans: a Now line for live speeds and temperatures, CPU temperature ticks under every rail, and a step table next to the chart on wide screens (`t` on narrow ones). Help and the footer list only keys that work, and a missing page no longer repeats itself on the status line.
 - `t` opens a details view in place of the sensors toggle.
 - Battery cycle count and health, and the charge limit (read-only).
 - Battery charge type and rapid-charge state in the System box; `charge_type`, `rapid_charge` and `power_charge_mode` in `metrics` and `status`.
@@ -327,6 +327,11 @@ Added:
 - Bash, zsh and fish completions.
 - `make install` is atomic.
 - `make install`, `make uninstall` and `make test`.
+
+Changed:
+
+- One key per action. Removed: `j`, `k`, `+`, `-`, `=`, `l`, `f` and `[` `]`. Use the arrows, `Tab` and `Esc`.
+- Help shows the current page's keys and the global keys inside the content area. The footer lists only keys that work right now: read-only Power and Fans pages drop the edit keys, and an unavailable page says what it needs.
 
 Fixed:
 

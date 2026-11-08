@@ -23,10 +23,6 @@ collections = _lazy("collections")
 curses = _lazy("curses")
 textwrap = _lazy("textwrap")
 
-def strike(text):
-    return "".join(c + "\u0336" for c in str(text))
-
-
 def battery_left(b):
     "Time text for one battery metrics dict, such as '2 h 15 min left' or '40 min to full'; '' when unknown."
     minutes = b.get("time_remaining_min")
@@ -49,6 +45,35 @@ def limit_note(state, items):
         return None
     where = "not bound to any driver" if holder == "no driver" else f"held by {holder}"
     return f"Gamezone WMI device {where}, limits can't be read; see README"
+
+
+# One-line meaning of each limit for the Power detail strip (the firmware ids stay in the API).
+DESCRIBE = {
+    "ppt_pl1_spl": "power the CPU can hold indefinitely",
+    "ppt_pl2_sppt": "short-term CPU power for bursts",
+    "ppt_pl3_fppt": "very short CPU power spike ceiling",
+    "ppt_pl4_ipl": "absolute CPU peak current limit",
+    "ppt_cpu_cl": "CPU power cap while the GPU is loaded",
+    "ppt_pl1_spl_cl": "sustained CPU power while the GPU is loaded",
+    "ppt_pl2_sppt_cl": "burst CPU power while the GPU is loaded",
+    "ppt_pl3_fppt_cl": "spike CPU power while the GPU is loaded",
+    "ppt_pl4_ipl_cl": "peak CPU current while the GPU is loaded",
+    "ppt_pl1_apu_spl": "sustained power for the integrated graphics",
+    "ppt_pl1_tau": "how long the CPU may boost above sustained",
+    "cpu_temp": "CPU temperature where it starts to throttle",
+    "gpu_nv_ctgp": "extra GPU power on top of its base",
+    "gpu_nv_ppab": "power shifted between CPU and GPU",
+    "gpu_nv_ac_offset": "GPU power offset when on AC",
+    "gpu_nv_bpl": "GPU power at base clocks",
+    "gpu_nv_cpu_boost": "GPU power gained from CPU headroom",
+    "gpu_temp": "GPU temperature where it starts to throttle",
+}
+# legion_laptop read-only limits and the firmware attribute that holds the same value.
+EXTRA_TWIN = {"cpu_temperature_limit": "cpu_temp", "gpu_temperature_limit": "gpu_temp", "cpu_l1_tau": "ppt_pl1_tau",
+              "cpu_cross_loading_powerlimit": "ppt_cpu_cl", "gpu_power_target_offset": "gpu_nv_ac_offset",
+              "gpu_ppab_powerlimit": "gpu_nv_ppab"}
+MODE_SHORT = {"low-power": "low", "balanced": "bal", "performance": "perf", "max-power": "max"}
+ROW_SHORT = {**MODE_SHORT, "balanced": "balanced"}  # the Power mode row has room for the one long name
 
 
 class Theme:
@@ -128,13 +153,14 @@ class Dashboard(FanPanel):
     MIN_W, MIN_H = 72, 20
     # Footer entries in priority order. footer_hint() drops from the end to fit.
     HINTS = {
-        "overview": ("Tab section", "↑↓ section", "t details", "m modes", "Space pause", "v results"),
-        "main": ("Tab section", "↑↓ select", "←→ adjust", "Enter apply", "0-9 type", "Esc clear",
-                 "d default", "r discard", "m modes", "Space pause", "v results"),
-        "fans": ("←→ point", "↑↓ speed", "Enter apply", "t details", "R stock", "Esc back", "r discard",
-                 "W save", "p curves"),
-        "keyboard": ("Tab section", "1–4 zone", "←→ adjust HSV", "↑↓ channel", "Enter apply", "Esc back", "e effect",
-                     "b bright", "c copy-all", "Space live"),
+        "overview": ("Tab page", "t details", "m modes", "Space pause"),
+        "main": ("↑↓ select", "←→ adjust", "Enter apply", "Tab page", "m modes"),
+        "fans": ("←→ step", "↑↓ speed", "Enter apply", "t table", "Tab page"),
+        "keyboard": ("1-4 zone", "←→↑↓ HSV", "e effect", "b bright", "Tab page"),
+    }
+    HINTS_READONLY = {
+        "main": ("↑↓ select", "←→ mode", "m modes", "Tab page"),
+        "fans": ("←→ step", "t table", "Tab page"),
     }
     show_limits = False
     panel = "main"  # instances built without __init__ (tests) act as Power
@@ -148,8 +174,8 @@ class Dashboard(FanPanel):
         self.pending = {}
         self.apply_results = []
         self.show_results = False
-        self.notice = backend.notice or "Ready. Edit a row, then press Enter to apply.  l opens keyboard lighting."
-        self.history = {k: collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
+        self.notice = backend.notice or ""
+        self.history = {k: collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w", "cpu_t", "gpu_t")}
         self.last_timestamp = None
         self.fields = {}  # key -> raw text typed for that row
         self.invalid = set()  # keys whose field text is invalid
@@ -234,13 +260,15 @@ class Dashboard(FanPanel):
                 plot.append(SPARK[min(7, max(0, round(value / max(1, ceiling) * 7)))])
         self.put(y, x, "".join(plot).rjust(width), color)
 
-    def chart_rows(self, y, x, width, height, key, ceiling=100, color=1, markers=()):
-        """Multi-row bar chart (eighth blocks), right-aligned; markers are (value, color) lines."""
+    def chart_rows(self, y, x, width, height, key, ceiling=100, color=1, markers=(), floor=0):
+        """Multi-row bar chart (eighth blocks), right-aligned; markers are (value, color) lines.
+        The bottom row stands for `floor`, so a temperature graph spends its rows where it moves."""
         width, height = max(0, width), max(0, height)
         if not width or not height:
             return
-        ceiling = max(1, ceiling)
-        values = list(self.history[key])[-width:]
+        ceiling = max(1, ceiling - floor)
+        values = [None if v is None else v - floor for v in list(self.history[key])[-width:]]
+        markers = [(None if v is None else v - floor, c) for v, c in markers]
         pad = width - len(values)
         eighths = [None if v is None else round(clamp(v / ceiling, 0, 1) * height * 8) for v in values]
         marks = {}
@@ -282,8 +310,9 @@ class Dashboard(FanPanel):
         if not stamp or stamp == self.last_timestamp:
             return
         for key, value in (("cpu", cpu.get("utilization_pct")), ("gpu", gpu.get("utilization_pct")),
-                           ("cpu_w", cpu.get("power_w")), ("gpu_w", gpu.get("power_w"))):
-            self.history[key].append(value)
+                           ("cpu_w", cpu.get("power_w")), ("gpu_w", gpu.get("power_w")),
+                           ("cpu_t", cpu.get("temperature_c")), ("gpu_t", gpu.get("temperature_c"))):
+            self.history.setdefault(key, collections.deque(maxlen=240)).append(value)
         self.last_timestamp = stamp
 
     def draw(self, state):
@@ -304,11 +333,11 @@ class Dashboard(FanPanel):
             self.push_history(metrics)
 
         # Header
-        model = state.get("model") or "N/A"
-        mode = (state.get("mode") or "…").upper()
-        access = "API" if self.backend.remote else "ROOT" if os.geteuid() == 0 else "LOCAL"
-        if self.paused:
-            access = "GRAPHS PAUSED"
+        model = state.get("model") or ""
+        mode = f"{state['mode']} mode" if state.get("mode") else ""
+        access = "API" if self.backend.remote else "root" if os.geteuid() == 0 else "local"
+        if self.paused and self.panel in ("overview", "main"):  # Space toggles it only there
+            access = f"graphs paused · {access}"
         title = f" loqctl {VERSION} "
         self.put(0, 0, "━" * (w - 1), self.theme.ACCENT, dim=True)
         self.put(0, 1, title, self.theme.ACCENT, True)
@@ -316,8 +345,12 @@ class Dashboard(FanPanel):
         if len(model) > room:
             model = model[: max(room - 1, 0)].rsplit(" ", 1)[0]
             model = model + "…" if model else ""
-        mid = f"{model}  ·  {mode}" if model else mode
-        self.put(0, max(len(title) + 1, (w - len(mid)) // 2), mid, self.theme.OK)
+        mid = f"{model}  ·  {mode}" if model and mode else model or mode or ("" if state.get("error") else "Waiting for firmware")
+        mx = max(len(title) + 1, (w - len(mid)) // 2)
+        self.put(0, mx - 1, " " * (len(mid) + 2), self.theme.OK)
+        self.put(0, mx, mid, self.theme.OK, bold=not model and bool(mode))
+        if model and mode:
+            self.put(0, mx + len(model) + 5, mode, self.theme.OK, True)
         self.put(0, w - len(access) - 3, f" {access} ", self.theme.GPU if access == "API" else self.theme.WARN)
 
         self.draw_nav(state, 1, 0, h - 3, self.NAV_W)
@@ -334,19 +367,24 @@ class Dashboard(FanPanel):
         # Status + keys
         stamp = metrics.get("timestamp")
         stale = stamp is not None and time.time() - stamp > 5
-        old = "Sensor data is stale. " if stale else "Firmware values are stale. " if state.get("stale") else ""
-        status = state.get("error") or old + self.notice
-        warn = bool(state.get("error") or old)
-        if self.sudo_expired and not self.backend.remote and os.geteuid() != 0:
-            status, warn = "sudo not authenticated · press s to authenticate · edits stay staged", True
+        if state.get("error"):
+            status, warn = f"{str(state['error']).rstrip('. ')}. Run loqctl doctor for details.", True
+        elif stale:
+            status, warn = "Sensor data is stale. Check that the backend is running.", True
+        elif state.get("stale"):
+            status, warn = "Firmware values are stale. Wait for the next refresh.", True
+        else:
+            status, warn = self.notice, False
+        if not status and self.needs_unlock():
+            status, warn = "Read-only. Press s to unlock.", True
         if len(status) > w - 3:  # cut at a word boundary
             status = status[: w - 3].rsplit(" ", 1)[0].rstrip(" ,;:.") if " " in status[: w - 3] else status[: w - 3]
         self.put(h - 2, 1, status, self.theme.WARN if warn else self.theme.TEXT)
-        keys = self.footer_hint(w - 3)
-        self.put(h - 1, 1, keys, self.theme.ACCENT, dim=True)
+        keys = "? or Esc close  q quit" if self.help else self.footer_hint(w - 3, state)
+        self.put(h - 1, 1, keys, self.theme.ACCENT)
 
         if self.help:
-            self.draw_help()
+            self.draw_help(state)
         if self.show_results:
             self.draw_results()
         if self.show_limits:
@@ -379,7 +417,7 @@ class Dashboard(FanPanel):
         else:
             self.panel = name
             self.view = "summary"
-            self.notice = "Ready."
+            self.notice = ""
 
     def leave_section(self, state):
         "Back from Fans or Keyboard to Power, or to Overview when Power is hidden."
@@ -390,7 +428,7 @@ class Dashboard(FanPanel):
         self.view = "summary"
         self.keyboard.recheck()
         self.keyboard.load()
-        self.notice = "Keyboard lighting. Esc returns."
+        self.notice = ""
 
     def step_section(self, state, direction):
         found = self.sections(state)
@@ -402,6 +440,10 @@ class Dashboard(FanPanel):
             self.view = "summary" if self.view == "details" else "details"
 
     def draw_overview(self, state, metrics, y, x, height, width):
+        if self.view != "details" and not metrics and not state.get("mode"):
+            self.box(y, x, height, width, "Overview", self.theme.INFO)
+            self.put(y + 2, x + 2, "No sensor data yet. Run loqctl doctor."[: width - 4], self.theme.WARN)
+            return
         if self.view == "details":
             self.draw_details(metrics, y, x, height, width)
         else:
@@ -410,33 +452,72 @@ class Dashboard(FanPanel):
     def draw_main(self, state, metrics, y, x, height, width):
         self.draw_controls(state, y, x, height, width)
 
+    def power_columns(self, state, shown, extras, iw):
+        """Column widths for the limit list: (label, value, extra) where extra holds the range and
+        default in custom mode, or the custom setting in a stock mode; extra is 0 when it does not fit."""
+        attrs = state.get("attributes") or {}
+        labels = [attrs[k]["label"] for k in shown if k in attrs] + [e["label"] for e in extras]
+        lw = max([len(label) for label in labels] + [8]) + 2
+        vw = 16 if not self.locked(state) else max(12, len(state.get("mode") or "") + 2)  # "60 W → 65_" while typing
+        ew = 26 if not self.locked(state) else 10
+        if lw + vw + ew > iw - 2:
+            ew = 0
+        return min(lw, max(8, iw - 2 - vw)), vw, ew
+
+    def limit_extra(self, state, item):
+        "The extra column: range and default in custom mode; the custom setting in a stock mode."
+        unit = item["unit"]
+        if self.locked(state):
+            return fmt(item.get("current_value"), unit_sep(unit) + unit if unit else "")
+        lo, hi = fmt(item.get("min_value")), fmt(item.get("max_value"))
+        default = item.get("default_value")
+        span = f"{lo}–{hi}{unit_sep(unit)}{unit}"
+        return f"{span:<14}{'N/A' if default is None else f'{default}{unit_sep(unit)}{unit}'}"
+
     def draw_controls(self, state, y, x, height, width):
+        attrs = state.get("attributes") or {}
+        locked = self.locked(state)
         pending_n = len(self.pending)
-        right = f"{pending_n} staged" if pending_n else "Live"
-        if self.invalid:
-            right = (f"{pending_n} staged" if pending_n else "") + f"{', ' if pending_n else ''}{len(self.invalid)} invalid"
+        stamp = (state.get("metrics") or {}).get("timestamp")
+        right = ("Error" if state.get("error") else "No data" if stamp is None and not state.get("mode")
+                 else "Stale" if state.get("stale") else "Read-only" if locked else "")
+        if pending_n or self.invalid:
+            right = ", ".join(([f"{pending_n} staged"] if pending_n else []) + (
+                [f"{len(self.invalid)} invalid"] if self.invalid else []))
         self.box(y, x, height, width, "Power", self.theme.ACCENT, right)
         rows = self.rows(state)
         if not rows:
             self.put(y + 2, x + 2, "No firmware attributes exposed.", self.theme.WARN)
             return
         self.selected = clamp(self.selected, 0, len(rows) - 1)
-        if rows[self.selected] not in self.shown_rows(state):
+        shown = self.shown_rows(state)
+        if rows[self.selected] not in shown:
             self.selected = 0
+        ix, iw = x + 2, width - 4
+
         # Mode selector on top: every mode the firmware offers, the live one in brackets.
         modes, live = state.get("modes") or [], state.get("mode")
         staged_mode = self.pending.get("mode")
         names = [f"[{m}]" if m == live else m for m in modes] or [str(live or "N/A")]
         if staged_mode is not None:
-            choice = f"{live or 'N/A'} → {staged_mode}"
+            choice = f"{live or 'N/A'} → {staged_mode}   Enter applies"
         else:
-            choice = fit_parts(names, width - 14, "  ")
+            choice = "  ".join(names)
+            if len(choice) > width - 14:  # abbreviate so every mode, custom included, stays visible
+                for table in (ROW_SHORT, MODE_SHORT):
+                    names = [(f"[{table.get(m, m)}]" if m == live else table.get(m, m)) for m in modes]
+                    choice = "  ".join(names)
+                    if len(choice) <= width - 14:
+                        break
+                else:
+                    choice = fit_parts(names, width - 14, " ")
         chosen = self.selected == 0
         self.put(y + 1, x + 1, f"{'▶' if chosen else ' '} {'Mode':<7}{choice}"[: width - 3],
                  self.theme.WARN if staged_mode is not None else (self.theme.ACCENT if chosen else self.theme.TEXT),
                  bold=chosen)
+
         # Limits grouped by subsystem; a group name is a row in the list, not part of the selection.
-        shown, entries, group = self.shown_rows(state), [], None
+        entries, group = [], None
         for row, key in enumerate(rows[1:], 1):
             if key not in shown:
                 continue  # stock modes show the few key limits, not the whole list
@@ -445,15 +526,30 @@ class Dashboard(FanPanel):
                 entries.append((None, name))
                 group = name
             entries.append((row, key))
-        extras = state.get("extra_limits") or []
-        if extras:  # read-only, not selectable
-            entries += [(None, "Firmware")] + [("ro", item) for item in extras]
+        extras = [e for e in state.get("extra_limits") or [] if EXTRA_TWIN.get(e.get("key")) not in shown]
+        if extras:  # read-only legion_laptop values, left out when the same limit is already a row
+            entries += [(None, "Firmware (read-only)")] + [("ro", item) for item in extras]
+        lw, vw, ew = self.power_columns(state, [k for k in shown if k != "mode"], extras, iw - 2)
         list_top = y + 2
+        if ew:
+            head = f"{(live or 'Now') if locked else 'Value':<{vw}}{'custom' if locked else 'Range         Default'}"
+            self.put(list_top, ix + 2 + lw, head[: iw - 2 - lw], self.theme.TEXT, dim=True)
+            list_top += 1
+
         detail_h = 4
-        visible = max(3, height - detail_h - 3)
+        note_h = 1 if locked and any(attrs[k].get("effective_value") is None for k in shown if k in attrs) else 0
+        room = y + height - detail_h - list_top - note_h  # rows between the list top and the detail strip
+        chart_h = 0
+        if room - len(entries) >= 9 and width >= 60:  # a tall screen shows the draw next to its limits
+            chart_h = room - len(entries) - 1
+            room -= chart_h + 1
+        visible = max(3, room)
         at = next((i for i, (row, _) in enumerate(entries) if row == self.selected), 0)
         if not any(isinstance(row, int) for row, _ in entries[at + 1:]):
             at = len(entries) - 1  # on the last editable row, scroll the read-only rows into view
+        cue = len(entries) > visible
+        if cue:
+            visible -= 1  # the last row says how much is above and below
         start = max(0, at - visible + 1)
         if start and entries[start][0] is not None and entries[start - 1][0] is None and start - 1 + visible > at:
             start -= 1  # keep a group name above its first visible row
@@ -463,90 +559,109 @@ class Dashboard(FanPanel):
         for i, (row, key) in enumerate(window):
             yy = list_top + i
             if row is None:
-                self.put(yy, x + 2, key, self.theme.INFO, bold=True)
+                self.put(yy, ix, key, self.theme.INFO, bold=True)
                 continue
             if row == "ro":
                 value = f"{key['value']}{unit_sep(key['unit'])}{key['unit']}"
-                self.put(yy, x + 1, f"  {key['label']:<20} {value}"[: width - 3], self.theme.TEXT, dim=True)
+                self.put(yy, ix + 2, f"{key['label']:<{lw}}{value}"[: iw - 2], self.theme.TEXT)
                 continue
             chosen = row == self.selected
-            marker = "▶" if chosen else " "
-            item = state["attributes"][key]
+            item = attrs[key]
             label, current, unit = item["label"], item.get("effective_value"), item["unit"]
             staged = self.pending.get(key)
             value = "N/A" if current is None else f"{current}{unit_sep(unit)}{unit}"
-            if self.locked(state):
-                line = f"{marker} {label:<20} {value}"
-                self.put(yy, x + 1, line[: width - 3], self.theme.TEXT, bold=chosen, dim=True)
-                continue
-            text = self.fields.get(key)
-            bad = key in self.invalid
-            if chosen:
-                line = (f"{marker} {label:<20} {strike(value)} -> "
-                        + (f"{text}_" if text else "__"))
-                self.put(yy, x + 1, line[: width - 3], self.theme.BAD if bad else self.theme.ACCENT, bold=True)
-                continue
-            if bad:
+            if current is None and self.needs_unlock():
+                value = "N/A (press s)"
+            text, bad = self.fields.get(key), key in self.invalid
+            if not locked and chosen:
+                value += " → " + (f"{text}_" if text else "_")
+            elif bad:
                 value += f" → {text}"
-                self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], self.theme.BAD)
-                continue
-            if staged is not None:
+            elif staged is not None:
                 value += f" → {staged}"
-            color = self.theme.WARN if staged is not None else self.theme.TEXT
-            self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], color, dim=staged is None)
+            if len(label) > lw - 1:
+                label = label[: lw - 2] + "…"
+            extra = self.limit_extra(state, item) if ew else ""
+            line = f"{label:<{lw}}{value:<{vw}}{extra}".rstrip()
+            color = (self.theme.BAD if bad else self.theme.WARN if staged is not None
+                     else self.theme.ACCENT if chosen else self.theme.TEXT)
+            self.put(yy, ix, "▶" if chosen else " ", color, bold=chosen)
+            self.put(yy, ix + 2, line[: iw - 2], color, bold=chosen)
+        if cue:
+            limit_rows = [i for i, (row, _) in enumerate(entries) if row is not None]
+            above = sum(1 for i in limit_rows if i < start)
+            below = sum(1 for i in limit_rows if i >= start + len(window))
+            text = "  ".join(([f"↑ {above} more"] if above else []) + ([f"↓ {below} more"] if below else []))
+            self.put(list_top + len(window), ix, text[:iw], self.theme.ACCENT, dim=True)
+        list_end = list_top + len(window) + (1 if cue else 0)
 
-        if self.locked(state):
-            self.put(list_top + len(window), x + 2, "Select custom on the mode row to edit.", self.theme.TEXT, dim=True)
+        if note_h:  # one line saying why a limit is N/A; "select custom" is said once, below
+            reason = state.get("mode_limits_error")
+            note = limit_note(state, {k: attrs[k] for k in shown if k in attrs}) or (
+                "Stock limits need root once per boot: press s" if reason and reason.startswith("needs root")
+                and os.geteuid() != 0 else reason or "N/A")
+            self.put(list_end, ix, note[:iw], self.theme.WARN)
+            list_end += 1
 
-        # Detail footer inside the box
+        if chart_h:
+            self.power_boxes(state, state.get("metrics") or {}, y + height - detail_h - chart_h, x + 1, chart_h,
+                             width - 2, side=True)
+
+        # Detail strip inside the box: what the selected row is and what can be done with it.
         detail_y = y + height - detail_h
         self.put(detail_y, x + 1, "─" * (width - 2), self.theme.ACCENT, dim=True)
         key = rows[self.selected]
+
+        def say(line, text, color=self.theme.TEXT, dim=False):
+            self.put(detail_y + line, ix, text if len(text) <= iw else text[:iw - 1].rsplit(" ", 1)[0] + "…", color,
+                     dim=dim)
+
         if key == "mode":
-            modes = " ".join(state.get("modes") or []) or "none"
             driver = state.get("mode_driver", GAMEZONE)
-            if driver == GAMEZONE:
-                self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
-            else:
+            if driver != GAMEZONE:
                 via = f"{driver}, not {GAMEZONE}" if driver else f"legacy file, {GAMEZONE} not found"
-                note = limit_note(state, state.get("attributes", {})) or f"Mode set via {via}"
-                self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
-            self.put(detail_y + 2, x + 2, f"Available: {modes}"[: width - 4], self.theme.TEXT, dim=True)
-        elif self.locked(state):
-            item, mode = state["attributes"][key], state.get("mode") or "N/A"
-            if item.get("effective_value") is not None:
-                note = fit_parts([f"custom default {fmt(item['default_value'])}", f"{mode} limit from firmware table"],
-                                 width - 4)
-            else:
-                reason = state.get("mode_limits_error")
-                note = limit_note(state, {key: item}) or (
-                    reason if reason and not reason.startswith("needs root") else
-                    "Stock-mode limits need root: press s or run sudo loqctl serve")
-            self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
-            self.put(detail_y + 2, x + 2, (lambda long: long if len(long) <= width - 4 else "Select custom on the mode row to edit")(
-                         f"Locked in {mode} mode; select custom to edit"),
-                     self.theme.TEXT, dim=True)
+                say(1, limit_note(state, state.get("attributes", {})) or f"Mode set via {via}", self.theme.WARN)
+            elif state.get("mode"):
+                say(1, "Platform mode: ← → picks one, Enter applies it.", self.theme.ACCENT)
+            if not state.get("mode"):
+                say(2, "Mode unreadable; limits stay locked.", self.theme.WARN)
+            elif locked:
+                say(2, "Limits are editable in custom mode only.", self.theme.TEXT)
+            return
+        item = attrs[key]
+        describe = DESCRIBE.get(key, "")
+        line1 = f"{item['label']}: {describe}" if describe else item["label"]
+        if len(line1) > iw and describe:
+            line1 = describe[0].upper() + describe[1:]
+        if item.get("current_value") is None and not locked:
+            error = item.get("read_error") or "missing"
+            say(1, limit_note(state, {key: item}) or f"{item['label']}: current value unreadable ({error})", self.theme.WARN)
         else:
-            item = state["attributes"][key]
-            step = item["scalar_increment"]
-            step_txt = "N/A" if step is None else "any int" if not step else str(step)
-            if item.get("current_value") is None:
-                error = item.get("read_error") or "missing"
-                note = limit_note(state, {key: item}) or f"{key}: current value unreadable ({error})"
-                self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
-            else:
-                self.put(detail_y + 1, x + 2, key, self.theme.ACCENT)
-            self.put(detail_y + 2, x + 2,
-                     fit_parts([f"{fmt(item['min_value'])}–{fmt(item['max_value'])} {item['unit']}",
-                                f"default {fmt(item['default_value'])}", f"step {step_txt}"], width - 4),
-                     self.theme.TEXT, dim=True)
+            say(1, line1, self.theme.ACCENT)
+        if locked:
+            say(2, f"Locked in {state.get('mode') or 'this'} mode. Pick custom to edit.")
+            return
+        step = item["scalar_increment"]
+        step_txt = "N/A" if step is None else "any whole number" if not step else str(step)
+        if ew:
+            say(2, f"Step {step_txt}. Type a value or use ← →, then Enter. d sets the default.")
+        else:
+            say(2, fit_parts([f"{fmt(item['min_value'])}–{fmt(item['max_value'])} {item['unit']}",
+                              f"default {fmt(item['default_value'])}", f"step {step_txt}"], iw), dim=True)
 
     def telemetry_box(self, y, x, height, width, name, color, parts, key, ceiling, chart_color, marks,
-                      note="", alert=None):
-        """One box: the numbers go in the title, one power graph fills the inside, an optional note takes the last row."""
-        self.box(y, x, height, width, name, color)
-        room = width - len(name) - 8
-        text = fit_parts(parts, room) if room > 0 and len(parts[0]) <= room else ""
+                      note="", alert=None, names=(), unit="W", floor=0):
+        """One box: the numbers go in the title, one graph fills the inside, an optional note takes the last row."""
+        if key:
+            self.history.setdefault(key, collections.deque(maxlen=240))
+        span = min(width - 4, self.history[key].maxlen) if key else 0  # one sample a second
+        top = f"{ceiling:.0f}{'' if unit == '°C' else ' '}{unit}"
+        scale = (f"{floor:.0f}-{top}, {span // 60} min" if span >= 120 else f"{floor:.0f}-{top}, {span} s") if key else ""
+        room = width - len(name) - 8 - (len(scale) + 4 if scale else 0)
+        if parts and room < len(parts[0]):  # the reading matters more than the scale
+            scale, room = "", width - len(name) - 8
+        self.box(y, x, height, width, name, color, scale)
+        text = fit_parts(parts, room) if parts and room > 0 and len(parts[0]) <= room else ""
         if text:
             self.put(y, x + len(name) + 4, f"{text} ", alert if alert is not None else color, alert is not None)
         ix, iw = x + 2, width - 4
@@ -555,92 +670,201 @@ class Dashboard(FanPanel):
             self.put(y + height - 2, ix, note, self.theme.TEXT, dim=True)
             rows -= 1
         if key and rows > 0:
-            self.chart_rows(y + 1, ix, iw, rows, key, ceiling, chart_color, marks)
+            self.chart_rows(y + 1, ix, iw, rows, key, ceiling, chart_color, marks, floor)
+            labels = {}  # limit names at the right edge, on the line they mark
+            for (value, mark_color), name in zip(marks, names):
+                line = min(rows - 1, int(clamp((value - floor) / max(1, ceiling - floor), 0, 1) * rows))
+                labels.setdefault(line, []).append((f"{name} {value:g}", mark_color))
+            for line, found in labels.items():
+                text = " ".join(t for t, _ in found)
+                if len(text) < iw:
+                    self.put(y + rows - line, ix + iw - len(text), text, found[-1][1], True)
+
+    @staticmethod
+    def reading(value, unit, decimals=0, what=""):
+        "One title reading; a missing one names what it is, so a bare N/A never stands alone."
+        return fmt(value, unit, decimals) if value is not None else f"{what} N/A".strip()
 
     def draw_telemetry(self, state, metrics, y, x, height, width):
+        """Wide screens: power (and on tall ones temperature) graphs on the left, every other
+        reading in a Sensors column on the right. Narrow screens stack CPU, GPU and System."""
+        if width >= 96:
+            sw = clamp(width * 36 // 100, 34, 44)
+            self.draw_sensors(metrics, y, x + width - sw, height, sw)
+            width -= sw
+            temp_h = clamp(height // 4, 7, 10) if height >= 28 else 0
+            self.power_boxes(state, metrics, y, x, height - temp_h, width)
+            if temp_h:
+                self.temp_boxes(state, metrics, y + height - temp_h, x, temp_h, width)
+            return
+        sys_h = 6 if height >= 18 else 5
+        self.power_boxes(state, metrics, y, x, height - sys_h, width)
+        self.system_box(metrics, y + height - sys_h, x, sys_h, width)
+
+    def power_boxes(self, state, metrics, y, x, height, width, side=False):
+        "The CPU and GPU power graphs with their limits, stacked in `height`, or side by side when `side`."
         cpu = metrics.get("cpu") or {}
         gpu = next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
         gpu_meta = metrics.get("gpu") or {}
-        memory = metrics.get("memory") or {}
         throttle = metrics.get("throttle") or {}
         attrs = state.get("attributes") or {}
 
         def limit(key):
             return (attrs.get(key) or {}).get("effective_value")
 
-        # Split right column into cpu / gpu / sys with flexible heights.
-        cpu_h = max(7, height * 38 // 100)
-        gpu_h = max(6, height * 32 // 100)
-        if cpu_h + gpu_h > height - 6:
-            gpu_h = max(6, height - cpu_h - 6)
-        sys_h = height - cpu_h - gpu_h
-        if sys_h < 5:
-            sys_h = 5
-            gpu_h = max(5, height - cpu_h - sys_h)
+        cpu_h = max(5, height * 55 // 100)
+        gpu_h = height - cpu_h
+        cpu_w = gpu_w = width
+        gx, gy = x, y + cpu_h
+        if side:
+            cpu_h = gpu_h = height
+            cpu_w, gpu_w, gx, gy = width // 2, width - width // 2, x + width // 2, y
 
-        # CPU
+        def clock(dev):
+            return [] if dev.get("clock_mhz") is None else [fmt(dev["clock_mhz"] / 1000, "GHz", 1)]
+
+        # CPU. Short boxes have no spare row for "Waiting"; a real reason replaces the graph's bottom row.
         throttled = bool((throttle.get("cpu") or {}).get("active"))
-        # Short boxes have no spare row for "Waiting"; a real reason replaces the graph's bottom row.
         source = cpu.get("power_source") or ""
-        reason = source if cpu.get("power_w") is None and not source.startswith("Waiting") else ""
+        sampling = cpu.get("power_w") is None and source.startswith("Waiting")
+        reason = source if cpu.get("power_w") is None and not sampling else ""
         pl1, pl2 = limit("ppt_pl1_spl"), limit("ppt_pl2_sppt")
         self.telemetry_box(
-            y, x, cpu_h, width, "CPU", self.theme.OK,
-            (["THROTTLE"] if throttled else []) + [fmt(cpu.get("temperature_c"), "°C"), fmt(cpu.get("power_w"), "W", 1),
-                                                 fmt(None if cpu.get("clock_mhz") is None else cpu["clock_mhz"] / 1000, "GHz", 1)],
-            "cpu_w", max(pl2 or 0, max((v for v in self.history["cpu_w"] if v is not None), default=0), 1), self.theme.WARN,
+            y, x, cpu_h, cpu_w, "CPU", self.theme.OK,
+            (["throttling"] if throttled else []) + [self.reading(cpu.get("temperature_c"), "°C", what="temp"),
+                                                     "…" if sampling else self.reading(cpu.get("power_w"), "W", 1, "power")]
+            + clock(cpu),
+            "cpu_w", max(pl2 or 0, max((v for v in self.history.get("cpu_w", ()) if v is not None), default=0), 1), self.theme.WARN,
             [(v, c) for v, c in ((pl1, self.theme.WARN), (pl2, self.theme.BAD)) if v is not None],
-            reason, self.theme.BAD if throttled else None)
+            reason, self.theme.BAD if throttled else None, [n for n, v in (("PL1", pl1), ("PL2", pl2)) if v is not None])
 
         # GPU
-        gy = y + cpu_h
         if gpu:
             ctgp, plimit = limit("gpu_nv_ctgp"), gpu.get("power_limit_w")
             reasons = gpu.get("throttle") or []
             self.telemetry_box(
-                gy, x, gpu_h, width, "GPU", self.theme.GPU,
-                (["THROTTLE"] if reasons else []) + [fmt(gpu.get("temperature_c"), "°C"), fmt(gpu.get("power_w"), "W", 1),
-                                                   fmt(None if gpu.get("clock_mhz") is None else gpu["clock_mhz"] / 1000, "GHz", 1)],
-                "gpu_w", max(ctgp or 0, plimit or 0, max((v for v in self.history["gpu_w"] if v is not None), default=0), 1), self.theme.WARN,
+                gy, gx, gpu_h, gpu_w, "GPU", self.theme.GPU,
+                (["throttling"] if reasons else []) + [self.reading(gpu.get("temperature_c"), "°C", what="temp"),
+                                                       self.reading(gpu.get("power_w"), "W", 1, "power")] + clock(gpu),
+                "gpu_w", max(ctgp or 0, plimit or 0, max((v for v in self.history.get("gpu_w", ()) if v is not None), default=0), 1), self.theme.WARN,
                 [(v, c) for v, c in ((ctgp, self.theme.WARN), (plimit, self.theme.BAD)) if v is not None],
-                ("throttle: " + ", ".join(reasons)) if reasons else "", self.theme.BAD if reasons else None)
+                ("throttle: " + ", ".join(reasons)) if reasons else "", self.theme.BAD if reasons else None,
+                [n for n, v in (("CTGP", ctgp), ("limit", plimit)) if v is not None])
         else:
-            self.telemetry_box(gy, x, gpu_h, width, "GPU", self.theme.GPU,
+            self.telemetry_box(gy, gx, gpu_h, gpu_w, "GPU", self.theme.GPU,
                                ["Asleep" if gpu_meta.get("suspended") else "Offline"], None, 1, 0, (),
                                gpu_meta.get("error") or "", None)
 
-        ix, iw = x + 2, width - 4
+    def temp_boxes(self, state, metrics, y, x, height, width):
+        "CPU and GPU temperature graphs side by side, each with the firmware limit where it throttles."
+        attrs = state.get("attributes") or {}
+        gpu = next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
+        left = width // 2
+        for bx, bw, name, color, now, key, limit_key in (
+                (x, left, "CPU temp", self.theme.OK, (metrics.get("cpu") or {}).get("temperature_c"), "cpu_t", "cpu_temp"),
+                (x + left, width - left, "GPU temp", self.theme.GPU, gpu.get("temperature_c"), "gpu_t", "gpu_temp")):
+            limit = (attrs.get(limit_key) or {}).get("effective_value")
+            self.telemetry_box(y, bx, height, bw, name, color, [self.reading(now, "°C")], key,
+                               max(100, limit or 0), self.theme.heat(now),
+                               [(limit, self.theme.BAD)] if limit is not None else [], names=["limit"], unit="°C",
+                               floor=30)
 
-        # System
-        sy = gy + gpu_h
-        used, total = memory.get("used_mib"), memory.get("total_mib")
-        mem_right = ""
-        if used is not None and total:
-            mem_right = f"{used / 1024:.1f}/{total / 1024:.1f} GiB"
-        self.box(sy, x, sys_h, width, "System", self.theme.INFO, mem_right)
-        if used is not None and total:
-            self.bar(sy + 1, ix, iw, used / total * 100, self.theme.INFO)
+    TEMP_GROUPS = {"cpu": "CPU", "gpu": "GPU", "ec": "Embedded controller", "nvme": "SSD", "ram": "RAM",
+                   "wifi": "Wi-Fi", "acpi": "Board"}
+
+    def sensor_sections(self, metrics):
+        "[(heading, [(label, value, color)])] for the Sensors column, most important first; empty sections left out."
+        text = self.theme.TEXT
+        hottest = {}
+        for t in metrics.get("temperatures") or []:
+            if t.get("c") is not None:
+                group = self.TEMP_GROUPS.get(t.get("group"), str(t.get("group") or "Other").capitalize())
+                hottest[group] = max(hottest.get(group, t["c"]), t["c"])
+        temps = [(name, fmt(c, "°C"), self.theme.heat(c)) for name, c in hottest.items()]
+        fans = [(f["name"], fmt(f["rpm"], " RPM"), text) for f in metrics.get("fans") or [] if f.get("rpm") is not None]
         battery = next(iter(metrics.get("battery") or []), {})
         ac = metrics.get("ac_online")
-        power = "AC" if ac else "Battery" if ac is False else "Power N/A"
-        bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}".strip()
-        health = battery.get("health_percent")
-        left = battery_left(battery)
-        parts = ([f"{power}  {bat}"] + ([left] if left else []) + ([f"health {health:.0f}%"] if health is not None else [])
-                 + [f"limit {battery.get('charge_limit') or 'N/A'}"]
-                 + ([f"charge {battery['charge_type'].replace('_', ' ')}"] if battery.get("charge_type") else [])
-                 + ([f"rapid {battery['rapid_charge']}"] if battery.get("rapid_charge") else []))
-        self.put(sy + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
-        if sys_h >= 6:
-            fans = metrics.get("fans") or []
-            fan_txt = "  ".join(f"{f['name']} {fmt(f['rpm'], 'RPM')}" for f in fans) if fans else "Fans N/A"
-            self.put(sy + 3, ix, fan_txt[:iw], self.theme.TEXT, dim=True)
-        if sys_h >= 7:
-            loads = metrics.get("load") or []
-            uptime = metrics.get("uptime_s")
-            up = f"  up {int(uptime // 3600)}h{int(uptime % 3600 // 60):02d}m" if uptime is not None else ""
-            self.put(sy + 4, ix, ("load " + " ".join(fmt(v, decimals=2) for v in loads) + up)[:iw],
-                     self.theme.TEXT, dim=True)
+        bat = []
+        if battery.get("percent") is not None:
+            bat.append(("Charge", fmt(battery["percent"], "%"), self.theme.OK if ac else self.theme.WARN))
+        if ac is not None or battery.get("status"):
+            bat.append(("Source", "AC power" if ac else "Battery" if ac is False else battery["status"], text))
+            if battery.get("status") and ac is not None:
+                bat.append(("Status", battery["status"], text))
+        if battery_left(battery):
+            bat.append(("Time", battery_left(battery), text))
+        if battery.get("health_percent") is not None:
+            bat.append(("Health", fmt(battery["health_percent"], "%"), text))
+        if battery.get("charge_limit"):
+            bat.append(("Charge limit", battery["charge_limit"], text))
+        memory = metrics.get("memory") or {}
+        used, total = memory.get("used_mib"), memory.get("total_mib")
+        mem = [("Used", f"{used / 1024:.1f} of {total / 1024:.1f} GiB", text)] if used is not None and total else []
+        loads, uptime = metrics.get("load") or [], metrics.get("uptime_s")
+        system = ([("Load", " ".join(fmt(v, decimals=2) for v in loads), text)] if loads else []) + (
+            [("Uptime", f"{int(uptime // 3600)} h {int(uptime % 3600 // 60):02d} min", text)] if uptime is not None else [])
+        return [(h, rows) for h, rows in (("Hottest sensors", temps), ("Fans", fans), ("Battery", bat), ("Memory", mem),
+                                          ("System", system)) if rows]
+
+    def draw_sensors(self, metrics, y, x, height, width):
+        "Every reading the graphs leave out, as label and value rows; the details view (t) has the full lists."
+        self.box(y, x, height, width, "Sensors", self.theme.INFO, "t details")
+        ix, iw, room = x + 2, width - 4, height - 2
+        sections = self.sensor_sections(metrics)
+        if not sections:
+            self.put(y + 1, ix, "No sensor data yet."[:iw], self.theme.WARN)
+            return
+        # Drop whole sections from the end, then shorten the temperature list, until it fits.
+        while len(sections) > 1 and sum(len(r) + 1 for _, r in sections) + len(sections) - 1 > room:
+            if sections[0][0] == "Hottest sensors" and len(sections[0][1]) > 3:
+                sections[0] = (sections[0][0], sections[0][1][:-1])
+            else:
+                sections.pop()
+        row = y + 1
+        for n, (heading, rows) in enumerate(sections):
+            if n:
+                row += 1
+            self.put(row, ix, heading[:iw], self.theme.INFO, bold=True)
+            row += 1
+            for label, value, color in rows:
+                if row >= y + height - 1:
+                    return
+                value = value[:iw - 2]
+                self.put(row, ix, label[: iw - len(value) - 1], self.theme.TEXT)
+                self.put(row, ix + iw - len(value), value, color)
+                row += 1
+
+    def system_box(self, metrics, y, x, height, width):
+        "Narrow screens: memory, battery, fans and load in one box under the graphs."
+        ix, iw = x + 2, width - 4
+        memory = metrics.get("memory") or {}
+        used, total = memory.get("used_mib"), memory.get("total_mib")
+        mem_right = f"{used / 1024:.1f}/{total / 1024:.1f} GiB" if used is not None and total else ""
+        self.box(y, x, height, width, "System", self.theme.INFO, mem_right)
+        if used is not None and total:
+            self.bar(y + 1, ix, iw, used / total * 100, self.theme.INFO)
+        battery = next(iter(metrics.get("battery") or []), {})
+        ac = metrics.get("ac_online")
+        bat = f"{fmt(battery['percent'], '%')} {battery.get('status') or ''}".strip() if battery.get("percent") is not None else ""
+        power = ("AC" if ac else "Battery" if ac is False else "") + (f"  {bat}" if bat else "")
+        left, health = battery_left(battery), battery.get("health_percent")
+        parts = ([power.strip()] if power.strip() else ["Battery N/A"]) + (
+            [f"limit {battery['charge_limit']}"] if battery.get("charge_limit") else []) + ([left] if left else []) + (
+            [f"health {health:.0f}%"] if health is not None else []) + (
+            [f"charge {battery['charge_type'].replace('_', ' ')}"] if battery.get("charge_type") else [])
+        if ac and len("  ".join(parts)) + 6 <= iw:  # spell it out when the whole line still fits
+            parts[0] = parts[0].replace("AC", "AC power", 1)
+        self.put(y + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
+        if height >= 5:
+            fans = [f for f in metrics.get("fans") or [] if f.get("rpm") is not None]
+            fan_txt = "  ".join(f"{f['name']} {fmt(f['rpm'], ' RPM')}" for f in fans) if fans else "Fans N/A"
+            self.put(y + 3, ix, fan_txt[:iw], self.theme.TEXT)
+        if height >= 6:
+            loads, uptime = metrics.get("load") or [], metrics.get("uptime_s")
+            up = f"up {int(uptime // 3600)} h {int(uptime % 3600 // 60):02d} min" if uptime is not None else ""
+            parts = (["load " + " ".join(fmt(v, decimals=2) for v in loads)] if loads else []) + ([up] if up else [])
+            if parts:
+                self.put(y + 4, ix, fit_parts(parts, iw, "  "), self.theme.TEXT, dim=True)
 
     def draw_details(self, metrics, y, x, height, width):
         self.box(y, x, height, width, "Details", self.theme.INFO, "t or Esc: back")
@@ -698,8 +922,11 @@ class Dashboard(FanPanel):
             left = room - len(lines) - 1
             more = more or left < 1 or len(found) > left
             if left >= 1:
-                lines.append((name, head, True))
-                lines += (found or [("  N/A", text, False)])[:left]
+                if found:
+                    lines.append((name, head, True))
+                    lines += found[:left]
+                else:
+                    lines.append((f"{name}: N/A", head, True))
         if more or len(lines) > room:
             lines = lines[:max(0, min(len(lines), room - 1))] + [("…", text, False)]
         for i, (line, color, bold) in enumerate(lines):
@@ -707,15 +934,14 @@ class Dashboard(FanPanel):
 
     def draw_keyboard(self, y, x, height, width):
         kb = self.keyboard
-        status = "Live" if self.kb_live else "Preview off"
+        status = "changes apply now" if self.kb_live else "Preview off"
         if not kb.available:
             status = "Missing"
         self.box(y, x, height, width, "Keyboard (LegionAura)", self.theme.GPU, status)
         ix, iw = x + 2, width - 4
         if not kb.available:
-            self.put(y + 2, ix, "Install LegionAura (AUR: legionaura)", self.theme.WARN)
-            self.put(y + 3, ix, "for 4-zone RGB control.", self.theme.WARN)
-            self.put(y + 5, ix, "Esc returns to firmware controls.", self.theme.TEXT, dim=True)
+            self.put(y + 2, ix, "Keyboard lighting needs LegionAura on PATH."[:iw], self.theme.WARN)
+            self.put(y + 3, ix, "Get it from github.com/nivedck/LegionAura."[:iw], self.theme.TEXT)
             return
 
         # Effect row
@@ -739,7 +965,7 @@ class Dashboard(FanPanel):
             chosen = zi == self.kb_zone
             zx = ix + zi * max(12, iw // 4)
             border = "▶" if chosen else " "
-            self.put(y + 5, zx, f"{border}Z{zi + 1}", self.theme.GPU if chosen else self.theme.TEXT, bold=chosen)
+            self.put(y + 5, zx, f"[Z{zi + 1}]" if chosen else f" Z{zi + 1} ", self.theme.GPU if chosen else self.theme.TEXT, bold=chosen)
             if self.theme.enabled:
                 self.put(y + 6, zx, "████", pair, True)
             self.put(y + 7, zx, f"#{hexcolor}", self.theme.TEXT, dim=not chosen)
@@ -752,7 +978,7 @@ class Dashboard(FanPanel):
         h_deg, s_pct, v_pct = rgb_to_hsv(*rgb)
         channels = (("H", h_deg, 360, "°"), ("S", s_pct, 100, "%"), ("V", v_pct, 100, "%"))
         cy = y + 9
-        self.put(cy, ix, fit_parts([f"zone {self.kb_zone + 1}  HSV picker", "(terminal swatch ≈ nearest ANSI)"], iw, "  "), self.theme.ACCENT)
+        self.put(cy, ix, f"zone {self.kb_zone + 1}  HSV picker"[:iw], self.theme.ACCENT)
         for i, (name, value, ceiling, unit) in enumerate(channels):
             yy = cy + 1 + i
             chosen = i == self.kb_channel
@@ -765,52 +991,143 @@ class Dashboard(FanPanel):
 
         tip_y = min(y + height - 3, cy + 5)
         self.put(tip_y, ix, fit_parts(["Hardware shows the true color.", "UI uses your terminal theme only."], iw, " "), self.theme.TEXT, dim=True)
-        self.put(tip_y + 1, ix, f"config {kb.config}"[:iw], self.theme.TEXT, dim=True)
 
-    HELP_LINES = (
-        "Global    Tab section  Space pause  ? help  q quit",
-        "Overview  t details   Esc closes details",
-        "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
-        "          0-9 type a value   Backspace delete   Esc clear",
-        "          Enter apply   r discard   d stage firmware default",
-        "          Limits need custom mode (Enter on mode row)",
-        "          v last results   s sudo authenticate (if needed)",
-        "          m overlay of every mode's firmware limits",
-        "Keyboard  l open lighting panel   Esc back to firmware",
-        "          1–4 select zone   ←/→ adjust HSV   ↑↓ channel",
-        "          e cycle effect   b brightness   w wave dir",
-        "          c copy color to all zones   Space live apply",
-        "          Enter apply via legionaura",
-        "",
-        "Fans      f open fan curves (edits need custom mode)",
-        "          ←→ or Tab/[ ] select point",
-        "          ↑↓ next speed the fan stores (both fans)",
-        "          Shift+↑↓ five steps   t details",
-        "          Enter apply   r discard   R reset to stock",
-        "          p next curve   W save   Esc back",
+    HELP_GLOBAL = (
+        "Tab       next page   Shift+Tab  previous page",
+        "Esc       back one level, close a box, clear a row",
+        "s         authenticate sudo (Power, Fans, Keyboard)",
+        "?         this help   q  quit",
+        "Top right: local, root or API (how loqctl runs)",
     )
+    HELP_PAGES = {
+        "overview": (
+            "↑↓        previous or next page",
+            "t         details view (Esc closes it)",
+            "m         every mode's firmware limits",
+            "Space     pause the graphs",
+        ),
+        "main": (
+            "↑↓        select a row (past the edge: change page)",
+            "←→        step the value, or cycle the mode",
+            "0-9       type a value   Backspace  delete",
+            "Enter     apply   r  discard   d  firmware default",
+            "m         every mode's limits   v  last results",
+            "Space     pause the graphs",
+            "Limits are editable in custom mode only.",
+        ),
+        "fans": (
+            "←→        select a step",
+            "↑↓        change its speed (Shift: five steps)",
+            "Enter     apply   r  discard   R  stock curve",
+            "p         stage the next saved or stock curve",
+            "W         save the curve on screen",
+            "t         table instead of chart (narrow screens)",
+            "Now: is live; the step line is the curve setting.",
+        ),
+        "keyboard": (
+            "1-4       select a zone",
+            "↑↓        pick H, S or V (past the edge: change page)",
+            "←→        nudge it   H L  fine steps",
+            "Enter     apply   Space  toggle live apply",
+            "e b w     effect, brightness, wave direction",
+            "c         copy this zone's color to all zones",
+        ),
+    }
 
-    def footer_hint(self, width):
-        entries = list(self.HINTS.get(self.panel, self.HINTS["main"]))
+    HELP_READONLY = {
+        "main": (
+            "↑↓        select a row (past the edge: change page)",
+            "←→        cycle the mode on the mode row",
+            "Enter     apply the chosen mode",
+            "m         every mode's limits   v  last results",
+            "Space     pause the graphs",
+            "Limits are editable in custom mode only.",
+        ),
+        "fans": (
+            "←→        select a step",
+            "t         table instead of chart (narrow screens)",
+            "W         save the curve on screen",
+            "Pick custom mode on Power to edit the curve.",
+        ),
+    }
+
+    def page_missing(self):
+        "What the current page needs when it cannot work, else an empty string."
+        if self.panel == "fans" and not self.fan_points():
+            return "needs legion_laptop"
+        if self.panel == "keyboard" and not self.keyboard.available:
+            return "install legionaura"
+        return ""
+
+    MISSING_TEXT = {"fans": "Fan curves need the legion_laptop module.", "keyboard": "Keyboard lighting needs LegionAura."}
+
+    def no_data(self, state):
+        "True when nothing can be read or edited: the backend failed, or no sensor or firmware data has arrived."
+        if state.get("error"):
+            return True
+        return self.panel in ("overview", "main") and not state.get("mode") and not (state.get("metrics") or {}).get("timestamp")
+
+    def wide_fans(self):
+        "True when the Fans box is wide enough to show the step table next to the chart (see draw_fans)."
+        return self.s.getmaxyx()[1] - self.NAV_W - 1 - 4 >= 90
+
+    def needs_unlock(self):
+        return (self.sudo_expired and self.panel in ("main", "fans") and not self.page_missing()
+                and not self.backend.remote and os.geteuid() != 0)
+
+    def footer_hint(self, width, state):
+        missing = self.page_missing()
+        if missing or self.no_data(state):
+            entries = ["Tab page"]
+        elif self.panel in self.HINTS_READONLY and self.locked(state):
+            entries = list(self.HINTS_READONLY[self.panel])
+            if self.panel == "fans" and self.wide_fans():
+                entries.remove("t table")
+        else:
+            entries = list(self.HINTS.get(self.panel, self.HINTS["main"]))
+            if self.panel == "main" and not self.pending:
+                entries.remove("Enter apply")
+            rows = self.rows(state) if self.panel == "main" else []
+            if rows and 0 < self.selected < len(rows) and self.fields.get(rows[self.selected]):
+                entries = ["Enter apply", "⌫ delete", "Esc clear", "Tab page"]  # typing a value
+            if self.panel == "fans":
+                if self.wide_fans():
+                    entries.remove("t table")  # the table is already beside the chart
+                if self.fan_edit is not None:
+                    entries.insert(entries.index("Enter apply") + 1, "r discard")
+                else:
+                    entries[entries.index("Enter apply")] = "p curves"
+            if self.panel == "keyboard":
+                if self.keyboard.effect == "wave":
+                    entries.insert(-1, "w wave")
+        if self.needs_unlock():
+            entries.insert(0, "s unlock")
         while entries and len("  ".join(["? help", *entries, "q quit"])) > width:
             entries.pop()
         return "  ".join(["? help", *entries, "q quit"])
 
-    def draw_help(self):
+    def help_lines(self, state=None):
+        "The global keys, then only the keys that work on this page right now."
+        if self.page_missing():
+            return (*self.HELP_GLOBAL, "", self.MISSING_TEXT[self.panel])
+        page = self.HELP_PAGES.get(self.panel, self.HELP_PAGES["main"])
+        if state is not None and self.locked(state) and self.panel in self.HELP_READONLY:
+            page = self.HELP_READONLY[self.panel]
+        return (*self.HELP_GLOBAL, "", *page)
+
+    def draw_help(self, state=None):
+        "Fills the content area only, so the nav column and the status and key lines stay visible."
         h, w = self.s.getmaxyx()
-        bw = min(86, w - 4)
-        bh = min(len(self.HELP_LINES) + 2, h - 2)
-        bx, by = (w - bw) // 2, max(1, (h - bh) // 2)
+        bx, by, bw, bh = self.NAV_W + 1, 1, w - self.NAV_W - 1, h - 3
         self.fill(by, bx, bh, bw)
         hint = "? or Esc to close"
-        title = "Help" if bw >= len(hint) + 16 else ""
-        self.box(by, bx, bh, bw, title, self.theme.ACCENT, right=hint)
-        lines = list(self.HELP_LINES)
-        if len(lines) > bh - 2:
-            keep = max(0, bh - 3)
-            lines = lines[:keep] + [f"… ({len(lines) - keep} more, resize)"]
-        for i, line in enumerate(lines[: bh - 2]):
-            self.put(by + 1 + i, bx + 2, line[: bw - 4], self.theme.TEXT, dim=not line)
+        title = f"Help: {self.SECTION_LABELS.get(self.panel, 'Power')}"
+        self.box(by, bx, bh, bw, title if bw >= len(title) + len(hint) + 10 else "", self.theme.ACCENT, right=hint)
+        wrapped = []
+        for line in self.help_lines(state):
+            wrapped += textwrap.wrap(line, bw - 4, subsequent_indent=" " * 10, drop_whitespace=False) or [""]
+        for i, line in enumerate(wrapped[: bh - 2]):
+            self.put(by + 1 + i, bx + 2, line.rstrip(), self.theme.TEXT)
 
     def draw_results(self):
         h, w = self.s.getmaxyx()
@@ -852,17 +1169,19 @@ class Dashboard(FanPanel):
         modes = state.get("modes") or []
         rows = self.rows(state)[1:]
         attrs, table = state.get("attributes") or {}, state.get("mode_limits")
-        bw = min(w - 4, 26 + 13 * len(modes))
-        bh = min(h - 2, len(rows) + 6)
-        bx, by = (w - bw) // 2, max(0, (h - bh) // 2)
+        live = state.get("mode")
+        heads = [f"[{MODE_SHORT.get(m, m)}]" if m == live else MODE_SHORT.get(m, m) for m in modes]
+        cw = max(map(len, heads), default=0) + 2
+        bw = min(w - 4, 30 + cw * len(modes))
+        bh = min(h - 4, len(rows) + 6)  # stay clear of the status and key rows
+        bx, by = (w - bw) // 2, 1 + (h - 3 - bh) // 2
         inner = bw - 4
-        lw = clamp(inner - 11 * max(len(modes), 1), 14, 26)
-        cw = min(11, (inner - lw) // max(len(modes), 1))
-        self.fill(by, bx, bh, bw)
+        lw = clamp(inner - cw * len(modes), 14, 26)
+        self.fill(1, 0, h - 3, w)  # clear the page behind, so no border fragments show around the box
         self.box(by, bx, bh, bw, "Mode limits", self.theme.ACCENT)
         self.put(by + 1, bx + 2, "Control", self.theme.ACCENT, True)
-        for col, mode in enumerate(modes):
-            self.put(by + 1, bx + 2 + lw + cw * col, f"{mode:>{cw - 1}}", self.theme.ACCENT, True)
+        for col, head in enumerate(heads):
+            self.put(by + 1, bx + 2 + lw + cw * col, f"{head:>{cw - 1}}", self.theme.ACCENT, True)
         room = bh - 5
         shown = rows
         if len(rows) > room:
@@ -879,7 +1198,7 @@ class Dashboard(FanPanel):
                          bold=mode == state.get("mode"))
         note = "Custom is live; other modes come from the firmware table."
         if table is None:
-            note = "Stock-mode limits need root: press s or run sudo loqctl serve"
+            note = "Stock limits need root once per boot: press s"
         self.put(by + bh - 3, bx + 2, note[: bw - 4], self.theme.WARN if table is None else self.theme.TEXT, dim=table is not None)
         self.put(by + bh - 2, bx + 2, "Enter / Esc / m closes", self.theme.ACCENT)
 
@@ -898,7 +1217,9 @@ class Dashboard(FanPanel):
                 raise ControlError("This control is unavailable.")
             lo, hi, step = item["min_value"], item["max_value"], max(1, item["scalar_increment"])
             if not lo <= value <= hi or (value - lo) % step:
-                raise ControlError(f"Use {lo}–{hi} in steps of {step}.")
+                unit = item.get("unit") or ""
+                steps = f" in steps of {step}" if step > 1 else ""
+                raise ControlError(f"{value}{unit_sep(unit)}{unit} is not allowed. Use {lo}–{hi}{unit_sep(unit)}{unit}{steps}.")
             current = item["current_value"]
             dropped_mode = self.pending.pop("mode", None) is not None
         if value == current:
@@ -923,10 +1244,10 @@ class Dashboard(FanPanel):
             if not text.isdigit():
                 raise ControlError("Enter an integer.")
             self.stage(state, key, int(text))
-        except ControlError:
+        except ControlError as exc:
             self.invalid.add(key)
             self.pending.pop(key, None)
-            self.notice = "Value is not valid for this control."
+            self.notice = str(exc)
         else:
             self.invalid.discard(key)
 
@@ -1074,7 +1395,7 @@ class Dashboard(FanPanel):
 
     def handle_keyboard(self, ch, state):
         kb = self.keyboard
-        if ch in (27, ord("l")):
+        if ch == 27:
             self.leave_section(state)
             self.notice = "Back to firmware controls."
             return
@@ -1086,23 +1407,23 @@ class Dashboard(FanPanel):
         if ch in (ord("1"), ord("2"), ord("3"), ord("4")):
             self.kb_zone = ch - ord("1")
             self.notice = f"Selected zone {self.kb_zone + 1}."
-        elif ch in (curses.KEY_UP, ord("k")):
+        elif ch == curses.KEY_UP:
             if self.kb_channel == 0:
                 self.step_section(state, -1)  # off the top edge: the previous section
             else:
                 self.kb_channel -= 1
-        elif ch in (curses.KEY_DOWN, ord("j")):
+        elif ch == curses.KEY_DOWN:
             if self.kb_channel == 2:
                 self.step_section(state, 1)
             else:
                 self.kb_channel += 1
-        elif ch in (curses.KEY_LEFT, ord("-")):
+        elif ch == curses.KEY_LEFT:
             self.kb_nudge(-1)
-        elif ch in (curses.KEY_RIGHT, ord("+"), ord("=")):
+        elif ch == curses.KEY_RIGHT:
             self.kb_nudge(1)
-        elif ch in (ord("H"),):  # fine adjust
+        elif ch == ord("H"):  # fine adjust
             self.kb_nudge(-1, fine=True)
-        elif ch in (ord("L"),):
+        elif ch == ord("L"):
             self.kb_nudge(1, fine=True)
         elif ch == ord("e"):
             idx = kb.EFFECTS.index(kb.effect) if kb.effect in kb.EFFECTS else 0
@@ -1175,14 +1496,14 @@ class Dashboard(FanPanel):
         if ch == ord("?") and getattr(self, "panel", "main") not in ("main", "overview"):
             self.help = True
             return
-        if ch in (9, curses.KEY_BTAB) and self.panel != "fans":  # the fan panel keeps Tab for curves
+        if ch in (9, curses.KEY_BTAB):
             self.step_section(state, -1 if ch == curses.KEY_BTAB else 1)
             return
         if ch == ord("s") and self.panel in ("fans", "keyboard"):  # the status line offers it on every page
             self.authenticate()
             return
-        if self.panel == "overview" and ch in (curses.KEY_UP, curses.KEY_DOWN, ord("j"), ord("k")):
-            self.step_section(state, 1 if ch in (curses.KEY_DOWN, ord("j")) else -1)
+        if self.panel == "overview" and ch in (curses.KEY_UP, curses.KEY_DOWN):
+            self.step_section(state, 1 if ch == curses.KEY_DOWN else -1)
             return
         if getattr(self, "panel", "main") == "keyboard":
             self.handle_keyboard(ch, state)
@@ -1194,7 +1515,7 @@ class Dashboard(FanPanel):
             self.handle_fans(ch, state)
             return
 
-        if self.panel == "overview" and ch not in map(ord, "q?tmlf sv"):
+        if self.panel == "overview" and ch not in map(ord, "q?tm sv"):
             return  # the overview is read-only; edits belong to Power
         rows = self.rows(state)
         if not rows:
@@ -1204,10 +1525,6 @@ class Dashboard(FanPanel):
                 self.help = True
             elif ch == ord("t"):
                 self.toggle_details()
-            elif ch == ord("l"):
-                self.open_keyboard()
-            elif ch == ord("f"):
-                self.open_fans()
             return
         self.selected = clamp(self.selected, 0, len(rows) - 1)
         visit = self.shown_rows(state)
@@ -1234,10 +1551,6 @@ class Dashboard(FanPanel):
             self.show_limits = True
         elif ch == ord("t"):
             self.toggle_details()
-        elif ch == ord("l"):
-            self.open_keyboard()
-        elif ch == ord("f"):
-            self.open_fans()
         elif ch == ord(" "):
             self.paused = not self.paused
             self.notice = "Graph history paused; readings stay live." if self.paused else "Telemetry resumed."
@@ -1247,13 +1560,13 @@ class Dashboard(FanPanel):
             self.show_results = bool(self.apply_results)
             if not self.apply_results:
                 self.notice = "No apply results yet. Edit a row and press Enter."
-        elif ch in (curses.KEY_DOWN, ord("j")):
+        elif ch == curses.KEY_DOWN:
             at = visit.index(key)
             if at == len(visit) - 1:
                 self.step_section(state, 1)  # off the bottom edge: the next section
             else:
                 self.selected = rows.index(visit[at + 1])
-        elif ch in (curses.KEY_UP, ord("k")):
+        elif ch == curses.KEY_UP:
             at = visit.index(key)
             if at == 0:
                 self.step_section(state, -1)
@@ -1283,7 +1596,7 @@ class Dashboard(FanPanel):
             else:
                 self.notice = f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter."
         elif key != "mode" and self.locked(state) and (
-                ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("+"), ord("-"), ord("="), ord("d"), *digits)):
+                ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("d"), *digits)):
             self.notice = f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter."
         elif ch == ord("d"):
             if key == "mode":
@@ -1302,8 +1615,8 @@ class Dashboard(FanPanel):
             text = self.fields.get(key, "")
             if len(text) < 6:
                 self.set_field(state, key, text + chr(ch))
-        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("+"), ord("-"), ord("=")):
-            direction = 1 if ch in (curses.KEY_RIGHT, ord("+"), ord("=")) else -1
+        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            direction = 1 if ch == curses.KEY_RIGHT else -1
             if key == "mode":
                 modes = state.get("modes", [])
                 current = self.pending.get(key, state.get("mode"))

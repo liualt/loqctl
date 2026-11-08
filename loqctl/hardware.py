@@ -11,7 +11,7 @@ import threading
 import time
 
 from .battery import read_battery, write_battery
-from .capdata import NOT_FOUND, effective_value, read_mode_table
+from .capdata import effective_value, read_mode_table
 from .common import FIELDS, ControlError, read, scaled
 from .fancurve import curve_scale, find_legion_hwmon, read_curve, write_curve
 
@@ -194,9 +194,10 @@ class Hardware:
             mode = read(profile)
             if mode != self._static_mode:
                 self._static, self._static_mode = {}, mode
-            table, reason = self.mode_limits()
-            if mode_driver != GAMEZONE:
-                table, reason = None, NOT_FOUND  # the capdata rows describe gamezone's modes only
+            if mode_driver == GAMEZONE:
+                table, reason = self.mode_limits()
+            else:  # the capdata rows describe gamezone's modes only, so skip the fetch and reload hook
+                table, reason = None, "stock limits are known for lenovo-wmi-gamezone only"
             for key in FIELDS:
                 item = self._read_item(base, key, mode, table)
                 if item:
@@ -275,6 +276,8 @@ class Hardware:
             points, scale = read_curve(hwmon), curve_scale(hwmon)
             if not points:
                 return {"available": False, "reason": "legion_hwmon exposes no fan curve points"}
+            if all(p.get("fan1") is None for p in points):  # files exist but every read failed
+                return {"available": False, "reason": f"the fan curve could not be read in {mode} mode"}
             return {"available": True, "mode": mode, "hwmon": str(hwmon), "unit": scale.unit, "max_rpm": scale.max_rpm,
                     "points": points, "rpm": [scaled(hwmon / f"fan{n}_input") for n in (1, 2)]}
 

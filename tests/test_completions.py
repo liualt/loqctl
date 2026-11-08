@@ -36,7 +36,7 @@ class CompletionTests(unittest.TestCase):
                 # fish spells long options as `-l name`
                 self.assertTrue(opt in words or f"-l {opt[2:]}" in text, f"{name} lacks {opt}")
 
-    def _modes(self, shell, root):
+    def _modes(self, shell, root, stderr=False):
         """Run the mode lookup of one completion file with /sys redirected to root."""
         with open(os.path.join(DIR, "loqctl.bash" if shell == "bash" else "loqctl.fish")) as f:
             text = f.read().replace("/sys/", root + "/")
@@ -44,7 +44,50 @@ class CompletionTests(unittest.TestCase):
             script = text + '\nCOMP_WORDS=(loqctl mode ""); COMP_CWORD=2; _loqctl; echo "${COMPREPLY[*]}"'
         else:
             script = text + "\n__loqctl_modes | string join ' '"
-        return subprocess.run([shell, "-c", script], capture_output=True, text=True, timeout=20).stdout.split()
+        done = subprocess.run([shell, "-c", script], capture_output=True, text=True, timeout=20)
+        return (done.stdout.split(), done.stderr) if stderr else done.stdout.split()
+
+    def test_mode_choices_without_name_file_print_no_error(self):
+        for shell in ("bash", "fish"):
+            if not shutil.which(shell):
+                continue
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory() as root:
+                d = os.path.join(root, "class", "platform-profile", "p0")
+                os.makedirs(d)
+                with open(os.path.join(d, "choices"), "w") as f:
+                    f.write("quiet performance\n")
+                self.assertEqual(self._modes(shell, root, stderr=True), (["quiet", "performance"], ""))
+
+    def test_zsh_file_parses(self):
+        if shutil.which("zsh"):
+            done = subprocess.run(["zsh", "-n", os.path.join(DIR, "_loqctl")], capture_output=True, text=True, timeout=20)
+            self.assertEqual((done.returncode, done.stderr), (0, ""))
+
+    def test_kb_effect_arguments_complete(self):
+        flags = {"--speed", "--brightness"}
+        cases = {
+            # fish offers options only once the word starts with a dash
+            "bash": (("kb wave ", {"ltr", "rtl"} | flags), ("kb hue ", flags), ("kb wave --speed ", set()), ("kb off ", set())),
+            "fish": (("kb wave ", {"ltr", "rtl"}), ("kb wave -", flags), ("kb hue -", flags), ("kb off -", set())),
+        }
+        for shell, lines in cases.items():
+            if not shutil.which(shell):
+                continue
+            for line, want in lines:
+                with self.subTest(shell=shell, line=line):
+                    self.assertEqual(self._complete(shell, line), want)
+
+    def _complete(self, shell, line):
+        """Words offered for `loqctl <line>` by one completion file."""
+        with open(os.path.join(DIR, "loqctl.bash" if shell == "bash" else "loqctl.fish")) as f:
+            text = f.read()
+        if shell == "bash":
+            words = " ".join(f'"{w}"' for w in ("loqctl", *line.split(), ""))
+            script = text + f'\nCOMP_WORDS=({words}); COMP_CWORD=$((${{#COMP_WORDS[@]}} - 1)); _loqctl; echo "${{COMPREPLY[*]}}"'
+        else:
+            script = text + f'\ncomplete -C "loqctl {line}" | string replace -r "\\t.*" ""'
+        out = subprocess.run([shell, "-c", script], capture_output=True, text=True, timeout=20).stdout
+        return set(out.split()) - {"-h", "--help", "--socket", "--version"}
 
     def test_mode_choices_prefer_gamezone_class_device(self):
         for shell in ("bash", "fish"):

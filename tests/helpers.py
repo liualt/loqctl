@@ -52,6 +52,7 @@ class SysfsCase(unittest.TestCase):
         dashboard.sudo_expired = False
         dashboard.apply_results = []
         dashboard.show_results = False
+        dashboard.history = {}
         dashboard.backend = type("Backend", (), {"remote": True})()
         dashboard.backend.write = self.hw.set_value
         dashboard.backend.refresh = lambda: None
