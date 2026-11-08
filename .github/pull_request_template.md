@@ -12,7 +12,7 @@ Fixes #
 
 ## Testing
 
-- [ ] `python3 -m unittest discover -s tests -v` passes
+- [ ] Affected tests pass locally; CI passes
 - [ ] New firmware-writing paths have a simulated-sysfs test
 - Real hardware: <!-- model and BIOS, or "none" -->
 
