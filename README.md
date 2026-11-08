@@ -61,7 +61,7 @@ Or run it in place with `python3 loqctl.py`.
 loqctl
 ```
 
-A section list on the left (Overview, Power, Fans, Keyboard) picks the page on the right. Sections the laptop does not support are hidden. Overview shows telemetry only; Power holds the firmware controls. The graph titles carry the scale (0-N W). With no sensor data Overview says so and points at `loqctl doctor`; CPU watts show … until the first sample.
+A section list on the left (Overview, Power, Fans, Keyboard) picks the page on the right. Sections the laptop does not support are hidden. Overview shows telemetry only; Power holds the firmware controls. The graph titles carry the scale and time span (0-N W, 2 min), and the PL1/PL2 (CPU) and CTGP/limit (GPU) lines are labelled with their values at the right edge. The badge at the top right says how loqctl runs: LOCAL as you, ROOT as root, API against the daemon. Power scrolls with a row marker (6/19) in its title, and on tall terminals shows live CPU and GPU temperature and watts above the limits. With no sensor data Overview says so and points at `loqctl doctor`; CPU watts show … until the first sample.
 
 | Key | Action |
 | --- | --- |
