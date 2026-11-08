@@ -108,7 +108,7 @@ Firmware writes need root. You have two options:
 | `Esc` | Back |
 | `q` | Quit |
 
-Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the real RGB. Settings are read from `~/.config/legionaura/config.json`.
+Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the real RGB. Settings are read from `~/.config/legionaura/config.json`. LegionAura saves black zones for effects that ignore colors (wave, hue, off), so loqctl keeps the colors it already knew and sends them again when you cycle back to static or breath.
 
 ### Fan curves
 
