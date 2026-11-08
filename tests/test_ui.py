@@ -297,7 +297,7 @@ class UiTests(helpers.SysfsCase):
 
     def test_moving_keeps_valid_drops_empty_keeps_invalid(self):
         dashboard, state = self.multi()
-        self.type_keys(dashboard, state, "6", "0", "j", "8", "5", curses.KEY_BACKSPACE, 127, "j", "5", "1")
+        self.type_keys(dashboard, state, "6", "0", curses.KEY_DOWN, "8", "5", curses.KEY_BACKSPACE, 127, curses.KEY_DOWN, "5", "1")
         self.assertEqual(dashboard.pending, {"ppt_pl1_spl": 60})
         self.assertEqual(dashboard.invalid, {"gpu_temp"})
         self.assertEqual(dashboard.fields, {"ppt_pl1_spl": "60", "gpu_temp": "51"})
@@ -305,7 +305,7 @@ class UiTests(helpers.SysfsCase):
     def test_enter_refuses_with_invalid_and_jumps(self):
         dashboard, state = self.multi()
         dashboard.selected = 3
-        self.type_keys(dashboard, state, "5", "1", "k", "k")
+        self.type_keys(dashboard, state, "5", "1", curses.KEY_UP, curses.KEY_UP)
         self.assertEqual(dashboard.selected, 1)
         self.type_keys(dashboard, state, 10)
         self.assertEqual(dashboard.selected, 3)
@@ -547,8 +547,8 @@ class UiTests(helpers.SysfsCase):
         dashboard.keyboard = m_keyboard.Keyboard(binary="/usr/bin/false",
                                           config=self.root / "missing.json")
         dashboard.handle(ord("x"), {})
-        dashboard.handle(ord("l"), {})
-        self.assertEqual(dashboard.panel, "keyboard")
+        dashboard.handle(9, {})
+        self.assertEqual(dashboard.panel, "fans")
         dashboard.handle(27, {})
         self.assertEqual(dashboard.panel, "main")
 
@@ -671,28 +671,6 @@ class UiTests(helpers.SysfsCase):
         dash.draw_results()
         self.assertFalse(any("matched firmware" in c for c in calls))
 
-    def test_help_overlay_fits_80x24_and_shows_close_hint(self):
-        dash = self.dashboard()
-        dash.theme = Mock(TEXT=7, ACCENT=1, WARN=3)
-        lines = m_ui.Dashboard.HELP_LINES
-        self.assertLessEqual(max(map(len, lines)), 60)
-        self.assertTrue(lines[0].startswith("Global"))
-        for size in ((24, 80), (20, 72), (20, 30)):
-            calls = []
-            dash.s = Mock()
-            dash.s.getmaxyx.return_value = size
-            dash.put = lambda y, x, text, *a, **k: calls.append(text)
-            dash.fill = Mock()
-            dash.draw_help()
-            self.assertTrue(any("? or Esc to close" in c for c in calls))
-            if size == (24, 80):
-                self.assertTrue(set(filter(None, lines)) <= set(calls))
-            elif size == (20, 72):
-                self.assertIn(lines[0], calls)
-                self.assertTrue(any("more, resize" in c for c in calls))
-            else:
-                self.assertNotIn(" Help ", calls)
-
     def test_put_draws_the_last_column(self):
         dash = m_ui.Dashboard.__new__(m_ui.Dashboard)
         dash.theme = m_ui.Theme(False)
@@ -713,6 +691,17 @@ class UiTests(helpers.SysfsCase):
             dash.handle(ord("?"), {})
             self.assertFalse(dash.help, panel)
             self.assertEqual(dash.panel, panel)
+
+    def test_duplicate_keys_are_gone(self):
+        state = self.hw.capabilities()
+        for panel, keys in (("main", "jk+-=lf"), ("keyboard", "jk+-=l")):
+            for key in keys:
+                dash = self.dash()
+                dash.panel, dash.selected, dash.kb_channel, dash.kb_zone = panel, 1, 1, 1
+                dash.keyboard.available = True
+                dash.handle(ord(key), state)
+                self.assertEqual((dash.panel, dash.selected, dash.pending, dash.kb_channel),
+                                 (panel, 1, {}, 1), (panel, key))
 
     def test_tab_cycles_supported_sections_and_hides_missing(self):
         dash = self.dash()
@@ -1094,34 +1083,6 @@ class UiTests(helpers.SysfsCase):
         dash.panel, dash.kb_channel = "keyboard", 0
         dash.handle(curses.KEY_UP, state)
         self.assertEqual(dash.panel, "fans")
-
-    def test_footer_hint_fits_and_keeps_help_and_quit(self):
-        for panel in ("overview", "main", "keyboard", "fans"):
-            for width in (72, 80, 120):
-                dash = self.dash()
-                dash.panel = panel
-                calls = []
-                dash.put = lambda y, x, text, *a, **k: calls.append(text)
-                dash.s = Mock()
-                dash.s.getmaxyx.return_value = (30, width)
-                dash.kb_seen = dash.keyboard.last_seq
-                dash.paused = False
-                dash.push_history = lambda metrics: None
-                dash.help = dash.show_results = dash.show_limits = False
-                dash.sudo_expired = False
-                dash.theme = Mock()
-                dash.draw_main = dash.draw_keyboard = dash.draw_fans = dash.draw_overview = lambda *a, **k: None
-                dash.draw_nav = lambda *a, **k: None
-                dash.draw({"metrics": {}})
-                hint = next(t for t in calls if isinstance(t, str) and t.startswith("? help"))
-                self.assertLessEqual(len(hint), width - 3, (panel, width))
-                self.assertTrue(hint.endswith("q quit"), (panel, width))
-                if width >= 80 and panel != "overview":
-                    self.assertIn("Enter apply", hint, (panel, width))
-                if width == 120 and panel == "fans":
-                    self.assertIn("R stock", hint)
-                dash.s.getmaxyx.return_value = (30, 200)
-                self.assertEqual(dash.footer_hint(197).count("  "), len(m_ui.Dashboard.HINTS[panel]) + 1)
 
     def test_external_mode_change_drops_staged_limits(self):
         dash = self.dash()

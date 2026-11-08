@@ -307,7 +307,7 @@ class FanPanel:
         if ch == ord("q"):
             self.running = False
             return
-        if ch in (ord("f"), 27):
+        if ch == 27:
             self.leave_section(state)
             self.notice = "Back to firmware controls." + (" Fan edits stay staged." if self.fan_edit else "")
             return
@@ -323,10 +323,6 @@ class FanPanel:
         plain = {curses.KEY_UP: 1, curses.KEY_DOWN: -1}
         if ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
             self.fan_sel = clamp(self.fan_sel + (1 if ch == curses.KEY_RIGHT else -1), 0, count - 1)
-        elif ch == ord("]"):
-            self.fan_sel = (self.fan_sel + 1) % count
-        elif ch == ord("["):
-            self.fan_sel = (self.fan_sel - 1) % count
         elif ch == ord("t"):
             self.fan_details = not self.fan_details
         elif ch == ord("W"):

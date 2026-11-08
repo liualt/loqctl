@@ -131,13 +131,10 @@ class Dashboard(FanPanel):
     MIN_W, MIN_H = 72, 20
     # Footer entries in priority order. footer_hint() drops from the end to fit.
     HINTS = {
-        "overview": ("Tab section", "↑↓ section", "t details", "m modes", "Space pause", "v results"),
-        "main": ("Tab section", "↑↓ select", "←→ adjust", "Enter apply", "0-9 type", "Esc clear",
-                 "d default", "r discard", "m modes", "Space pause", "v results"),
-        "fans": ("←→ point", "↑↓ speed", "Enter apply", "t details", "Esc back", "Tab section", "R stock", "r discard",
-                 "W save", "p curves", "s sudo"),
-        "keyboard": ("Tab section", "1–4 zone", "←→ adjust HSV", "↑↓ channel", "Enter apply", "Esc back", "e effect",
-                     "b bright", "c copy-all", "Space live", "s sudo"),
+        "overview": ("Tab page", "t details", "m modes", "Space pause"),
+        "main": ("↑↓ select", "←→ adjust", "Enter apply", "Tab page", "m modes"),
+        "fans": ("←→ step", "↑↓ speed", "Enter apply", "Tab page", "Esc back"),
+        "keyboard": ("Enter apply", "e effect", "b bright", "w wave", "Tab page"),
     }
     show_limits = False
     panel = "main"  # instances built without __init__ (tests) act as Power
@@ -151,7 +148,7 @@ class Dashboard(FanPanel):
         self.pending = {}
         self.apply_results = []
         self.show_results = False
-        self.notice = backend.notice or "Ready. Edit a row, then press Enter to apply.  l opens keyboard lighting."
+        self.notice = backend.notice or "Ready. Edit a row, then press Enter to apply.  Tab changes page."
         self.history = {k: collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
         self.last_timestamp = None
         self.fields = {}  # key -> raw text typed for that row
@@ -782,50 +779,79 @@ class Dashboard(FanPanel):
         self.put(tip_y, ix, fit_parts(["Hardware shows the true color.", "UI uses your terminal theme only."], iw, " "), self.theme.TEXT, dim=True)
         self.put(tip_y + 1, ix, f"config {kb.config}"[:iw], self.theme.TEXT, dim=True)
 
-    HELP_LINES = (
-        "Global    ? help  q quit  s sudo authenticate (any page)",
-        "Sections  Tab next section, Shift+Tab previous",
-        "          ↑↓ leave Power and Keyboard at the edges",
-        "          Space pause graphs (Power, Overview only)",
-        "Overview  t details   Esc closes details",
-        "Firmware  j/k or ↑↓ select   ←/→ or -/+ step the value",
-        "          0-9 type a value   Backspace delete   Esc clear",
-        "          Enter apply   r discard   d stage firmware default",
-        "          Limits need custom mode (Enter on mode row)",
-        "          v last results   m every mode's firmware limits",
-        "Keyboard  l open lighting panel   Esc back to firmware",
-        "          1–4 select zone   ←/→ adjust HSV   ↑↓ channel",
-        "          e cycle effect   b brightness   w wave dir",
-        "          c copy color to all zones   Space live apply",
-        "          Enter apply via legionaura",
-        "Fans      f open fan curves (edits need custom mode)",
-        "          ←→ or [ ] select point",
-        "          ↑↓ next speed the fan stores (both fans)",
-        "          Shift+↑↓ five steps   t details",
-        "          Enter apply  r discard  R stock  p curve  W save",
+    HELP_GLOBAL = (
+        "Tab       next page   Shift+Tab  previous page",
+        "Esc       back one level, close a box, clear a row",
+        "s         authenticate sudo (Power, Fans, Keyboard)",
+        "?         this help   q  quit",
     )
+    HELP_PAGES = {
+        "overview": (
+            "↑↓        previous or next page",
+            "t         details view (Esc closes it)",
+            "m         every mode's firmware limits",
+            "Space     pause the graphs",
+        ),
+        "main": (
+            "↑↓        select a row (past the edge: change page)",
+            "←→        step the value, or cycle the mode",
+            "0-9       type a value   Backspace  delete",
+            "Enter     apply   r  discard   d  firmware default",
+            "m         every mode's limits   v  last results",
+            "Space     pause the graphs",
+            "Limits are editable in custom mode only.",
+        ),
+        "fans": (
+            "←→        select a step",
+            "↑↓        change its speed (Shift: five steps)",
+            "Enter     apply   r  discard   R  stock curve",
+            "p         stage the next curve   W  save it",
+            "t         show or hide details",
+            "Edits need custom mode.",
+        ),
+        "keyboard": (
+            "1-4       select a zone",
+            "↑↓        pick H, S or V (past the edge: change page)",
+            "←→        nudge it   H L  fine steps",
+            "Enter     apply   Space  live apply",
+            "e b w     effect, brightness, wave direction",
+            "c         copy this zone's color to all zones",
+        ),
+    }
+
+    def page_missing(self):
+        "What the current page needs when it cannot work, else an empty string."
+        if self.panel == "fans" and not self.fan_points():
+            return "load legion_laptop"
+        if self.panel == "keyboard" and not self.keyboard.available:
+            return "install legionaura"
+        return ""
 
     def footer_hint(self, width):
-        entries = list(self.HINTS.get(self.panel, self.HINTS["main"]))
+        missing = self.page_missing()
+        if missing:
+            entries = [missing, "Tab page", "Esc back"]
+        else:
+            entries = list(self.HINTS.get(self.panel, self.HINTS["main"]))
         while entries and len("  ".join(["? help", *entries, "q quit"])) > width:
             entries.pop()
         return "  ".join(["? help", *entries, "q quit"])
 
+    def help_lines(self):
+        missing = self.page_missing()
+        page = (f"This page needs: {missing}.",) if missing else self.HELP_PAGES.get(self.panel, self.HELP_PAGES["main"])
+        return (*self.HELP_GLOBAL, "", *page)
+
     def draw_help(self):
+        "Fills the content area only, so the nav column and the status and key lines stay visible."
         h, w = self.s.getmaxyx()
-        bw = min(86, w - 4)
-        bh = min(len(self.HELP_LINES) + 2, h - 2)
-        bx, by = (w - bw) // 2, max(1, (h - bh) // 2)
+        bx, by, bw, bh = self.NAV_W + 1, 1, w - self.NAV_W - 1, h - 3
         self.fill(by, bx, bh, bw)
         hint = "? or Esc to close"
-        title = "Help" if bw >= len(hint) + 16 else ""
-        self.box(by, bx, bh, bw, title, self.theme.ACCENT, right=hint)
-        lines = list(self.HELP_LINES)
-        if len(lines) > bh - 2:
-            keep = max(0, bh - 3)
-            lines = lines[:keep] + [f"… ({len(lines) - keep} more, resize)"]
-        for i, line in enumerate(lines[: bh - 2]):
-            self.put(by + 1 + i, bx + 2, line[: bw - 4], self.theme.TEXT, dim=not line)
+        title = f"Help: {self.SECTION_LABELS.get(self.panel, 'Power')}"
+        self.box(by, bx, bh, bw, title if bw >= len(title) + len(hint) + 10 else "", self.theme.ACCENT, right=hint)
+        for i, line in enumerate(self.help_lines()[: bh - 2]):
+            self.put(by + 1 + i, bx + 2, line[: bw - 4], self.theme.TEXT)
 
     def draw_results(self):
         h, w = self.s.getmaxyx()
@@ -1091,7 +1117,7 @@ class Dashboard(FanPanel):
 
     def handle_keyboard(self, ch, state):
         kb = self.keyboard
-        if ch in (27, ord("l")):
+        if ch == 27:
             self.leave_section(state)
             self.notice = "Back to firmware controls."
             return
@@ -1103,23 +1129,23 @@ class Dashboard(FanPanel):
         if ch in (ord("1"), ord("2"), ord("3"), ord("4")):
             self.kb_zone = ch - ord("1")
             self.notice = f"Selected zone {self.kb_zone + 1}."
-        elif ch in (curses.KEY_UP, ord("k")):
+        elif ch == curses.KEY_UP:
             if self.kb_channel == 0:
                 self.step_section(state, -1)  # off the top edge: the previous section
             else:
                 self.kb_channel -= 1
-        elif ch in (curses.KEY_DOWN, ord("j")):
+        elif ch == curses.KEY_DOWN:
             if self.kb_channel == 2:
                 self.step_section(state, 1)
             else:
                 self.kb_channel += 1
-        elif ch in (curses.KEY_LEFT, ord("-")):
+        elif ch == curses.KEY_LEFT:
             self.kb_nudge(-1)
-        elif ch in (curses.KEY_RIGHT, ord("+"), ord("=")):
+        elif ch == curses.KEY_RIGHT:
             self.kb_nudge(1)
-        elif ch in (ord("H"),):  # fine adjust
+        elif ch == ord("H"):  # fine adjust
             self.kb_nudge(-1, fine=True)
-        elif ch in (ord("L"),):
+        elif ch == ord("L"):
             self.kb_nudge(1, fine=True)
         elif ch == ord("e"):
             idx = kb.EFFECTS.index(kb.effect) if kb.effect in kb.EFFECTS else 0
@@ -1198,8 +1224,8 @@ class Dashboard(FanPanel):
         if ch == ord("s") and self.panel in ("fans", "keyboard"):  # the status line offers it on every page
             self.authenticate()
             return
-        if self.panel == "overview" and ch in (curses.KEY_UP, curses.KEY_DOWN, ord("j"), ord("k")):
-            self.step_section(state, 1 if ch in (curses.KEY_DOWN, ord("j")) else -1)
+        if self.panel == "overview" and ch in (curses.KEY_UP, curses.KEY_DOWN):
+            self.step_section(state, 1 if ch == curses.KEY_DOWN else -1)
             return
         if getattr(self, "panel", "main") == "keyboard":
             self.handle_keyboard(ch, state)
@@ -1211,7 +1237,7 @@ class Dashboard(FanPanel):
             self.handle_fans(ch, state)
             return
 
-        if self.panel == "overview" and ch not in map(ord, "q?tmlf sv"):
+        if self.panel == "overview" and ch not in map(ord, "q?tm sv"):
             return  # the overview is read-only; edits belong to Power
         rows = self.rows(state)
         if not rows:
@@ -1221,10 +1247,6 @@ class Dashboard(FanPanel):
                 self.help = True
             elif ch == ord("t"):
                 self.toggle_details()
-            elif ch == ord("l"):
-                self.open_keyboard()
-            elif ch == ord("f"):
-                self.open_fans()
             return
         self.selected = clamp(self.selected, 0, len(rows) - 1)
         visit = self.shown_rows(state)
@@ -1251,10 +1273,6 @@ class Dashboard(FanPanel):
             self.show_limits = True
         elif ch == ord("t"):
             self.toggle_details()
-        elif ch == ord("l"):
-            self.open_keyboard()
-        elif ch == ord("f"):
-            self.open_fans()
         elif ch == ord(" "):
             self.paused = not self.paused
             self.notice = "Graph history paused; readings stay live." if self.paused else "Telemetry resumed."
@@ -1264,13 +1282,13 @@ class Dashboard(FanPanel):
             self.show_results = bool(self.apply_results)
             if not self.apply_results:
                 self.notice = "No apply results yet. Edit a row and press Enter."
-        elif ch in (curses.KEY_DOWN, ord("j")):
+        elif ch == curses.KEY_DOWN:
             at = visit.index(key)
             if at == len(visit) - 1:
                 self.step_section(state, 1)  # off the bottom edge: the next section
             else:
                 self.selected = rows.index(visit[at + 1])
-        elif ch in (curses.KEY_UP, ord("k")):
+        elif ch == curses.KEY_UP:
             at = visit.index(key)
             if at == 0:
                 self.step_section(state, -1)
@@ -1300,7 +1318,7 @@ class Dashboard(FanPanel):
             else:
                 self.notice = f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter."
         elif key != "mode" and self.locked(state) and (
-                ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("+"), ord("-"), ord("="), ord("d"), *digits)):
+                ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("d"), *digits)):
             self.notice = f"Limits are locked in {state.get('mode')} mode. Select custom and press Enter."
         elif ch == ord("d"):
             if key == "mode":
@@ -1319,8 +1337,8 @@ class Dashboard(FanPanel):
             text = self.fields.get(key, "")
             if len(text) < 6:
                 self.set_field(state, key, text + chr(ch))
-        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("+"), ord("-"), ord("=")):
-            direction = 1 if ch in (curses.KEY_RIGHT, ord("+"), ord("=")) else -1
+        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            direction = 1 if ch == curses.KEY_RIGHT else -1
             if key == "mode":
                 modes = state.get("modes", [])
                 current = self.pending.get(key, state.get("mode"))
