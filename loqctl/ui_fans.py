@@ -356,6 +356,10 @@ class FanPanel:
 
     def draw_fans(self, state, metrics, y, x, height, width):
         self.fan_take()
+        mode = state.get("mode")
+        shown = self.fan.get("mode") if self.fan.get("available") else None
+        if not self.fan_loading and shown is not None and shown != mode:
+            self.fan_request()  # each platform mode has its own curve, so the one on screen is stale
         scale = self.fan_scale()
         now = [round(f["rpm"] * 100 / (scale.max_rpm or 1)) for f in (metrics.get("fans") or [])[:2]
                if f.get("rpm") is not None]
@@ -381,6 +385,8 @@ class FanPanel:
             if len(name) > room:
                 name = name[:max(0, room - 1)] + "…" if room > 1 else ""
             right = f"Staged {name}" if name else "Staged"
+        elif self.fan_locked(state):
+            right = "Read-only"
         self.box(y, x, height, width, fit_parts(parts, max(8, width - len(right) - 10)), self.theme.GPU, right)
         target = self.fan_target()
         inner = height - 2
@@ -460,8 +466,8 @@ class FanPanel:
         lines = []
         if self.fan_locked(state):
             mode = state.get("mode")
-            text = next((t for t in (f"Fan curves are locked in {mode} mode. Select custom to edit.",
-                                     f"Locked in {mode} mode. Select custom to edit.") if len(t) <= w), "Select custom to edit.")
+            text = next((t for t in (f"This is the {mode} curve. Select custom to edit.",
+                                     "Select custom to edit.") if len(t) <= w), "Select custom to edit.")
             lines.append((text, self.theme.WARN))
         errors = validate_curve(target, scale)
         if self.fan_edit is not None and errors:

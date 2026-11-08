@@ -275,6 +275,8 @@ class Hardware:
             points, scale = read_curve(hwmon), curve_scale(hwmon)
             if not points:
                 return {"available": False, "reason": "legion_hwmon exposes no fan curve points"}
+            if all(p.get("fan1") is None for p in points):  # files exist but every read failed
+                return {"available": False, "reason": f"the fan curve could not be read in {mode} mode"}
             return {"available": True, "mode": mode, "hwmon": str(hwmon), "unit": scale.unit, "max_rpm": scale.max_rpm,
                     "points": points, "rpm": [scaled(hwmon / f"fan{n}_input") for n in (1, 2)]}
 

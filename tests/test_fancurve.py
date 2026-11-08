@@ -658,6 +658,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     self.assertIn("Fan curve", drawn)
                     if mode == "balanced":
                         self.assertIn("Select custom to edit.", drawn)
+                        self.assertIn(" Read-only ", drawn)
                     self.assertIn("t details", "".join(t for y, x, t in calls if y == h - 1), where)
 
     def test_full_screen_marks_hidden_points_and_keeps_labels_apart(self):
@@ -732,7 +733,42 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.draw_fans({"mode": "balanced"}, {"fans": [{"rpm": 1800.0}, {"rpm": 1700.0}], "cpu": {"temperature_c": 61.0},
                                               "gpu": {"devices": [{"temperature_c": 55.0}]}}, 1, 0, 17, 72)
         self.assertEqual(dash.box.call_args.args[4], "Fan curve · now 18% · 17%")
-        self.assertIn("Fan curves are locked in balanced mode. Select custom to edit.", {t for t, _ in cells.values()})
+        self.assertIn("This is the balanced curve. Select custom to edit.", {t for t, _ in cells.values()})
+
+    def test_curve_is_read_again_when_the_mode_changes(self):
+        dash = self.dash("balanced")
+        self.keys(dash, {"mode": "balanced"}, "f")
+        dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 30, 110)
+        self.assertTrue(dash.fan["available"])  # read-only modes still show their curve
+        self.assertEqual(dash.box.call_args.args[6], "Read-only")
+        with patch.object(dash, "fan_request") as request:
+            dash.draw_fans({"mode": "balanced"}, {}, 1, 0, 30, 110)
+            request.assert_not_called()
+            dash.draw_fans({"mode": "performance"}, {}, 1, 0, 30, 110)
+            request.assert_called_once()
+
+    def test_mode_change_during_a_read_still_reloads_the_curve(self):
+        dash = self.dash("balanced")
+        self.keys(dash, {"mode": "balanced"}, "f")
+        with dash.fan_lock:
+            dash.fan_loading = True  # a read is in flight when the mode changes
+        with patch.object(dash, "fan_request") as request:
+            dash.draw_fans({"mode": "performance"}, {}, 1, 0, 30, 110)
+            request.assert_not_called()
+        with dash.fan_lock:
+            dash.fan_loading = False  # the old read finished, still holding the balanced curve
+        with patch.object(dash, "fan_request") as request:
+            dash.draw_fans({"mode": "performance"}, {}, 1, 0, 30, 110)
+            request.assert_called_once()
+
+    def test_unreadable_curve_files_report_why(self):
+        for path in self.hwmon.glob("pwm1_auto_point*_pwm"):
+            path.unlink()
+            path.mkdir()  # reading a directory fails like a refused read
+        self.set_mode("balanced")
+        data = self.hw.fancurve()
+        self.assertFalse(data["available"])
+        self.assertIn("could not be read in balanced mode", data["reason"])
 
 
 class CurveStoreTests(unittest.TestCase):
