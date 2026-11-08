@@ -134,7 +134,11 @@ class Dashboard(FanPanel):
         "overview": ("Tab page", "t details", "m modes", "Space pause"),
         "main": ("↑↓ select", "←→ adjust", "Enter apply", "Tab page", "m modes"),
         "fans": ("←→ step", "↑↓ speed", "Enter apply", "Tab page", "Esc back"),
-        "keyboard": ("Enter apply", "e effect", "b bright", "w wave", "Tab page"),
+        "keyboard": ("1-4 zone", "↑↓ H/S/V", "e effect", "b bright", "Tab page"),
+    }
+    HINTS_READONLY = {
+        "main": ("←→ mode", "m modes", "Tab page"),
+        "fans": ("←→ step", "Tab page", "Esc back"),
     }
     show_limits = False
     panel = "main"  # instances built without __init__ (tests) act as Power
@@ -148,7 +152,7 @@ class Dashboard(FanPanel):
         self.pending = {}
         self.apply_results = []
         self.show_results = False
-        self.notice = backend.notice or "Ready. Edit a row, then press Enter to apply.  Tab changes page."
+        self.notice = backend.notice or ""
         self.history = {k: collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
         self.last_timestamp = None
         self.fields = {}  # key -> raw text typed for that row
@@ -334,17 +338,21 @@ class Dashboard(FanPanel):
         # Status + keys
         stamp = metrics.get("timestamp")
         stale = stamp is not None and time.time() - stamp > 5
-        old = "Sensor data is stale. " if stale else "Firmware values are stale. " if state.get("stale") else ""
-        status = state.get("error") or old + self.notice
-        warn = bool(state.get("error") or old)
-        if (not status and self.sudo_expired and self.panel in ("main", "fans")
-                and not self.backend.remote and os.geteuid() != 0):
+        if state.get("error"):
+            status, warn = f"{str(state['error']).rstrip('. ')}; fix that and restart loqctl.", True
+        elif stale:
+            status, warn = "Sensor data is stale. Check that the backend is running.", True
+        elif state.get("stale"):
+            status, warn = "Firmware values are stale. Wait for the next refresh.", True
+        else:
+            status, warn = self.notice, False
+        if not status and self.needs_unlock():
             status, warn = "Read-only. Press s to unlock.", True
         if len(status) > w - 3:  # cut at a word boundary
             status = status[: w - 3].rsplit(" ", 1)[0].rstrip(" ,;:.") if " " in status[: w - 3] else status[: w - 3]
         self.put(h - 2, 1, status, self.theme.WARN if warn else self.theme.TEXT)
-        keys = self.footer_hint(w - 3)
-        self.put(h - 1, 1, keys, self.theme.ACCENT, dim=True)
+        keys = self.footer_hint(w - 3, state)
+        self.put(h - 1, 1, keys, self.theme.ACCENT)
 
         if self.help:
             self.draw_help()
@@ -380,7 +388,7 @@ class Dashboard(FanPanel):
         else:
             self.panel = name
             self.view = "summary"
-            self.notice = "Ready."
+            self.notice = ""
 
     def leave_section(self, state):
         "Back from Fans or Keyboard to Power, or to Overview when Power is hidden."
@@ -391,7 +399,7 @@ class Dashboard(FanPanel):
         self.view = "summary"
         self.keyboard.recheck()
         self.keyboard.load()
-        self.notice = "Keyboard lighting. Esc returns."
+        self.notice = ""
 
     def step_section(self, state, direction):
         found = self.sections(state)
@@ -419,6 +427,7 @@ class Dashboard(FanPanel):
         pending_n = len(self.pending)
         stamp = (state.get("metrics") or {}).get("timestamp")
         fresh = "No data" if stamp is None and not state.get("mode") else "Stale" if state.get("stale") else "Live"
+        fresh = "Error" if state.get("error") else fresh
         right = f"{pending_n} staged" if pending_n else fresh
         if self.invalid:
             right = (f"{pending_n} staged" if pending_n else "") + f"{', ' if pending_n else ''}{len(self.invalid)} invalid"
@@ -720,7 +729,7 @@ class Dashboard(FanPanel):
 
     def draw_keyboard(self, y, x, height, width):
         kb = self.keyboard
-        status = "Live" if self.kb_live else "Preview off"
+        status = "applies as you edit" if self.kb_live else "Preview off"
         if not kb.available:
             status = "Missing"
         self.box(y, x, height, width, "Keyboard (LegionAura)", self.theme.GPU, status)
@@ -765,7 +774,7 @@ class Dashboard(FanPanel):
         h_deg, s_pct, v_pct = rgb_to_hsv(*rgb)
         channels = (("H", h_deg, 360, "°"), ("S", s_pct, 100, "%"), ("V", v_pct, 100, "%"))
         cy = y + 9
-        self.put(cy, ix, fit_parts([f"zone {self.kb_zone + 1}  HSV picker", "(terminal swatch ≈ nearest ANSI)"], iw, "  "), self.theme.ACCENT)
+        self.put(cy, ix, f"zone {self.kb_zone + 1}  HSV picker"[:iw], self.theme.ACCENT)
         for i, (name, value, ceiling, unit) in enumerate(channels):
             yy = cy + 1 + i
             chosen = i == self.kb_channel
@@ -823,17 +832,28 @@ class Dashboard(FanPanel):
     def page_missing(self):
         "What the current page needs when it cannot work, else an empty string."
         if self.panel == "fans" and not self.fan_points():
-            return "load legion_laptop"
+            return "needs legion_laptop"
         if self.panel == "keyboard" and not self.keyboard.available:
             return "install legionaura"
         return ""
 
-    def footer_hint(self, width):
+    def needs_unlock(self):
+        return (self.sudo_expired and self.panel in ("main", "fans")
+                and not self.backend.remote and os.geteuid() != 0)
+
+    def footer_hint(self, width, state):
         missing = self.page_missing()
         if missing:
             entries = [missing, "Tab page", "Esc back"]
+        elif self.panel in self.HINTS_READONLY and self.locked(state):
+            entries = list(self.HINTS_READONLY[self.panel])
         else:
             entries = list(self.HINTS.get(self.panel, self.HINTS["main"]))
+            if self.panel == "keyboard":
+                if self.keyboard.effect == "wave":
+                    entries.insert(-1, "w wave")
+        if self.needs_unlock():
+            entries.insert(0, "s unlock")
         while entries and len("  ".join(["? help", *entries, "q quit"])) > width:
             entries.pop()
         return "  ".join(["? help", *entries, "q quit"])

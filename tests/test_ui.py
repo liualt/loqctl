@@ -838,8 +838,8 @@ class UiTests(helpers.SysfsCase):
                 else:
                     self.assertRegex(joined, r"Mode\s+low \[bal\] perf max custom")
                     self.assertEqual(joined.count("Select custom to edit"), 1, (h, w))
-                    self.assertIn("Live", text[1])
                     status = text[h - 2]
+                    self.assertIn("Error" if case == "error" else "Live", text[1])
                     if case == "error":
                         self.assertIn("Could not read firmware attributes", status)
                         self.assertNotIn("Press s", status)
@@ -954,6 +954,46 @@ class UiTests(helpers.SysfsCase):
                 self.assertEqual(any(t.startswith("Firmware values are stale.") for t in texts), stale, (h, w))
                 self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
 
+    def draw_rows(self, h, w, panel, state, expired=False):
+        puts = {}
+        screen = Mock()
+        screen.getmaxyx.return_value = (h, w)
+        screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.__setitem__((y, x), text[:n])
+        with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                patch.object(curses, "has_colors", return_value=False):
+            dash = m_ui.Dashboard(screen, Mock(notice="", remote=False), sudo_ok=not expired)
+        dash.panel, dash.paused = panel, True
+        with patch.object(m_ui.os, "geteuid", return_value=1000):
+            dash.draw({"metrics": {}, "attributes": {}, "modes": [], **state})
+        return ["".join(t for (y, x), t in sorted(puts.items()) if y == row) for row in range(h)]
+
+    def test_idle_notice_is_empty_and_warnings_stand_alone(self):
+        for h, w in ((20, 72), (24, 80)):
+            for panel in ("overview", "fans", "keyboard"):
+                self.assertNotIn("Ready", self.draw_rows(h, w, panel, {})[h - 2], (h, w, panel))
+            locked = {"mode": "balanced"}
+            for panel in ("main", "fans"):
+                rows = self.draw_rows(h, w, panel, locked, expired=True)
+                self.assertIn("Read-only. Press s to unlock.", rows[h - 2], (h, w, panel))
+                self.assertIn("s unlock", rows[h - 1], (h, w, panel))
+            rows = self.draw_rows(h, w, "main", {**locked, "stale": True}, expired=True)
+            self.assertEqual(rows[h - 2].strip(), "Firmware values are stale. Wait for the next refresh.")
+            rows = self.draw_rows(h, w, "main", {"error": "Backend down"})
+            self.assertIn("Backend down; fix that and restart loqctl.", rows[h - 2])
+
+    def test_footer_lists_only_working_keys(self):
+        for h, w in ((20, 72), (24, 80)):
+            foot = self.draw_rows(h, w, "fans", {"mode": "balanced"})[h - 1]
+            self.assertIn("needs legion_laptop", foot)
+            self.assertNotIn("Enter apply", foot)
+            foot = self.draw_rows(h, w, "main", {"mode": "balanced"})[h - 1]
+            self.assertIn("←→ mode", foot)
+            self.assertNotIn("Enter apply", foot)
+            foot = self.draw_rows(h, w, "keyboard", {})[h - 1]
+            self.assertIn("1-4 zone", foot)
+            self.assertNotIn("w wave", foot)
+            self.assertNotIn("terminal swatch", "".join(self.draw_rows(h, w, "keyboard", {})))
+
     def test_battery_charge_type_drops_before_limit(self):
         battery = [{"name": "BAT1", "percent": 90, "status": "Discharging", "charge_limit": "80%",
                     "charge_type": "Long_Life", "rapid_charge": "off", "time_remaining_min": 135,
@@ -1019,8 +1059,8 @@ class UiTests(helpers.SysfsCase):
         tip = next(r for r in rows if r.startswith("Hardware"))
         self.assertIn(tip, ("Hardware shows the true color. UI uses your terminal theme only.",
                             "Hardware shows the true color."))
-        title = next(r for r in rows if "HSV picker" in r)
-        self.assertIn(title, ("zone 1  HSV picker  (terminal swatch ≈ nearest ANSI)", "zone 1  HSV picker"))
+        self.assertIn("zone 1  HSV picker", rows)
+        self.assertFalse(any("swatch" in r for r in rows))
 
     def test_overview_arrows_switch_section_but_never_edit(self):
         dash = self.dash()
