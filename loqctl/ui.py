@@ -23,10 +23,6 @@ collections = _lazy("collections")
 curses = _lazy("curses")
 textwrap = _lazy("textwrap")
 
-def strike(text):
-    return "".join(c + "\u0336" for c in str(text))
-
-
 def battery_left(b):
     "Time text for one battery metrics dict, such as '2 h 15 min left' or '40 min to full'; '' when unknown."
     minutes = b.get("time_remaining_min")
@@ -342,7 +338,7 @@ class Dashboard(FanPanel):
         if len(model) > room:
             model = model[: max(room - 1, 0)].rsplit(" ", 1)[0]
             model = model + "…" if model else ""
-        mid = f"{model}  ·  {mode}" if model and mode else model or mode or ("Error: see the status line" if state.get("error") else "Waiting for firmware")
+        mid = f"{model}  ·  {mode}" if model and mode else model or mode or ("" if state.get("error") else "Waiting for firmware")
         mx = max(len(title) + 1, (w - len(mid)) // 2)
         self.put(0, mx - 1, " " * (len(mid) + 2), self.theme.OK)
         self.put(0, mx, mid, self.theme.OK, bold=not model and bool(mode))
@@ -550,7 +546,7 @@ class Dashboard(FanPanel):
             text = self.fields.get(key)
             bad = key in self.invalid
             if chosen:
-                line = (f"{marker} {label:<{lw}} {strike(value)} -> "
+                line = (f"{marker} {label:<{lw}} {value} → "
                         + (f"{text}_" if text else "__"))
                 self.put(yy, x + 1, line[: width - 3], self.theme.BAD if bad else self.theme.ACCENT, bold=True)
                 continue
@@ -579,7 +575,8 @@ class Dashboard(FanPanel):
         if key == "mode":
             driver = state.get("mode_driver", GAMEZONE)
             if driver == GAMEZONE:
-                self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
+                if state.get("mode"):
+                    self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
             else:
                 via = f"{driver}, not {GAMEZONE}" if driver else f"legacy file, {GAMEZONE} not found"
                 note = limit_note(state, state.get("attributes", {})) or f"Mode set via {via}"
@@ -802,7 +799,7 @@ class Dashboard(FanPanel):
         self.box(y, x, height, width, "Keyboard (LegionAura)", self.theme.GPU, status)
         ix, iw = x + 2, width - 4
         if not kb.available:
-            self.put(y + 2, ix, "Install LegionAura (AUR: legionaura)", self.theme.WARN)
+            self.put(y + 2, ix, "Install LegionAura (see the README)", self.theme.WARN)
             self.put(y + 3, ix, "for 4-zone RGB control.", self.theme.WARN)
             self.put(y + 5, ix, "Esc returns to firmware controls.", self.theme.TEXT, dim=True)
             return
@@ -924,6 +921,10 @@ class Dashboard(FanPanel):
             entries = list(self.HINTS_READONLY[self.panel])
         else:
             entries = list(self.HINTS.get(self.panel, self.HINTS["main"]))
+            if self.panel == "main" and not self.pending:
+                entries.remove("Enter apply")
+            if self.panel == "fans":
+                entries[entries.index("Enter apply")] = "Enter apply" if self.fan_edit is not None else "p curves"
             if self.panel == "keyboard":
                 if self.keyboard.effect == "wave":
                     entries.insert(-1, "w wave")

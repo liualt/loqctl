@@ -377,7 +377,7 @@ class FanPanel:
             for k, line in enumerate(lines):
                 self.put(y + 2 + k, ix, line, self.theme.WARN)
             reason = self.fan.get("reason", "")
-            if reason and "legion_laptop" not in reason:  # the paragraph above already names the module
+            if reason and reason != "not loaded" and "legion_laptop" not in reason:  # the paragraph above already names the module
                 for k, line in enumerate(textwrap.wrap(reason, max(20, iw))):
                     self.put(y + 3 + len(lines) + k, ix, line, self.theme.TEXT, dim=True)
             return
@@ -402,7 +402,7 @@ class FanPanel:
         row += 1
         graph_h = y + height - 3 - row - 2  # the axis and its caption sit under the graph
         if graph_h >= 4:
-            self.fan_graph(target, scale, row, ix, min(iw, 72), graph_h)  # a wider chart only spreads the dots out
+            self.fan_graph(target, scale, row, ix, min(iw, 110), graph_h)
         self.fan_footer(state, target, scale, y + height - 3, ix, iw)
 
     def fan_step_line(self, target, scale, y, x, w):
@@ -475,7 +475,7 @@ class FanPanel:
         if self.fan_locked(state):
             mode = state.get("mode")
             texts = (f"This is the {mode} curve. Select custom to edit.", "Select custom to edit.")
-            if mode is None:
+            if not mode:
                 texts = ("Mode unreadable. Select custom to edit.", "Mode unreadable.")
             text = next((t for t in texts if len(t) <= w), texts[-1])
             lines.append((text, self.theme.WARN))

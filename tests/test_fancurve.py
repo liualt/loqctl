@@ -683,7 +683,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     self.assertEqual(sum(1 for y, x, t in calls if y == h - 1), 1, where)  # one footer line
                     foot = "".join(t for y, x, t in calls if y == h - 1)
                     self.assertIn("Tab page", foot, where)
-                    self.assertEqual("Enter apply" in foot, mode == "custom", where)  # no dead keys
+                    self.assertEqual("p curves" in foot, mode == "custom", where)  # no dead keys
                     self.assertNotIn("needs legion_laptop", foot, where)  # a reason is not a key
                     if mode == "unavailable":
                         title = next((x, x + len(t)) for y, x, t in calls if y == 1 and t.startswith(" Fan curve"))
