@@ -790,9 +790,9 @@ class UiTests(helpers.SysfsCase):
                 dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
             dash.panel, dash.view = "overview", "details"
             gpu = {"name": "NVIDIA GeForce RTX 4060 Laptop GPU"}
-            dash.draw({"metrics": {"gpu": {"devices": [gpu]}, "gpu_mode": "Hybrid (auto)"},
+            dash.draw({"metrics": {"gpu": {"devices": [gpu]}, "gpu_mode": "Hybrid auto (unverified)", "gpu_power": "active"},
                        "attributes": {}, "modes": []})
-            self.assertTrue(any(t.startswith("GPU") and "mode Hybrid (auto)" in t for _, _, t in puts), (h, w))
+            self.assertTrue(any(t.startswith("GPU") and "mode Hybrid auto (unverified)" in t for _, _, t in puts), (h, w))
             self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
 
     def test_extra_limits_are_drawn_read_only_on_small_screens(self):
@@ -1384,9 +1384,10 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(low, [])  # list rows stop above the 4-row detail strip
 
     def test_details_view_shows_gpu_mode(self):
-        for mode, shown in (("Hybrid", "mode Hybrid"), (None, "mode N/A")):
+        for mode, power, shown in (("Hybrid", "suspended", "mode Hybrid  dGPU suspended"),
+                                   (None, None, "mode N/A  dGPU N/A")):
             dash, calls = self.stub_dash()
-            dash.draw_details({"gpu_mode": mode}, 1, 0, 30, 60)
+            dash.draw_details({"gpu_mode": mode, "gpu_power": power}, 1, 0, 30, 80)
             self.assertIn(shown, "\n".join(t for _, _, t in calls))
 
     def test_details_grid_keeps_throttle_and_whole_numbers(self):

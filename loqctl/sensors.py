@@ -167,7 +167,9 @@ def battery_time(p, status, avg_rate, source, threshold=None, conserving=False):
     return (minutes, kind) if 0 <= minutes <= BATTERY_MAX_MIN else (None, None)
 
 
-GPU_MODES = {("0", "0"): "dGPU only", ("1", "0"): "Hybrid", ("1", "1"): "iGPU only", ("1", "2"): "Hybrid (auto)"}
+# Only Hybrid is confirmed on hardware (83DV); the rest come from LenovoLegionLinux's table.
+GPU_MODES = {("0", "0"): "dGPU only (unverified)", ("1", "0"): "Hybrid", ("1", "1"): "iGPU only (unverified)",
+             ("1", "2"): "Hybrid auto (unverified)"}
 
 
 def gpu_mode(root):
@@ -302,16 +304,18 @@ class Sensors:
                 "RAPL package energy" if sources else
                 "RAPL needs root: run sudo loqctl serve" if denied else "Waiting for RAPL samples or no package counter")
 
-    def gpu_suspended(self):
+    def gpu_power(self):
+        """NVIDIA display device runtime PM state ("active", "suspended", ...); None when unreadable."""
         def scan():
             return [path for path in self.root.glob("bus/pci/devices/*")
                     if (read(path / "vendor", "") or "") == "0x10de"
                     and (read(path / "class", "") or "").startswith("0x03")]
-        return any(read(path / "power/runtime_status") == "suspended"
-                   for path in self.discover("nvidia_display", scan))
+        states = [read(path / "power/runtime_status") for path in self.discover("nvidia_display", scan)]
+        states = [state for state in states if state]
+        return "suspended" if "suspended" in states else states[0] if states else None
 
     def gpu(self):
-        if self.gpu_suspended():  # querying would wake the dGPU
+        if self.gpu_power() == "suspended":  # querying would wake the dGPU
             return {"available": False, "suspended": True, "error": "GPU is asleep (runtime suspended)"}
         devices = self.nvml.read()
         if devices is not None:
@@ -541,7 +545,7 @@ class Sensors:
                         "power_w": power, "power_source": power_source,
                         "clock_mhz": sum(mhz) / len(mhz) if mhz else None,
                         "max_clock_mhz": max(mhz) if mhz else None},
-                "gpu": gpu, "gpu_mode": gpu_mode(self.root), "memory": {"total_mib": total,
+                "gpu": gpu, "gpu_mode": gpu_mode(self.root), "gpu_power": self.gpu_power(), "memory": {"total_mib": total,
                     "used_mib": total - available if total is not None and available is not None else None},
                 "battery": battery, "ac_online": any(ac) if ac else None, "fans": fans,
                 "power": {"rapl": rapl, "battery_w": slow["battery_w"],
