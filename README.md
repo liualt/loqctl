@@ -75,7 +75,7 @@ A section list on the left (Overview, Power, Fans, Keyboard) picks the page on t
 | `r` | Discard staged edits |
 | `l` | Keyboard lighting panel |
 | `f` | Fan curve panel |
-| `m` | Mode limits overlay: every mode's firmware limits side by side (`Enter` / `Esc` / `m` closes) |
+| `m` | Mode limits overlay: every mode's firmware limits side by side (`Enter` / `Esc` / `m` closes). Columns use short names (low, bal, perf, max) and the live mode is bracketed |
 | `t` | Overview only: open or close the details view (CPU and GPU extras, voltages, temperatures, power, throttling). Esc also closes it |
 | `Space` | Pause telemetry |
 | `v` | Reopen the last apply results |
@@ -197,7 +197,7 @@ Writes check the firmware's min, max and step, write once, then read the value b
 | `gpu_nv_cpu_boost` | GPU power taken from the CPU boost budget | W |
 | `gpu_temp` | GPU temperature limit | °C |
 
-Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show that mode's firmware limits. sysfs `current_value` only holds the custom settings (the firmware returns them in every mode), so loqctl reads the real per-mode defaults from the firmware capability table that the kernel dumps in debugfs (`/sys/kernel/debug/lenovo_wmi/*/capdata`, root only). It reads the table as root once (via sudo, or directly under `sudo loqctl serve`) and caches it per product and BIOS version in `~/.cache/loqctl/mode-limits.json`, so later starts need no sudo. Press `m` for a mode-by-mode overlay, or run `loqctl limits` for the same data as JSON (`{mode: {attribute: value}}`; custom is the live value, plus an `error` key when the table is unavailable). Without the table the stock-mode values show N/A and the overlay says "Stock-mode limits need root: press `s` or run `sudo loqctl serve`".
+Only attributes the firmware actually exposes appear. Ranges come from the running firmware; a step of `0` means any integer. Min, max, step and default always come from the firmware's custom-mode table. In other modes the rows show that mode's firmware limits. sysfs `current_value` only holds the custom settings (the firmware returns them in every mode), so loqctl reads the real per-mode defaults from the firmware capability table that the kernel dumps in debugfs (`/sys/kernel/debug/lenovo_wmi/*/capdata`, root only). It reads the table as root once (via sudo, or directly under `sudo loqctl serve`) and caches it per product and BIOS version in `~/.cache/loqctl/mode-limits.json`, so later starts need no sudo. Press `m` for a mode-by-mode overlay, or run `loqctl limits` for the same data as JSON (`{mode: {attribute: value}}`; custom is the live value, plus an `error` key when the table is unavailable). Without the table the stock-mode values show N/A and the Power page and overlay say "Stock limits need root once per boot: press `s`".
 
 The cache is read first and only reread when the product name or BIOS version differs, so a BIOS update triggers one new sudo fetch. To force a refresh, delete `~/.cache/loqctl/mode-limits.json` (`XDG_CACHE_HOME` is respected). The cache is written by your user, mode 0600. Read-back confirms the configuration, not real workload wattage.
 
@@ -284,7 +284,7 @@ Firmware control uses the kernel's [Other Mode](https://www.kernel.org/doc/html/
 | "Custom cannot be selected through the legacy platform_profile file" (older versions: "Firmware rejected the write: Invalid argument") | No platform-profile class device was found, and the kernel's legacy `/sys/firmware/acpi/platform_profile` refuses `custom`. Make sure `lenovo-wmi-gamezone` is loaded |
 | "RAPL needs root: run sudo loqctl serve" | CPU power reads are root-only on some kernels. Use the privileged server; do not run the TUI with `sudo -E` |
 | "A loqctl server is already running" | Another `loqctl serve` answers on the socket; stop it first. A stale socket is removed automatically |
-| "sudo not authenticated" or "sudo credentials expired" | The sudo cache expired (or you skipped it at start). Press `s` to authenticate; staged edits are kept |
+| "Read-only. Press s to unlock." or "sudo credentials expired" | The sudo cache expired (or you skipped it at start). The status line then shows "Read-only. Press s to unlock." on the Power and Fans pages, after any error or notice. Press `s` to authenticate; staged edits are kept |
 | "Ignored stale API socket" | A server left its socket behind. loqctl reads locally; restart `sudo loqctl serve` if you want the server |
 | Stock-mode limits show N/A, "needs root" or "debugfs capability table not found" | The capdata table is root-only. Press `s` (or run `sudo loqctl serve`) so loqctl can read it once. "not found" means debugfs is not mounted (`sudo mount -t debugfs none /sys/kernel/debug`) or the driver exposes no `lenovo_wmi` capdata; custom mode still works |
 | "sudo credentials expired" while reading limits or applying | Press `s`; the table read is retried on the next start, staged edits are kept |

@@ -51,6 +51,9 @@ def limit_note(state, items):
     return f"Gamezone WMI device {where}, limits can't be read; see README"
 
 
+MODE_SHORT = {"low-power": "low", "balanced": "bal", "performance": "perf", "max-power": "max"}
+
+
 class Theme:
     """UI colors from the terminal palette only. Never redefines RGB."""
 
@@ -337,8 +340,9 @@ class Dashboard(FanPanel):
         old = "Sensor data is stale. " if stale else "Firmware values are stale. " if state.get("stale") else ""
         status = state.get("error") or old + self.notice
         warn = bool(state.get("error") or old)
-        if self.sudo_expired and not self.backend.remote and os.geteuid() != 0:
-            status, warn = "sudo not authenticated · press s to authenticate · edits stay staged", True
+        if (not status and self.sudo_expired and self.panel in ("main", "fans")
+                and not self.backend.remote and os.geteuid() != 0):
+            status, warn = "Read-only. Press s to unlock.", True
         if len(status) > w - 3:  # cut at a word boundary
             status = status[: w - 3].rsplit(" ", 1)[0].rstrip(" ,;:.") if " " in status[: w - 3] else status[: w - 3]
         self.put(h - 2, 1, status, self.theme.WARN if warn else self.theme.TEXT)
@@ -412,7 +416,10 @@ class Dashboard(FanPanel):
 
     def draw_controls(self, state, y, x, height, width):
         pending_n = len(self.pending)
-        right = f"{pending_n} staged" if pending_n else "Live"
+        stamp = (state.get("metrics") or {}).get("timestamp")
+        fresh = "No data" if stamp is None and not state.get("mode") else "Stale" if (
+            state.get("stale") or stamp is not None and time.time() - stamp > 5) else "Live"
+        right = f"{pending_n} staged" if pending_n else fresh
         if self.invalid:
             right = (f"{pending_n} staged" if pending_n else "") + f"{', ' if pending_n else ''}{len(self.invalid)} invalid"
         self.box(y, x, height, width, "Power", self.theme.ACCENT, right)
@@ -430,7 +437,10 @@ class Dashboard(FanPanel):
         if staged_mode is not None:
             choice = f"{live or 'N/A'} → {staged_mode}"
         else:
-            choice = fit_parts(names, width - 14, "  ")
+            choice = "  ".join(names)
+            if len(choice) > width - 14:  # abbreviate so every mode, custom included, stays visible
+                names = [(f"[{MODE_SHORT.get(m, m)}]" if m == live else MODE_SHORT.get(m, m)) for m in modes]
+                choice = fit_parts(names, width - 14, " ")
         chosen = self.selected == 0
         self.put(y + 1, x + 1, f"{'▶' if chosen else ' '} {'Mode':<7}{choice}"[: width - 3],
                  self.theme.WARN if staged_mode is not None else (self.theme.ACCENT if chosen else self.theme.TEXT),
@@ -476,34 +486,39 @@ class Dashboard(FanPanel):
             staged = self.pending.get(key)
             value = "N/A" if current is None else f"{current}{unit_sep(unit)}{unit}"
             if self.locked(state):
-                line = f"{marker} {label:<20} {value}"
+                line = f"{marker} {label:<22} {value}"
                 self.put(yy, x + 1, line[: width - 3], self.theme.TEXT, bold=chosen, dim=True)
                 continue
             text = self.fields.get(key)
             bad = key in self.invalid
             if chosen:
-                line = (f"{marker} {label:<20} {strike(value)} -> "
+                line = (f"{marker} {label:<22} {strike(value)} -> "
                         + (f"{text}_" if text else "__"))
                 self.put(yy, x + 1, line[: width - 3], self.theme.BAD if bad else self.theme.ACCENT, bold=True)
                 continue
             if bad:
                 value += f" → {text}"
-                self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], self.theme.BAD)
+                self.put(yy, x + 1, f"{marker} {label:<22} {value}"[: width - 3], self.theme.BAD)
                 continue
             if staged is not None:
                 value += f" → {staged}"
             color = self.theme.WARN if staged is not None else self.theme.TEXT
-            self.put(yy, x + 1, f"{marker} {label:<20} {value}"[: width - 3], color, dim=staged is None)
+            self.put(yy, x + 1, f"{marker} {label:<22} {value}"[: width - 3], color, dim=staged is None)
 
-        if self.locked(state):
-            self.put(list_top + len(window), x + 2, "Select custom on the mode row to edit.", self.theme.TEXT, dim=True)
+        if self.locked(state):  # one line saying why a limit is N/A; "select custom" is said once, below
+            attrs = state.get("attributes") or {}
+            if any(attrs[k].get("effective_value") is None for k in shown if k in attrs):
+                reason = state.get("mode_limits_error")
+                note = limit_note(state, {k: attrs[k] for k in shown if k in attrs}) or (
+                    reason if reason and not reason.startswith("needs root") else
+                    "Stock limits need root once per boot: press s")
+                self.put(list_top + len(window), x + 2, note[: width - 4], self.theme.WARN)
 
         # Detail footer inside the box
         detail_y = y + height - detail_h
         self.put(detail_y, x + 1, "─" * (width - 2), self.theme.ACCENT, dim=True)
         key = rows[self.selected]
         if key == "mode":
-            modes = " ".join(state.get("modes") or []) or "none"
             driver = state.get("mode_driver", GAMEZONE)
             if driver == GAMEZONE:
                 self.put(detail_y + 1, x + 2, "← → cycles platform mode", self.theme.ACCENT)
@@ -511,18 +526,18 @@ class Dashboard(FanPanel):
                 via = f"{driver}, not {GAMEZONE}" if driver else f"legacy file, {GAMEZONE} not found"
                 note = limit_note(state, state.get("attributes", {})) or f"Mode set via {via}"
                 self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
-            self.put(detail_y + 2, x + 2, f"Available: {modes}"[: width - 4], self.theme.TEXT, dim=True)
+            if not state.get("mode"):
+                self.put(detail_y + 2, x + 2, "Mode unreadable; limits stay locked"[: width - 4], self.theme.WARN)
+            elif self.locked(state):
+                self.put(detail_y + 2, x + 2, "Select custom to edit", self.theme.TEXT, dim=True)
         elif self.locked(state):
             item, mode = state["attributes"][key], state.get("mode") or "N/A"
             if item.get("effective_value") is not None:
                 note = fit_parts([f"custom default {fmt(item['default_value'])}", f"{mode} limit from firmware table"],
                                  width - 4)
             else:
-                reason = state.get("mode_limits_error")
-                note = limit_note(state, {key: item}) or (
-                    reason if reason and not reason.startswith("needs root") else
-                    "Stock-mode limits need root: press s or run sudo loqctl serve")
-            self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
+                note = f"{key}: no value"
+            self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN if item.get("effective_value") is not None else self.theme.TEXT)
             self.put(detail_y + 2, x + 2, (lambda long: long if len(long) <= width - 4 else "Select custom on the mode row to edit")(
                          f"Locked in {mode} mode; select custom to edit"),
                      self.theme.TEXT, dim=True)
@@ -852,17 +867,19 @@ class Dashboard(FanPanel):
         modes = state.get("modes") or []
         rows = self.rows(state)[1:]
         attrs, table = state.get("attributes") or {}, state.get("mode_limits")
-        bw = min(w - 4, 26 + 13 * len(modes))
-        bh = min(h - 2, len(rows) + 6)
-        bx, by = (w - bw) // 2, max(0, (h - bh) // 2)
+        live = state.get("mode")
+        heads = [f"[{MODE_SHORT.get(m, m)}]" if m == live else MODE_SHORT.get(m, m) for m in modes]
+        cw = max(map(len, heads), default=0) + 2
+        bw = min(w - 4, 30 + cw * len(modes))
+        bh = min(h - 4, len(rows) + 6)  # stay clear of the status and key rows
+        bx, by = (w - bw) // 2, 1 + (h - 3 - bh) // 2
         inner = bw - 4
-        lw = clamp(inner - 11 * max(len(modes), 1), 14, 26)
-        cw = min(11, (inner - lw) // max(len(modes), 1))
-        self.fill(by, bx, bh, bw)
+        lw = clamp(inner - cw * len(modes), 14, 26)
+        self.fill(1, 0, h - 3, w)  # clear the page behind, so no border fragments show around the box
         self.box(by, bx, bh, bw, "Mode limits", self.theme.ACCENT)
         self.put(by + 1, bx + 2, "Control", self.theme.ACCENT, True)
-        for col, mode in enumerate(modes):
-            self.put(by + 1, bx + 2 + lw + cw * col, f"{mode:>{cw - 1}}", self.theme.ACCENT, True)
+        for col, head in enumerate(heads):
+            self.put(by + 1, bx + 2 + lw + cw * col, f"{head:>{cw - 1}}", self.theme.ACCENT, True)
         room = bh - 5
         shown = rows
         if len(rows) > room:
@@ -879,7 +896,7 @@ class Dashboard(FanPanel):
                          bold=mode == state.get("mode"))
         note = "Custom is live; other modes come from the firmware table."
         if table is None:
-            note = "Stock-mode limits need root: press s or run sudo loqctl serve"
+            note = "Stock limits need root once per boot: press s"
         self.put(by + bh - 3, bx + 2, note[: bw - 4], self.theme.WARN if table is None else self.theme.TEXT, dim=table is not None)
         self.put(by + bh - 2, bx + 2, "Enter / Esc / m closes", self.theme.ACCENT)
 

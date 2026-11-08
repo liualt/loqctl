@@ -809,6 +809,58 @@ class UiTests(helpers.SysfsCase):
             self.assertRegex(text, r"GPU PPAB\s+10 W")
             self.assertEqual(dash.rows(state), ["mode"] + list(m_common.FIELDS))
 
+    def test_power_page_status_mode_row_and_overlay_fit(self):
+        modes = ["low-power", "balanced", "performance", "max-power", "custom"]
+        item = {"unit": "W", "available": True, "current_value": 55, "effective_value": None, "min_value": 5,
+                "max_value": 140, "scalar_increment": 1, "default_value": 55}
+        attrs = {k: {**item, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS}
+        for h, w in ((20, 72), (24, 80)):
+            for case in ("page", "overlay", "error"):
+                grid = [[" "] * w for _ in range(h)]
+
+                def addnstr(y, x, text, n, attr=0):
+                    for i, c in enumerate(text[:n]):
+                        grid[y][x + i] = c
+                screen = Mock()
+                screen.getmaxyx.return_value = (h, w)
+                screen.addnstr.side_effect = addnstr
+                with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                        patch.object(curses, "has_colors", return_value=False):
+                    dash = m_ui.Dashboard(screen, Mock(notice="", remote=False), sudo_ok=False)
+                dash.keyboard = Mock(last_seq=0)
+                dash.notice = ""
+                dash.panel, dash.show_limits = "main", case == "overlay"
+                state = {"metrics": {}, "attributes": attrs, "modes": modes, "mode": "balanced",
+                         "mode_limits": None, "mode_limits_error": "needs root"}
+                if case == "error":
+                    state["error"] = "Could not read firmware attributes"
+                with patch.object(os, "geteuid", return_value=1000):
+                    dash.draw(state)
+                text = ["".join(r) for r in grid]
+                joined = "\n".join(text)
+                self.assertIn("Stock limits need root once per boot", joined, (h, w, case))
+                if case == "overlay":
+                    row = next(t for t in text if "Control" in t)
+                    for head in ("low", "[bal]", "perf", "max", "custom"):
+                        self.assertIn(head, row, (h, w))
+                    self.assertNotIn("╭─╭", joined)
+                    self.assertIn("Enter / Esc / m closes", joined)
+                    self.assertTrue(text[h - 2].startswith(" Read-only"), (h, w))  # box stays off the status row
+                else:
+                    self.assertRegex(joined, r"Mode\s+low \[bal\] perf max custom")
+                    self.assertEqual(joined.count("Select custom to edit"), 1, (h, w))
+                    self.assertIn("Live", text[1])
+                    status = text[h - 2]
+                    if case == "error":
+                        self.assertIn("Could not read firmware attributes", status)
+                        self.assertNotIn("Press s", status)
+                    else:
+                        self.assertIn("Read-only. Press s to unlock.", status)
+                dash.panel, dash.show_limits = "overview", False
+                grid[:] = [[" "] * w for _ in range(h)]
+                dash.draw(state)
+                self.assertNotIn("Press s to unlock", "".join(grid[h - 2]))
+
     def test_dialogs_and_header_stay_inside_the_screen(self):
         modes = ["quiet", "balanced", "performance", "custom"]
         template = {"label": "x", "unit": "W", "available": True, "current_value": 55, "min_value": 5,
