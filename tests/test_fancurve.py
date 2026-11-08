@@ -518,7 +518,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
         point = m_fan.read_curve(self.hwmon)[1]
         self.assertEqual((point["cpu_up"], point["fan1"], point["fan2"]), (60, 82, 82))
         self.assertIsNone(dash.fan_edit)
-        self.assertIn("Applied and verified", dash.notice)
+        self.assertEqual(dash.notice, "Applied and verified 1 step.")
 
     def test_held_point_and_discard(self):
         dash = self.dash()
@@ -614,6 +614,28 @@ class FanCurveSurfaceTests(FanPanelFixture):
                 dash.draw_fans(state, state["metrics"], 1, 0, 17, 60)  # an empty list must not raise
                 self.keys(dash, state, key)
                 self.assertNotEqual(dash.panel, "fans", (key, fan))
+
+    def test_full_screen_shows_move_and_apply_result(self):
+        metrics = {"timestamp": time.time()}
+        for size in ((20, 72), (24, 80)):
+            dash = self.dash()
+            state = {"mode": "custom", "model": "LOQ", "metrics": metrics}
+            self.keys(dash, state, "f", "]", "]", curses.KEY_UP)
+            dash.panel = "fans"
+            dash.kb_seen = dash.keyboard.last_seq = 0
+            dash.paused = True
+            dash.s.getmaxyx.return_value = size
+            del dash.put, dash.box
+            for key, expected in ((None, ("Unsaved changes", "(was ", "Step 3 now ")), (10, ("Applied and verified 1 step.",))):
+                if key:
+                    self.keys(dash, state, key)
+                calls = []
+                dash.put = lambda y, x, text, *a, **k: calls.append(str(text))
+                dash.draw(state)
+                drawn = " ".join(calls)
+                for text in expected:
+                    self.assertIn(text, drawn, (size, key))
+            self.assertNotIn("Unsaved changes", drawn)
 
     def test_full_screen_fits_small_terminals(self):
         metrics = {"fans": [{"rpm": 2000.0}, {"rpm": 1900.0}], "cpu": {"temperature_c": 67.0, "power_w": 20.0},
@@ -729,7 +751,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
         text = {t for t, _ in cells.values()}
         self.assertIn("Step 3 of 10 · 35% (was 34%) (fan 2 was 37%) · CPU from 75°C · GPU from 75°C · Heatsink from 65°C", text)
         self.assertFalse(any("RPM" in t for t in text))
-        self.assertEqual(dash.box.call_args.args[6], "Staged")
+        self.assertEqual(dash.box.call_args.args[6], "Unsaved changes")
         dash.draw_fans({"mode": "balanced"}, {"fans": [{"rpm": 1800.0}, {"rpm": 1700.0}], "cpu": {"temperature_c": 61.0},
                                               "gpu": {"devices": [{"temperature_c": 55.0}]}}, 1, 0, 17, 72)
         self.assertEqual(dash.box.call_args.args[4], "Fan curve · now 18% · 17%")
@@ -1181,12 +1203,12 @@ class FanPanelPresetTests(FanPanelFixture):
         self.assertEqual(dash.fan_preset, "stock")
         self.assertEqual(dash.fan_edit[2]["fan1"], 180)
         dash.draw_fans(state, {}, 1, 0, 25, 100)
-        self.assertIn("Staged stock", dash.box.call_args.args[6])
+        self.assertIn("Unsaved changes stock", dash.box.call_args.args[6])
         dash.fan_preset = "n" * 80
-        dash.draw_fans(state, {}, 1, 0, 25, 40)
+        dash.draw_fans(state, {}, 1, 0, 25, 60)
         label = dash.box.call_args.args[6]
-        self.assertTrue(label.startswith("Staged ") and label.endswith("…"))  # a long curve name is cut
-        self.assertLess(len(label), 40 - 8)
+        self.assertTrue(label.startswith("Unsaved changes ") and label.endswith("…"))  # a long curve name is cut
+        self.assertLess(len(label), 60 - 8)
         self.assertIs(dash.fan_scale(), dash.fan_scale())
         dash.fan_preset = "stock"
         m_store.write_atomic(self.config / "loqctl/curves/aa.json", edit(CURVE, {(1, "fan1"): 90}))
