@@ -272,7 +272,7 @@ class UiTests(Sim):
         dash = self.dash()
         dash.draw_controls(m_hardware.Hardware(self.root).capabilities(), 0, 0, 20, 70)
         text = self.text(dash)
-        self.assertIn("CPU sustained / PL1  60 W", text)
+        self.assertIn("CPU sustained / PL1    60 W", text)
         self.assertIn("custom default 60 · balanced limit from firmware table", text)
 
     def test_stock_row_without_table_is_na(self):
@@ -284,8 +284,8 @@ class UiTests(Sim):
         state["mode_limits_error"] = "needs root"
         dash.draw_controls(state, 0, 0, 20, 70)
         text = self.text(dash)
-        self.assertIn("CPU sustained / PL1  N/A", text)
-        self.assertIn("Stock-mode limits need root: press s or run sudo loqctl serve", text)
+        self.assertIn("CPU sustained / PL1    N/A", text)
+        self.assertIn("Stock limits need root once per boot: press s", text)
 
     def test_limits_overlay(self):
         self.add_table()
@@ -293,8 +293,8 @@ class UiTests(Sim):
         state = m_hardware.Hardware(self.root).capabilities()
         dash.draw_limits(state)
         text = self.text(dash)
-        for mode in MODES:
-            self.assertIn(mode, text)
+        for head in ("low", "[bal]", "perf", "max", "custom"):  # short headers, the live mode bracketed
+            self.assertIn(head, text)
         row = [c for c in dash.calls if c[0].strip() in ("60", "119", "162", "65")]
         self.assertTrue(row)
         bold = [c[0].strip() for c in dash.calls if c[1] and c[0].strip().isdigit()]
