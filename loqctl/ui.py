@@ -51,6 +51,27 @@ def limit_note(state, items):
     return f"Gamezone WMI device {where}, limits can't be read; see README"
 
 
+# One-line meaning of each limit for the Power detail strip (the firmware ids stay in the API).
+DESCRIBE = {
+    "ppt_pl1_spl": "power the CPU can hold indefinitely",
+    "ppt_pl2_sppt": "short-term CPU power for bursts",
+    "ppt_pl3_fppt": "very short CPU power spike ceiling",
+    "ppt_pl4_ipl": "absolute CPU peak current limit",
+    "ppt_cpu_cl": "CPU power cap while the GPU is loaded",
+    "ppt_pl1_spl_cl": "sustained CPU power while the GPU is loaded",
+    "ppt_pl2_sppt_cl": "burst CPU power while the GPU is loaded",
+    "ppt_pl3_fppt_cl": "spike CPU power while the GPU is loaded",
+    "ppt_pl4_ipl_cl": "peak CPU current while the GPU is loaded",
+    "ppt_pl1_apu_spl": "sustained power for the integrated graphics",
+    "ppt_pl1_tau": "how long the CPU may boost above sustained",
+    "cpu_temp": "CPU temperature where it starts to throttle",
+    "gpu_nv_ctgp": "extra GPU power on top of its base",
+    "gpu_nv_ppab": "power shifted between CPU and GPU",
+    "gpu_nv_ac_offset": "GPU power offset when on AC",
+    "gpu_nv_bpl": "GPU power at base clocks",
+    "gpu_nv_cpu_boost": "GPU power gained from CPU headroom",
+    "gpu_temp": "GPU temperature where it starts to throttle",
+}
 MODE_SHORT = {"low-power": "low", "balanced": "bal", "performance": "perf", "max-power": "max"}
 
 
@@ -308,8 +329,8 @@ class Dashboard(FanPanel):
             self.push_history(metrics)
 
         # Header
-        model = state.get("model") or "N/A"
-        mode = (state.get("mode") or "…").upper()
+        model = state.get("model") or ""
+        mode = (state.get("mode") or "").upper()
         access = "API" if self.backend.remote else "ROOT" if os.geteuid() == 0 else "LOCAL"
         if self.paused and self.panel in ("overview", "main"):  # Space toggles it only there
             access = "GRAPHS PAUSED"
@@ -320,8 +341,11 @@ class Dashboard(FanPanel):
         if len(model) > room:
             model = model[: max(room - 1, 0)].rsplit(" ", 1)[0]
             model = model + "…" if model else ""
-        mid = f"{model}  ·  {mode}" if model else mode
-        self.put(0, max(len(title) + 1, (w - len(mid)) // 2), mid, self.theme.OK)
+        mid = f"{model}  ·  {mode}" if model and mode else model or mode or "Waiting for firmware"
+        mx = max(len(title) + 1, (w - len(mid)) // 2)
+        self.put(0, mx, mid, self.theme.OK, bold=not model and bool(mode))
+        if model and mode:
+            self.put(0, mx + len(model) + 5, mode, self.theme.OK, True)
         self.put(0, w - len(access) - 3, f" {access} ", self.theme.GPU if access == "API" else self.theme.WARN)
 
         self.draw_nav(state, 1, 0, h - 3, self.NAV_W)
@@ -431,8 +455,12 @@ class Dashboard(FanPanel):
         right = f"{pending_n} staged" if pending_n else fresh
         if self.invalid:
             right = (f"{pending_n} staged" if pending_n else "") + f"{', ' if pending_n else ''}{len(self.invalid)} invalid"
-        self.box(y, x, height, width, "Power", self.theme.ACCENT, right)
         rows = self.rows(state)
+        shown_now = [k for k in rows if k in self.shown_rows(state)]
+        at_row = shown_now.index(rows[self.selected]) + 1 if rows and 0 <= self.selected < len(rows) and rows[self.selected] in shown_now else 0
+        if at_row and len(shown_now) > height - 7:  # the list scrolls: say where the cursor is
+            right = f"{at_row}/{len(shown_now)}  {right}"
+        self.box(y, x, height, width, "Power", self.theme.ACCENT, right)
         if not rows:
             self.put(y + 2, x + 2, "No firmware attributes exposed.", self.theme.WARN)
             return
@@ -469,7 +497,17 @@ class Dashboard(FanPanel):
             entries += [(None, "Firmware")] + [("ro", item) for item in extras]
         list_top = y + 2
         detail_h = 4
-        visible = max(3, height - detail_h - 3)
+        metrics = state.get("metrics") or {}
+        cpu, gpu = metrics.get("cpu") or {}, next(iter((metrics.get("gpu") or {}).get("devices") or []), {})
+        if height >= 26:  # a big screen has room for the live numbers next to the limits
+            hot = bool((metrics.get("throttle") or {}).get("cpu", {}).get("active") or gpu.get("throttle"))
+            self.put(list_top, x + 2, fit_parts([f"CPU {fmt(cpu.get('temperature_c'), '°C')} {fmt(cpu.get('power_w'), 'W', 1)}",
+                                                 f"GPU {fmt(gpu.get('temperature_c'), '°C')} {fmt(gpu.get('power_w'), 'W', 1)}"]
+                                                + (["throttling"] if hot else []), width - 4, "  "),
+                     self.theme.BAD if hot else self.theme.TEXT, bold=hot, dim=not hot)
+            list_top += 1
+        visible = max(3, height - detail_h - 3 - (list_top - y - 2))
+        lw = min(max([len(state["attributes"][k]["label"]) for k in shown if k in state["attributes"]] + [8]) + 1, max(8, width - 18))
         at = next((i for i, (row, _) in enumerate(entries) if row == self.selected), 0)
         if not any(isinstance(row, int) for row, _ in entries[at + 1:]):
             at = len(entries) - 1  # on the last editable row, scroll the read-only rows into view
@@ -495,24 +533,24 @@ class Dashboard(FanPanel):
             staged = self.pending.get(key)
             value = "N/A" if current is None else f"{current}{unit_sep(unit)}{unit}"
             if self.locked(state):
-                line = f"{marker} {label:<22} {value}"
+                line = f"{marker} {label:<{lw}} {value}"
                 self.put(yy, x + 1, line[: width - 3], self.theme.TEXT, bold=chosen, dim=True)
                 continue
             text = self.fields.get(key)
             bad = key in self.invalid
             if chosen:
-                line = (f"{marker} {label:<22} {strike(value)} -> "
+                line = (f"{marker} {label:<{lw}} {strike(value)} -> "
                         + (f"{text}_" if text else "__"))
                 self.put(yy, x + 1, line[: width - 3], self.theme.BAD if bad else self.theme.ACCENT, bold=True)
                 continue
             if bad:
                 value += f" → {text}"
-                self.put(yy, x + 1, f"{marker} {label:<22} {value}"[: width - 3], self.theme.BAD)
+                self.put(yy, x + 1, f"{marker} {label:<{lw}} {value}"[: width - 3], self.theme.BAD)
                 continue
             if staged is not None:
                 value += f" → {staged}"
             color = self.theme.WARN if staged is not None else self.theme.TEXT
-            self.put(yy, x + 1, f"{marker} {label:<22} {value}"[: width - 3], color, dim=staged is None)
+            self.put(yy, x + 1, f"{marker} {label:<{lw}} {value}"[: width - 3], color, dim=staged is None)
 
         if self.locked(state):  # one line saying why a limit is N/A; "select custom" is said once, below
             attrs = state.get("attributes") or {}
@@ -556,19 +594,21 @@ class Dashboard(FanPanel):
             step_txt = "N/A" if step is None else "any int" if not step else str(step)
             if item.get("current_value") is None:
                 error = item.get("read_error") or "missing"
-                note = limit_note(state, {key: item}) or f"{key}: current value unreadable ({error})"
+                note = limit_note(state, {key: item}) or f"{item['label']}: current value unreadable ({error})"
                 self.put(detail_y + 1, x + 2, note[: width - 4], self.theme.WARN)
             else:
-                self.put(detail_y + 1, x + 2, key, self.theme.ACCENT)
+                self.put(detail_y + 1, x + 2, f"{item['label']}: {DESCRIBE.get(key, '')}"[: width - 4].rstrip(": "),
+                         self.theme.ACCENT)
             self.put(detail_y + 2, x + 2,
                      fit_parts([f"{fmt(item['min_value'])}–{fmt(item['max_value'])} {item['unit']}",
                                 f"default {fmt(item['default_value'])}", f"step {step_txt}"], width - 4),
                      self.theme.TEXT, dim=True)
 
     def telemetry_box(self, y, x, height, width, name, color, parts, key, ceiling, chart_color, marks,
-                      note="", alert=None):
+                      note="", alert=None, names=()):
         """One box: the numbers go in the title, one power graph fills the inside, an optional note takes the last row."""
-        scale = f"0-{ceiling:.0f} W" if key else ""
+        span = min(width - 4, self.history[key].maxlen) if key else 0  # one sample a second
+        scale = f"0-{ceiling:.0f} W, {span // 60} min" if span >= 120 else f"0-{ceiling:.0f} W, {span} s" if key else ""
         self.box(y, x, height, width, name, color, scale)
         room = width - len(name) - 8 - (len(scale) + 4 if scale else 0)
         text = fit_parts(parts, room) if room > 0 and len(parts[0]) <= room else ""
@@ -581,6 +621,14 @@ class Dashboard(FanPanel):
             rows -= 1
         if key and rows > 0:
             self.chart_rows(y + 1, ix, iw, rows, key, ceiling, chart_color, marks)
+            labels = {}  # limit names at the right edge, on the line they mark
+            for (value, mark_color), name in zip(marks, names):
+                line = min(rows - 1, int(clamp(value / max(1, ceiling), 0, 1) * rows))
+                labels.setdefault(line, []).append((f"{name} {value:g}", mark_color))
+            for line, found in labels.items():
+                text = " ".join(t for t, _ in found)
+                if len(text) < iw:
+                    self.put(y + rows - line, ix + iw - len(text), text, found[-1][1], True)
 
     def draw_telemetry(self, state, metrics, y, x, height, width):
         cpu = metrics.get("cpu") or {}
@@ -598,6 +646,8 @@ class Dashboard(FanPanel):
         sys_h = 6 if height >= 18 else 5
         cpu_h = max(7, (height - sys_h) * 55 // 100)
         gpu_h = max(5, height - sys_h - cpu_h)
+        cpu_h, gpu_h = min(cpu_h, 13), min(gpu_h, 10)  # tall charts are sparse; System takes the rest
+        sys_h = height - cpu_h - gpu_h
 
         # CPU
         throttled = bool((throttle.get("cpu") or {}).get("active"))
@@ -612,7 +662,7 @@ class Dashboard(FanPanel):
                                                  fmt(None if cpu.get("clock_mhz") is None else cpu["clock_mhz"] / 1000, "GHz", 1)],
             "cpu_w", max(pl2 or 0, max((v for v in self.history["cpu_w"] if v is not None), default=0), 1), self.theme.WARN,
             [(v, c) for v, c in ((pl1, self.theme.WARN), (pl2, self.theme.BAD)) if v is not None],
-            reason, self.theme.BAD if throttled else None)
+            reason, self.theme.BAD if throttled else None, [n for n, v in (("PL1", pl1), ("PL2", pl2)) if v is not None])
 
         # GPU
         gy = y + cpu_h
@@ -625,7 +675,8 @@ class Dashboard(FanPanel):
                                                    fmt(None if gpu.get("clock_mhz") is None else gpu["clock_mhz"] / 1000, "GHz", 1)],
                 "gpu_w", max(ctgp or 0, plimit or 0, max((v for v in self.history["gpu_w"] if v is not None), default=0), 1), self.theme.WARN,
                 [(v, c) for v, c in ((ctgp, self.theme.WARN), (plimit, self.theme.BAD)) if v is not None],
-                ("throttle: " + ", ".join(reasons)) if reasons else "", self.theme.BAD if reasons else None)
+                ("throttle: " + ", ".join(reasons)) if reasons else "", self.theme.BAD if reasons else None,
+                [n for n, v in (("CTGP", ctgp), ("limit", plimit)) if v is not None])
         else:
             self.telemetry_box(gy, x, gpu_h, width, "GPU", self.theme.GPU,
                                ["Asleep" if gpu_meta.get("suspended") else "Offline"], None, 1, 0, (),
@@ -644,7 +695,7 @@ class Dashboard(FanPanel):
             self.bar(sy + 1, ix, iw, used / total * 100, self.theme.INFO)
         battery = next(iter(metrics.get("battery") or []), {})
         ac = metrics.get("ac_online")
-        power = "AC" if ac else "Battery" if ac is False else "Power N/A"
+        power = "AC" if ac else "Battery" if ac is False else "AC N/A"
         bat = f"{fmt(battery.get('percent'), '%')} {battery.get('status') or ''}".strip()
         health = battery.get("health_percent")
         left = battery_left(battery)
@@ -652,6 +703,8 @@ class Dashboard(FanPanel):
                  + ([f"health {health:.0f}%"] if health is not None else [])
                  + ([f"charge {battery['charge_type'].replace('_', ' ')}"] if battery.get("charge_type") else [])
                  + ([f"rapid {battery['rapid_charge']}"] if battery.get("rapid_charge") else []))
+        if ac and len("  ".join(parts)) + 6 <= iw:  # spell it out when the whole line still fits
+            parts[0] = parts[0].replace("AC", "AC power", 1)
         self.put(sy + 2, ix, fit_parts(parts, iw, "  "), self.theme.OK if ac else self.theme.WARN)
         if sys_h >= 5:
             fans = metrics.get("fans") or []
@@ -794,6 +847,7 @@ class Dashboard(FanPanel):
         "Esc       back one level, close a box, clear a row",
         "s         authenticate sudo (Power, Fans, Keyboard)",
         "?         this help   q  quit",
+        "LOCAL, ROOT or API at the top right: running as you, as root, or against the daemon",
     )
     HELP_PAGES = {
         "overview": (

@@ -1161,12 +1161,12 @@ class ViewTests(unittest.TestCase):
                                         "throttle": ["sw_power_cap"]}]},
                    "throttle": {"cpu": {"active": True}}}
         dash.chart_rows = Mock()
-        dash.draw_telemetry(self.state(), metrics, 1, 40, 42, 60)
+        dash.draw_telemetry(self.state(), metrics, 1, 20, 42, 70)
         text = "\n".join(t for _, _, t in calls)
         self.assertIn("THROTTLE · 72°C · 45.2 W · 4.1 GHz", text)
         self.assertIn("80.1 W · N/A", text)  # missing GPU temperature and clock
         self.assertIn("throttle: sw_power_cap", text)
-        self.assertNotIn("PL1", text)
+        self.assertIn("PL1 55", text)
         self.assertEqual([c.args[4] for c in dash.chart_rows.call_args_list], ["cpu_w", "gpu_w"])
         self.assertTrue(all(0 <= y < 45 and x + len(t) <= 100 for y, x, t in calls))
         calls.clear()
@@ -1210,6 +1210,51 @@ class ViewTests(unittest.TestCase):
                 if data:
                     self.assertNotIn("N/A W", text)
                     self.assertEqual(text.count("load 0.50"), h >= 24)
+
+    def full_screen(self, h, w, panel, state):
+        grid = [[" "] * w for _ in range(h)]
+        screen = Mock()
+        screen.getmaxyx.return_value = (h, w)
+        screen.addnstr.side_effect = lambda y, x, text, n, attr=0: grid[y].__setitem__(slice(x, x + len(text[:n])), text[:n])
+        with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                patch.object(curses, "has_colors", return_value=False):
+            dash = m_ui.Dashboard(screen, Mock(notice="", remote=True))
+        dash.panel, dash.paused = panel, True
+        dash.history["cpu_w"].extend([20, 45, 60] * 20)
+        dash.draw(state)
+        return dash, "\n".join("".join(r) for r in grid)
+
+    def test_overview_labels_chart_span_limits_and_header_at_all_sizes(self):
+        metrics = {"cpu": {"temperature_c": 60, "power_w": 45.0}, "ac_online": True, "timestamp": time.time()}
+        state = {"metrics": metrics, "attributes": self.state()["attributes"], "model": "LOQ 15", "mode": "custom", "modes": []}
+        for h, w in ((20, 72), (24, 80), (40, 120)):
+            _, text = self.full_screen(h, w, "overview", state)
+            for needle in ("PL1 55", "PL2 115", " s", "AC power"):
+                self.assertIn(needle, text, (h, w, needle))
+        _, text = self.full_screen(24, 80, "overview", {"metrics": {}, "attributes": {}, "modes": []})
+        self.assertIn("Waiting for firmware", text)
+        self.assertNotIn("N/A  ·", text)
+
+    def test_power_page_shows_position_labels_and_live_strip_at_all_sizes(self):
+        attrs = {k: {"label": m_common.FIELDS[k][0], "unit": m_common.FIELDS[k][1], "effective_value": 50, "current_value": 50,
+                     "min_value": 1, "max_value": 99, "default_value": 40, "scalar_increment": 1, "read_error": None}
+                 for k in m_common.FIELDS}
+        metrics = {"cpu": {"temperature_c": 61, "power_w": 33.0}, "gpu": {"devices": [{"temperature_c": 55, "power_w": 20.0}]}}
+        state = {"metrics": metrics, "attributes": attrs, "model": "LOQ", "mode": "custom",
+                 "modes": ["quiet", "balanced", "performance", "custom"]}
+        for h, w in ((20, 72), (24, 80), (40, 120)):
+            dash = None
+            with patch.object(m_ui.Dashboard, "rows", lambda self, st: ["mode"] + list(attrs)), \
+                    patch.object(m_ui.Dashboard, "shown_rows", lambda self, st: ["mode"] + list(attrs)):
+                dash, text = self.full_screen(h, w, "main", {**state})
+            self.assertIn("Mode", text, (h, w))
+            self.assertNotIn("gpu_temp", text)
+            self.assertRegex(text, r"CPU sustained / PL1\s+50 W")
+            if h < 26:
+                self.assertRegex(text, r"\d+/19", (h, w))
+            else:
+                self.assertIn("CPU 61°C 33.0 W", text)
+                self.assertNotRegex(text, r"\d+/19")
 
     def test_details_view_draws_na(self):
         dash, calls = self.stub_dash()
