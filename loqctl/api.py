@@ -42,8 +42,8 @@ def _api_classes():
     global _API
     if _API is None:
         class UnixHTTP(http_client.HTTPConnection):
-            def __init__(self, path):
-                super().__init__("localhost", timeout=4)
+            def __init__(self, path, timeout=4):
+                super().__init__("localhost", timeout=timeout)
                 self.path = path
 
             def connect(self):
@@ -107,6 +107,8 @@ def _api_classes():
                     self.reply(200, self.server.hardware.fancurve())
                 elif self.path == "/v1/battery":
                     self.reply(200, self.server.hardware.battery())
+                elif self.path == "/v1/toggles":
+                    self.reply(200, self.server.hardware.toggles())
                 else:
                     self.reply(404, {"error": "Unknown endpoint"})
 
@@ -124,6 +126,8 @@ def _api_classes():
                         value = self.server.hardware.set_value(self.path[len("/v1/attributes/"):], body["value"])
                     elif self.path == "/v1/battery" and set(body) == {"mode"}:
                         value = self.server.hardware.write_battery(body["mode"])
+                    elif self.path.startswith("/v1/toggles/") and set(body) == {"value"}:
+                        value = self.server.hardware.set_toggle(self.path[len("/v1/toggles/"):], body["value"])
                     elif self.path == "/v1/fancurve" and set(body) == {"points"}:
                         value = self.server.hardware.write_fancurve(body["points"])
                     else:
@@ -147,8 +151,10 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def request(path, method, endpoint, payload=None):
-    conn = _api_classes()["UnixHTTP"](path)
+def request(path, method, endpoint, payload=None, timeout=4):
+    """One API call. A fan-curve write passes a long `timeout`: each point write makes the module
+    rewrite the whole curve, so a big change takes far longer than the 4 s a read needs."""
+    conn = _api_classes()["UnixHTTP"](path, timeout)
     try:
         body = json.dumps(payload) if payload is not None else None
         conn.request(method, endpoint, body, {"Content-Type": "application/json"} if body else {})
@@ -203,6 +209,9 @@ def prepare_socket_dir(directory):
     os.chmod(directory, 0o711)
 
 
+SHUTDOWN_WAIT = 120  # seconds serve waits for an in-flight write on SIGTERM or Ctrl+C
+
+
 def serve(uid):
     if os.geteuid() != 0:
         raise ControlError("Start the server with sudo so it can write firmware settings.")
@@ -236,6 +245,21 @@ def serve(uid):
     except KeyboardInterrupt:
         pass
     finally:
-        sampler.halt()
-        server.server_close()
-        path.unlink(missing_ok=True)
+        shutdown(sampler, server, path)
+
+
+def shutdown(sampler, server, path, wait=None):
+    """Stop serving without cutting a write in half.
+
+    Request threads are daemons, so exiting at once could stop a fan-curve or limit write midway.
+    Every write holds the hardware lock: taking it waits for the one in flight to finish."""
+    wait = SHUTDOWN_WAIT if wait is None else wait
+    held = sampler.hardware.lock.acquire(blocking=False)
+    if not held:
+        print("Waiting for a firmware write to finish before stopping.", flush=True)
+        held = sampler.hardware.lock.acquire(timeout=wait)
+    sampler.halt()
+    server.server_close()
+    path.unlink(missing_ok=True)
+    if not held:
+        print(f"A firmware write was still running after {wait} s; stopping anyway.", flush=True)

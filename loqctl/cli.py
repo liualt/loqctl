@@ -15,9 +15,10 @@ from . import VERSION
 from .api import http_client
 from .backend import Backend
 from .capdata import limits_report
-from .common import FIELDS, ControlError, _lazy, owner_uid
+from .common import FIELDS, ControlError, _lazy, owner_uid, sudo_run
 from .hardware import Hardware, apply_batch
 from .sensors import Sensors
+from .toggles import TOGGLES
 
 argparse = _lazy("argparse")
 curses = _lazy("curses")
@@ -51,7 +52,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Lenovo LOQ firmware controls and live terminal telemetry")
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--socket", help="Connect to an existing loqctl Unix socket")
-    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,fan,mode,battery,set,kb,doctor,serve}")
+    commands = parser.add_subparsers(dest="command", metavar="{tui,status,metrics,capabilities,limits,fan,mode,battery,set,toggle,profile,kb,doctor,serve}")
     commands.add_parser("tui", help="Open the dashboard (default)")
     for cmd in ("status", "metrics", "capabilities"):
         commands.add_parser(cmd, help="Print " + cmd + " as JSON")
@@ -65,6 +66,12 @@ def main(argv=None):
     setting = commands.add_parser("set", help="Set one firmware attribute, with readback verification")
     setting.add_argument("attribute", choices=FIELDS)
     setting.add_argument("value", type=int)
+    toggle = commands.add_parser("toggle", help="List device switches, or set one on or off")
+    toggle.add_argument("name", nargs="?", choices=list(TOGGLES), help="Switch to set; omit to list")
+    toggle.add_argument("state", nargs="?", help="on, off, or a number up to the switch maximum")
+    profile = commands.add_parser("profile", help="List, save or apply named profiles (mode, limits, fan curve)")
+    profile.add_argument("action", choices=("list", "save", "apply"))
+    profile.add_argument("name", nargs="?", help="Profile name for save and apply")
     kb_parser = commands.add_parser("kb", help="Keyboard RGB via LegionAura")
     kb_parser.add_argument("args", nargs=argparse.REMAINDER, help="status|apply|off|static|breath|wave|hue|brightness …")
     commands.add_parser("doctor", help="Check which features this laptop supports")
@@ -75,6 +82,9 @@ def main(argv=None):
     commands.add_parser("_capdata")
     internal_battery = commands.add_parser("_battery")
     internal_battery.add_argument("mode")
+    internal_toggle = commands.add_parser("_toggle")
+    internal_toggle.add_argument("name", choices=list(TOGGLES))
+    internal_toggle.add_argument("value", type=int)
     fancurve = commands.add_parser("_fancurve")
     fancurve.add_argument("points", help="JSON list of fan curve points")
     args = parser.parse_args(argv)
@@ -93,6 +103,8 @@ def main(argv=None):
             result = Hardware().write_fancurve(json.loads(args.points))
         elif args.command == "_battery":
             result = Hardware().write_battery(args.mode)
+        elif args.command == "_toggle":
+            result = Hardware().set_toggle(args.name, args.value)
         elif args.command == "_capdata":
             result, reason = Hardware().mode_limits()
             if result is None:
@@ -165,12 +177,40 @@ def main(argv=None):
                     result = limits_report(result)
             elif args.command == "fan":
                 result = backend.fancurve()
+            elif args.command == "toggle":
+                if args.name is None:
+                    result = backend.toggles()
+                else:
+                    states = {"on": 1, "off": 0}
+                    if args.state in states:
+                        value = states[args.state]
+                    elif args.state is not None and args.state.isascii() and args.state.isdigit():
+                        value = int(args.state)
+                    else:
+                        raise ControlError("Give on, off or a number after the switch name.")
+                    if backend.remote or os.geteuid() == 0:
+                        result = backend.write_toggle(args.name, value)
+                    else:
+                        out, _ = sudo_run(["_toggle", args.name, str(value)])
+                        result = json.loads(out)
             elif args.command == "mode":
                 result = backend.write("mode", args.value)
             elif args.command == "battery":
                 result = backend.battery() if args.value is None else backend.write_battery(args.value)
             elif args.command == "set":
                 result = backend.write(args.attribute, args.value)
+            elif args.command == "profile":
+                from . import profiles
+                if args.action == "list":
+                    result = {"profiles": profiles.list_profiles()}
+                elif not args.name:
+                    raise ControlError(f"profile {args.action} needs a name.")
+                elif args.action == "save":
+                    result = {"saved": str(profiles.save_profile(backend, args.name))}
+                else:
+                    result = profiles.apply_profile(backend, args.name)
+                    print(json.dumps(result, indent=2, allow_nan=False))
+                    return 0 if result["applied"] else 1
         print(json.dumps(result, indent=2, allow_nan=False))
         return 0
     except (ControlError, OSError, ValueError, http_client.HTTPException, curses.error) as exc:

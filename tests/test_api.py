@@ -33,6 +33,13 @@ class ApiTests(helpers.SysfsCase):
                 with self.assertRaises(m_common.ControlError):
                     m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", payload)
             self.assertEqual((self.attr / "current_value").read_text().strip(), "70")
+            led = self.root / "devices/platform/legion/winkey"
+            led.parent.mkdir(parents=True)
+            led.write_text("0")
+            self.assertEqual(m_api.request(path, "GET", "/v1/toggles")[0]["name"], "winkey")
+            self.assertTrue(m_api.request(path, "POST", "/v1/toggles/winkey", {"value": 1})["verified"])
+            with self.assertRaises(m_common.ControlError):
+                m_api.request(path, "POST", "/v1/toggles/winkey", {"value": 2})
             m_api.request(path, "POST", "/v1/mode", {"mode": "balanced"})
             with self.assertRaises(m_common.ControlError):
                 m_api.request(path, "POST", "/v1/attributes/ppt_pl1_spl", {"value": 60})
@@ -188,6 +195,46 @@ class ServerSamplerTests(unittest.TestCase):
             with patch.dict(os.environ, {"SUDO_UID": value}), patch("os.getuid", return_value=0):
                 self.assertIn("SUDO_UID", m_api.serve_uid_warning(m_common.owner_uid()))
         self.assertIsNone(m_api.serve_uid_warning(1000))
+
+    def test_shutdown_waits_for_a_write_in_flight(self):
+        sampler, server = Mock(), Mock()
+        sampler.hardware.lock = threading.Lock()
+        sock = self.root / "c.sock"
+        sock.write_text("")
+        sampler.hardware.lock.acquire()
+        threading.Timer(0.2, sampler.hardware.lock.release).start()
+        start = time.monotonic()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            m_api.shutdown(sampler, server, sock, wait=5)
+        self.assertGreaterEqual(time.monotonic() - start, 0.15)
+        self.assertIn("Waiting for a firmware write", out.getvalue())
+        self.assertNotIn("stopping anyway", out.getvalue())
+        server.server_close.assert_called_once()
+        self.assertFalse(sock.exists())
+        stuck = Mock()
+        stuck.hardware.lock = threading.Lock()
+        stuck.hardware.lock.acquire()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            m_api.shutdown(stuck, server, sock, wait=0.05)
+        self.assertIn("stopping anyway", out.getvalue())
+        stuck.halt.assert_called_once()
+
+    def test_fancurve_write_gets_the_long_timeout(self):
+        backend = m_backend.Backend(str(self.root / "none"))
+        backend.remote, backend.path = True, "x.sock"
+        with patch.object(m_backend, "request", return_value=[]) as call:
+            backend.write_fancurve([])
+        self.assertEqual(call.call_args.kwargs["timeout"], m_common.FANCURVE_TIMEOUT)
+        conn = Mock()
+        conn.getresponse.return_value = Mock(status=200, read=Mock(return_value=b"[]"))
+        with patch.dict(m_api._api_classes(), {"UnixHTTP": Mock(return_value=conn)}) as classes:
+            m_api.request("x.sock", "POST", "/v1/fancurve", {"points": []}, timeout=90)
+            classes["UnixHTTP"].assert_called_once_with("x.sock", 90)
+
+    def test_sudo_timeout_says_the_write_may_finish(self):
+        with patch.object(m_common.subprocess, "run", side_effect=m_common.subprocess.TimeoutExpired("sudo", 90)):
+            with self.assertRaisesRegex(m_common.ControlError, "after 90 s. A write may still finish"):
+                m_common.sudo_run(["_fancurve", "[]"], timeout=90)
 
     def sampler(self, hardware):
         sampler = m_sensors.Sampler.__new__(m_sensors.Sampler)

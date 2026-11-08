@@ -51,7 +51,7 @@ The completions are static files; Tab never runs loqctl or sudo.
 
 When sudo runs a user-writable file, any process running as you can gain root by editing it.
 
-loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_battery`, `_capdata`, `_fancurve`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
+loqctl needs the `loqctl/` package next to `loqctl.py`: the batched sudo calls (`_apply`, `_battery`, `_capdata`, `_fancurve`, `_toggle`) run `sudo -n -- <the running Python> -I <real path of loqctl.py>`, resolved through the symlink. Keep both under the same root-owned directory. Never add a passwordless sudoers rule for a path you can edit.
 
 Or run it in place with `python3 loqctl.py`.
 
@@ -108,7 +108,7 @@ Firmware writes need root. You have two options:
 | `Esc` | Back |
 | `q` | Quit |
 
-Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the real RGB. Settings are read from `~/.config/legionaura/config.json`.
+Zone swatches in the terminal are the nearest ANSI color; the keyboard shows the real RGB. Settings are read from `~/.config/legionaura/config.json`. LegionAura saves black zones for effects that ignore colors (wave, hue, off), so loqctl keeps the colors it already knew and sends them again when you cycle back to static or breath.
 
 ### Fan curves
 
@@ -167,9 +167,14 @@ sudo loqctl mode custom
 loqctl battery                       # charging mode: normal, conservation or rapid
 loqctl battery conservation          # sets it (through sudo or the server)
 sudo loqctl set ppt_pl1_spl 50
+loqctl toggle                        # device switches this laptop exposes, with state
+loqctl toggle fn_lock on             # also camera, winkey, logo_light, port_light
+loqctl profile list                  # saved profiles in ~/.config/loqctl/profiles
+loqctl profile save gaming           # save the current mode, limits and fan curve
+loqctl profile apply gaming          # check the whole profile, then write it
 ```
 
-Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_battery`, `_capdata` and `_fancurve` are internal, used via sudo by the dashboard.
+Other forms: `loqctl tui` (same as no command), `loqctl --socket PATH ...`, `sudo loqctl serve [--uid UID]`, `loqctl --version`. `_apply`, `_battery`, `_capdata`, `_fancurve` and `_toggle` are internal, used via sudo by the dashboard.
 
 `sudo` may not find a `~/.local/bin` install; install system-wide as described above so `sudo loqctl ...` works and the file is root-owned.
 
@@ -236,7 +241,7 @@ loqctl kb apply
 sudo loqctl serve
 ```
 
-Serves HTTP over a Unix socket at `/run/loqctl-UID/control.sock`. Only that user and root can connect (checked with peer credentials); the socket is mode `0600` in a root-owned directory. There is no TCP listener. Stop it with Ctrl+C. If a server crashed and left a stale `control.sock`, the next start removes it; it refuses to start if a live server answers on it or if the path is not a socket. Clients ignore a stale socket and fall back to local access.
+Serves HTTP over a Unix socket at `/run/loqctl-UID/control.sock`. Only that user and root can connect (checked with peer credentials); the socket is mode `0600` in a root-owned directory. There is no TCP listener. Stop it with Ctrl+C or SIGTERM; a write already running finishes first (up to 120 s). If a server crashed and left a stale `control.sock`, the next start removes it; it refuses to start if a live server answers on it or if the path is not a socket. Clients ignore a stale socket and fall back to local access.
 
 ```sh
 curl --unix-socket /run/loqctl-$(id -u)/control.sock http://localhost/v1/status
@@ -250,14 +255,20 @@ curl --unix-socket /run/loqctl-$(id -u)/control.sock \
 | GET | `/v1/status` | Sampler snapshot: firmware and telemetry (not a fresh read) |
 | GET | `/v1/metrics` | Telemetry from the sampler (about 1 Hz) |
 | GET | `/v1/capabilities` | Modes, bounds, defaults, per-mode limits; read fresh |
+| GET | `/v1/toggles` | Device switches present, with value and maximum; read fresh |
 | GET | `/v1/fancurve` | Fan curve, speed unit, RPM (or `available: false`); read fresh |
 | POST | `/v1/mode` | `{"mode":"custom"}` |
 | POST | `/v1/attributes/NAME` | `{"value":50}` |
+| POST | `/v1/toggles/NAME` | `{"value":1}`, 0 to the switch maximum, read back |
 | POST | `/v1/fancurve` | `{"points":[...]}`, custom mode only, per-field results |
 
 The server allows the user in `SUDO_UID`. If you start it as root without sudo, pass `--uid UID` so your user can connect.
 
+To start the server at boot instead of in a terminal, copy `contrib/loqctl-serve@.service` to `/etc/systemd/system/`, set `ExecStart` to where loqctl is installed, and run `sudo systemctl enable --now loqctl-serve@1000`. The instance (`1000` here) is your UID and is passed as `--uid`, so `SUDO_UID` is not needed. `serve` creates `/run/loqctl-UID` itself, so the unit sets no `RuntimeDirectory`. The service runs as root, so the unit file, the loqctl program and every directory above them must be owned by root and not writable by other users. Do not point it at a script in your home directory. loqctl does not install the unit or call `systemctl`. Fan curve re-apply after resume under systemd is untested on real hardware.
+
 Note: `/v1/status` returns the server's sampler snapshot (refreshed by its polling), while `/v1/capabilities` reads the firmware fresh on each request. There is no `/v1/limits`; per-mode limits are part of the `/v1/capabilities` and `/v1/status` payloads (`mode_limits`, `mode_limits_error`).
+
+A fan-curve POST can take a minute: the module rewrites the whole curve for every point written. loqctl waits up to 90 s for it; give your client a similar timeout. The reply is a list of per-field results, and a 200 status does not mean every field was written: check each result's `status`. If a client gives up early, the write may still finish, so read `/v1/fancurve` before retrying.
 
 Use `--socket PATH` to point the CLI or dashboard at a specific socket. Without it, a socket that does not accept connections is ignored with a notice and loqctl reads locally.
 

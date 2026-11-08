@@ -10,7 +10,7 @@ import time
 
 from .api import http_client, request, socket_alive
 from .capdata import fetch_via_sudo, load_cache, save_cache
-from .common import ControlError, socket_path, sudo_run
+from .common import FANCURVE_TIMEOUT, ControlError, socket_path, sudo_run
 from .hardware import Hardware
 from .sensors import Sampler, Sensors
 
@@ -84,12 +84,20 @@ class Backend:
             return request(self.path, "POST", endpoint, {"mode" if key == "mode" else "value": value})
         return self.hardware.set_mode(value) if key == "mode" else self.hardware.set_value(key, value)
 
+    def toggles(self):
+        return request(self.path, "GET", "/v1/toggles") if self.remote else self.hardware.toggles()
+
+    def write_toggle(self, name, value):
+        if self.remote:
+            return request(self.path, "POST", "/v1/toggles/" + name, {"value": value})
+        return self.hardware.set_toggle(name, value)
+
     def fancurve(self):
         return request(self.path, "GET", "/v1/fancurve") if self.remote else self.hardware.fancurve()
 
     def write_fancurve(self, points):
         if self.remote:
-            return request(self.path, "POST", "/v1/fancurve", {"points": points})
+            return request(self.path, "POST", "/v1/fancurve", {"points": points}, timeout=FANCURVE_TIMEOUT)
         return self.hardware.write_fancurve(points)
 
     def battery(self):
