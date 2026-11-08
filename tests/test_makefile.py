@@ -28,6 +28,25 @@ class MakefileTests(unittest.TestCase):
         self.assertEqual(self.make("install").returncode, 0)
         self.assertFalse(os.path.exists(self.lib + ".new"))
 
+    def test_install_refuses_foreign_file(self):
+        os.makedirs(os.path.dirname(self.link))
+        with open(self.link, "w") as f:
+            f.write("x")
+        r = self.make("install")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("refusing", r.stderr)
+        with open(self.link) as f:
+            self.assertEqual(f.read(), "x")
+        self.assertFalse(os.path.exists(self.lib))
+
+    def test_uninstall_relative_prefix_rejected(self):
+        victim = os.path.join(self.tmp, "rel", "lib", "loqctl")
+        os.makedirs(victim)
+        r = subprocess.run(["make", "-f", os.path.join(ROOT, "Makefile"), "uninstall", "PREFIX=rel"],
+                           cwd=self.tmp, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(os.path.isdir(victim))
+
     def completions(self):
         share = os.path.join(self.prefix, "share")
         return [os.path.join(share, p) for p in ("bash-completion/completions/loqctl",

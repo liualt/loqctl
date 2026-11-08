@@ -116,8 +116,8 @@ def limits_report(caps):
 
 
 def cache_path():
-    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-    return Path(base) / "loqctl" / "mode-limits.json"
+    base = os.environ.get("XDG_CACHE_HOME", "")
+    return (Path(base) if os.path.isabs(base) else Path.home() / ".cache") / "loqctl" / "mode-limits.json"
 
 
 def _dmi(root):
@@ -129,7 +129,7 @@ def load_cache(root=Path("/sys")):
     product, bios = _dmi(root)
     try:
         data = json.loads(cache_path().read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     if (not isinstance(data, dict) or data.get("version") != CACHE_VERSION or product is None
             or data.get("product") != product or data.get("bios") != bios or not valid_table(data.get("table"))):
@@ -169,7 +169,7 @@ def fetch_via_sudo():
         return None, str(exc)
     try:
         table = json.loads(out)
-    except ValueError:
+    except (ValueError, RecursionError):
         table = None
     if not valid_table(table):
         return None, "sudo returned an unreadable capability table"

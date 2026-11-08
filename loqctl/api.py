@@ -129,7 +129,7 @@ def _api_classes():
                     refresh = getattr(self.server.sampler, "refresh", None)
                     if refresh:
                         refresh()
-                except (ControlError, ValueError, TypeError) as exc:
+                except (ControlError, ValueError, TypeError, RecursionError) as exc:
                     self.reply(400, {"error": str(exc)})
                 except Exception as exc:
                     self.fail(exc)
@@ -149,7 +149,10 @@ def request(path, method, endpoint, payload=None):
         body = json.dumps(payload) if payload is not None else None
         conn.request(method, endpoint, body, {"Content-Type": "application/json"} if body else {})
         response = conn.getresponse()
-        result = json.loads(response.read())
+        try:
+            result = json.loads(response.read())
+        except RecursionError as exc:
+            raise ControlError("The server returned unreadable JSON.") from exc
         if response.status >= 400:
             raise ControlError(result.get("error", str(response.status)))
         return result
@@ -157,9 +160,9 @@ def request(path, method, endpoint, payload=None):
         conn.close()
 
 
-def serve_uid_warning(uid, environ):
-    if "SUDO_UID" not in environ and uid == 0:
-        return "Warning: serving for uid 0 because SUDO_UID is not set. Use --uid <your uid> so your user can connect."
+def serve_uid_warning(uid):
+    if uid == 0:
+        return "Warning: serving for uid 0 because SUDO_UID is missing or invalid. Use --uid <your uid> so your user can connect."
     return None
 
 
@@ -199,12 +202,15 @@ def prepare_socket_dir(directory):
 def serve(uid):
     if os.geteuid() != 0:
         raise ControlError("Start the server with sudo so it can write firmware settings.")
-    pwd.getpwuid(uid)
+    try:
+        pwd.getpwuid(uid)
+    except (KeyError, OverflowError):
+        raise ControlError(f"Unknown uid {uid}.") from None
     directory = Path(f"/run/loqctl-{uid}")
     prepare_socket_dir(directory)
     path = directory / "control.sock"
     prepare_socket_path(path)
-    warning = serve_uid_warning(uid, os.environ)
+    warning = serve_uid_warning(uid)
     if warning:
         print(warning, file=sys.stderr)
     sampler = Sampler()

@@ -101,7 +101,7 @@ def sudo_run(args, timeout=30):
 def read(path, default=None):
     try:
         return Path(path).read_text().strip()
-    except OSError:
+    except (OSError, ValueError):  # ValueError covers UnicodeDecodeError
         return default
 
 
@@ -119,7 +119,10 @@ def scaled(path, divisor=1):
 
 
 def owner_uid():
-    return int(os.environ.get("SUDO_UID", os.getuid()))
+    try:
+        return int(os.environ["SUDO_UID"])
+    except (KeyError, ValueError):
+        return os.getuid()
 
 
 def socket_path():

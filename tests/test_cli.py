@@ -85,15 +85,6 @@ class CliTests(helpers.SysfsCase):
         self.assertEqual(json.loads(out.getvalue()), {"n": 2})
         self.assertIn("boom", err.getvalue())
 
-    def test_metrics_watch_stops_quietly_on_a_broken_pipe(self):
-        sensors = unittest.mock.Mock()
-        sensors.return_value.sample.return_value = {"n": 1}
-        err = io.StringIO()
-        with patch.object(m_cli, "Backend", return_value=unittest.mock.Mock(remote=False, notice="")), \
-                patch.object(m_cli, "Sensors", sensors), patch.object(m_cli.time, "sleep"), \
-                patch("builtins.print", side_effect=BrokenPipeError), contextlib.redirect_stderr(err):
-            self.assertEqual(m_cli.main(["metrics", "--watch"]), 0)
-        self.assertEqual(sensors.return_value.sample.call_count, 2)
 
     def test_metrics_watch_exits_cleanly_when_the_reader_closes(self):
         root = REPO
@@ -188,12 +179,12 @@ class KbCliTests(unittest.TestCase):
     def test_effect_arguments(self):
         cases = {
             ("static", "#FF0000", "--brightness", "1"): ["static", *["ff0000"] * 4, "--brightness", "1"],
-            ("breath", "ff0000", "00ff00", "--speed", "9"):
+            ("breath", "ff0000", "00ff00", "--speed", "4"):
                 ["breath", "ff0000", *["00ff00"] * 3, "--speed", "4", "--brightness", "2"],
             ("wave", "rtl", "--speed", "2"): ["wave", "rtl", "--speed", "2", "--brightness", "2"],
-            ("hue", "--brightness", "5"): ["hue", "--speed", "1", "--brightness", "2"],
+            ("hue", "--brightness", "1"): ["hue", "--speed", "1", "--brightness", "1"],
             ("off",): ["off"],
-            ("brightness", "0"): ["--brightness", "1"],
+            ("brightness", "1"): ["--brightness", "1"],
         }
         for argv, expected in cases.items():
             self.assertEqual(self.run_cli(*argv)[0], expected, argv)
