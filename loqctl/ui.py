@@ -1085,7 +1085,7 @@ class Dashboard(FanPanel):
 
     def stock_needs_root(self, state):
         reason = state.get("mode_limits_error")
-        return bool(reason and reason.startswith("needs root") and self.can_unlock())
+        return bool(reason and reason.startswith("needs root") and os.geteuid() != 0)
 
     def footer_hint(self, width, state):
         missing = self.page_missing()
