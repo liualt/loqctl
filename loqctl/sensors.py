@@ -124,6 +124,58 @@ class NVML:
             return None
 
 
+def battery_health(p):
+    "Cycle count and wear of one battery; Wh only from energy_* files (charge_* is Ah), None when missing."
+    wh = [scaled(p / "energy_full", 1e6), scaled(p / "energy_full_design", 1e6)]
+    full, design = wh if wh[0] is not None and wh[1] else (
+        scaled(p / "charge_full"), scaled(p / "charge_full_design"))
+    ok = full is not None and bool(design)
+    energy = wh[0] is not None and bool(wh[1])
+    return {"cycles": scaled(p / "cycle_count"), "full_wh": full if energy else None,
+            "design_wh": design if energy else None, "health_percent": full / design * 100 if ok else None}
+
+
+BATTERY_SMOOTH_S = 30
+BATTERY_MAX_MIN = 48 * 60
+
+
+def battery_time(p, status, avg_rate, source, threshold=None, conserving=False):
+    """(minutes, "to empty" or "to full") for one battery, (None, None) when unknown.
+
+    avg_rate is the smoothed power_now ("energy") or current_now ("charge"); only the matching
+    energy_* or charge_* files are used with it. Kernel time_to_* files win. threshold is the charge
+    limit percent and conserving the ideapad conservation_mode flag; with only the flag the limit is
+    unknown, so there is no "to full" estimate."""
+    kind, name = {"Discharging": ("to empty", "empty"), "Charging": ("to full", "full")}.get(status, (None, None))
+    if kind is None or (name == "full" and conserving and threshold is None):
+        return None, None
+    kernel = scaled(p / f"time_to_{name}_now")
+    if kernel:
+        minutes = kernel / 60
+    elif not avg_rate or source is None:
+        return None, None
+    else:
+        now_v, full_v = scaled(p / f"{source}_now"), scaled(p / f"{source}_full")
+        if now_v is None or (name == "full" and full_v is None):
+            return None, None
+        target = full_v
+        if name == "full" and threshold is not None and 0 < threshold < 100:
+            target = full_v * threshold / 100  # charging stops at the limit, not at 100%
+        if name == "full" and target <= now_v:
+            return None, None
+        minutes = (now_v if name == "empty" else target - now_v) / avg_rate * 60
+    return (minutes, kind) if 0 <= minutes <= BATTERY_MAX_MIN else (None, None)
+
+
+GPU_MODES = {("0", "0"): "dGPU only", ("1", "0"): "Hybrid", ("1", "1"): "iGPU only", ("1", "2"): "Hybrid (auto)"}
+
+
+def gpu_mode(root):
+    """Firmware GPU mode from legion_laptop's gsync and igpumode (read-only); None when unknown."""
+    base = Path(root) / "devices/platform/legion"
+    return GPU_MODES.get((read(base / "gsync"), read(base / "igpumode")))
+
+
 class Sensors:
     def __init__(self, root=Path("/sys"), proc=Path("/proc"), dev=Path("/dev")):
         self.root, self.proc, self.dev = Path(root), Path(proc), Path(dev)
@@ -134,7 +186,10 @@ class Sensors:
         self.throttle_events = []  # (time, core delta, package delta) within SLOW_INTERVAL
         self.slow = None
         self.slow_at = None
+        self.battery_rates = {}  # battery name -> ((status, source), [(time, rate)] within BATTERY_SMOOTH_S)
         self.found = {}  # discovery cache: name -> (paths, monotonic time of the scan)
+        self.hwmon_names = {}  # hwmon dir -> name file text, cleared when the hwmon list is re-scanned
+        self.rapl_names = {}  # powercap dir -> name file text, cleared when the powercap list is re-scanned
 
     def discover(self, name, scan):
         """Paths from scan(), re-scanned at most every DISCOVERY_INTERVAL (hot-plug, module load)."""
@@ -144,13 +199,58 @@ class Sensors:
             cached = self.found[name] = (scan(), now)
         return cached[0]
 
+    def hwmon_dirs(self):
+        def scan():
+            self.hwmon_names.clear()
+            return sorted(self.root.glob("class/hwmon/hwmon*"))
+        return self.discover("hwmon", scan)
+
+    def hwmon_name(self, hw):
+        """The hwmon `name`, read once per scan; None when missing."""
+        if hw not in self.hwmon_names:
+            self.hwmon_names[hw] = read(hw / "name", "")
+        return self.hwmon_names[hw]
+
+    def rapl_dirs(self):
+        def scan():
+            self.rapl_names.clear()
+            return sorted(self.root.glob("class/powercap/intel-rapl:*"))  # excludes intel-rapl-mmio duplicates
+        return self.discover("rapl", scan)
+
+    def rapl_name(self, path):
+        """The powercap `name`, read once per scan; empty when missing."""
+        if path not in self.rapl_names:
+            self.rapl_names[path] = read(path / "name", "") or ""
+        return self.rapl_names[path]
+
+    def battery_rate(self, p, status, now):
+        """(30 s smoothed rate, "energy" or "charge") from power_now, else current_now; (None, None) when 0 or missing.
+
+        The window restarts when the status or the source changes, so charge and discharge never mix."""
+        source, rate = next(((s, v) for s, f in (("energy", "power_now"), ("charge", "current_now"))
+                             if (v := scaled(p / f)) is not None), (None, None))
+        key = (status, source)
+        last, samples = self.battery_rates.get(p.name, (None, []))
+        if key != last:
+            samples = []
+        self.battery_rates[p.name] = key, samples
+        if not rate:
+            samples.clear()
+            return None, source
+        samples.append((now, abs(rate)))
+        samples[:] = [x for x in samples if now - x[0] <= BATTERY_SMOOTH_S]
+        return sum(x[1] for x in samples) / len(samples), source
+
     def cpu_usage(self):
         result = {}
         for line in (read(self.proc / "stat", "") or "").splitlines():
             parts = line.split()
             if not parts or not parts[0].startswith("cpu"):
                 continue
-            values = list(map(int, parts[1:9]))  # guest times already included in user/nice
+            try:
+                values = list(map(int, parts[1:9]))  # guest times already included in user/nice
+            except ValueError:
+                continue
             total, idle = sum(values), sum(values[3:5])
             previous = self.previous_cpu.get(parts[0])
             usage = None
@@ -165,13 +265,13 @@ class Sensors:
         rapl, package, sources, denied = {}, [], [], False
         # AMD Zen exposes package energy through the same powercap intel-rapl driver
         # (amd_energy was removed in 5.13), so one glob covers both vendors.
-        for path in sorted(self.root.glob("class/powercap/intel-rapl:*")):  # excludes intel-rapl-mmio duplicates
-            name = read(path / "name", "") or ""
+        for path in self.rapl_dirs():
+            name = self.rapl_name(path)
             if not name:
                 continue
             parent = path.name.count(":") > 1
             if parent:
-                parent_name = read(path.with_name(path.name.rsplit(":", 1)[0]) / "name", "") or ""
+                parent_name = self.rapl_name(path.with_name(path.name.rsplit(":", 1)[0]))
                 key = f"{parent_name}/{name}"
             else:
                 key = name
@@ -238,19 +338,21 @@ class Sensors:
         except (OSError, subprocess.TimeoutExpired):
             return {"available": False, "error": "NVIDIA sensor query unavailable or timed out"}
 
-    @staticmethod
-    def cpu_temperature(hwmon_dirs):
+    def cpu_temperature(self, hwmon_dirs):
         """Headline CPU temperature and the label it came from."""
         best = (None, None)
         for hw in hwmon_dirs:
-            name = read(hw / "name", "")
+            name = self.hwmon_name(hw)
             if name not in ("coretemp", "k10temp", "zenpower"):
                 continue
+            inputs = self.discover(f"cputemp:{hw}:{name}", lambda: [
+                (p, read(p.with_name(p.name.replace("_input", "_label")), "") or "")
+                for p in hw.glob("temp*_input")])
             readings = []
-            for p in hw.glob("temp*_input"):
+            for p, label in inputs:
                 v = scaled(p, 1000)
                 if v is not None:
-                    readings.append((read(p.with_name(p.name.replace("_input", "_label")), "") or "", v))
+                    readings.append((label, v))
             if not readings:
                 continue
             if name == "coretemp":
@@ -334,7 +436,7 @@ class Sensors:
         battery_w, battery_status, battery_v, usbc = None, None, None, []
         for p in sorted(self.root.glob("class/power_supply/*")):
             kind = read(p / "type")
-            if kind == "Battery" and battery_w is None and battery_status is None:
+            if kind == "Battery" and read(p / "scope") != "Device" and battery_w is None and battery_status is None:
                 volts, amps = scaled(p / "voltage_now", 1e6), scaled(p / "current_now", 1e6)
                 battery_w = scaled(p / "power_now", 1e6)
                 if battery_w is None and volts is not None and amps is not None:
@@ -350,7 +452,7 @@ class Sensors:
         if battery_v is not None:
             voltages.append({"label": "Battery", "v": battery_v})
         for hw in hwmons:
-            name = read(hw / "name", "") or ""
+            name = self.hwmon_name(hw) or ""
             group = "wifi" if name.startswith("iwlwifi") else TEMP_GROUPS.get(name)
             for p in sorted(hw.glob("temp*_input")):
                 value = scaled(p, 1000)
@@ -377,12 +479,14 @@ class Sensors:
         now = time.monotonic() if now is None else now
         usage = self.cpu_usage()
         fans = []
-        hwmons = self.discover("hwmon", lambda: sorted(self.root.glob("class/hwmon/hwmon*")))
+        hwmons = self.hwmon_dirs()
         for hw in hwmons:
-            name = read(hw / "name", "")
-            for p in hw.glob("fan*_input"):
-                fans.append({"name": read(p.with_name(p.name.replace("_input", "_label")), name + "/" + p.stem),
-                             "rpm": scaled(p)})
+            name = self.hwmon_name(hw)
+            fan_inputs = self.discover(f"fans:{hw}:{name}", lambda: [
+                (p, read(p.with_name(p.name.replace("_input", "_label")), name + "/" + p.stem))
+                for p in hw.glob("fan*_input")])
+            for p, label in fan_inputs:
+                fans.append({"name": label, "rpm": scaled(p)})
         freq_paths = self.discover("cpufreq", lambda: sorted(
             self.root.glob("devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")))
         mhz = [v for p in freq_paths
@@ -394,15 +498,33 @@ class Sensors:
         slow = self.slow
         mem = {}
         for line in (read(self.proc / "meminfo", "") or "").splitlines():
-            key, value = line.split(":", 1)
-            mem[key] = int(value.split()[0]) / 1024
+            key, _, value = line.partition(":")
+            if (kb := number((value.split() or [None])[0])) is not None:
+                mem[key] = kb / 1024
         total, available = mem.get("MemTotal"), mem.get("MemAvailable")
         battery = []
         ac = []
-        for p in self.root.glob("class/power_supply/*"):
-            if read(p / "type") == "Battery":
-                battery.append({"name": p.name, "percent": scaled(p / "capacity"),
-                                "status": read(p / "status"), "power_w": scaled(p / "power_now", 1e6)})
+        conservation = next((v for f in sorted(self.root.glob("bus/platform/drivers/ideapad_acpi/*/conservation_mode"))
+                             if (v := read(f)) in ("0", "1")), None)
+        legion = self.root / "devices/platform/legion"
+        # rapidcharge (0/1) and powerchargemode are legion_laptop attributes under devices/platform/legion
+        # (LenovoLegionLinux kernel_module/legion-laptop.c); powerchargemode is kept raw and not shown.
+        rapid = {"0": "off", "1": "on"}.get(read(legion / "rapidcharge"))
+        for p in sorted(self.root.glob("class/power_supply/*")):
+            if read(p / "type") == "Battery" and read(p / "scope") != "Device":
+                threshold = scaled(p / "charge_control_end_threshold")
+                limit = (f"{threshold:.0f}%" if threshold is not None
+                         else None if conservation is None else "on" if conservation == "1" else "off")
+                status = read(p / "status")
+                charge_type = re.search(r"\[(\w+)\]", read(p / "charge_types") or "")
+                avg, source = self.battery_rate(p, status, now)
+                minutes, kind = battery_time(p, status, avg, source, threshold, conservation == "1")
+                battery_power = scaled(p / "power_now", 1e6)
+                battery.append({"charge_limit": limit, "charge_type": charge_type and charge_type[1],
+                                "rapid_charge": rapid, "power_charge_mode": read(legion / "powerchargemode"), "name": p.name, "percent": scaled(p / "capacity"),
+                                "status": status, "power_w": battery_power,
+                                "power_avg_w": avg / 1e6 if avg is not None and source == "energy" else None,
+                                "time_remaining_min": minutes, "time_kind": kind, **battery_health(p)})
             elif (online := read(p / "online")) is not None:
                 ac.append(online == "1")
         gpu = self.gpu()
@@ -419,7 +541,7 @@ class Sensors:
                         "power_w": power, "power_source": power_source,
                         "clock_mhz": sum(mhz) / len(mhz) if mhz else None,
                         "max_clock_mhz": max(mhz) if mhz else None},
-                "gpu": gpu, "memory": {"total_mib": total,
+                "gpu": gpu, "gpu_mode": gpu_mode(self.root), "memory": {"total_mib": total,
                     "used_mib": total - available if total is not None and available is not None else None},
                 "battery": battery, "ac_online": any(ac) if ac else None, "fans": fans,
                 "power": {"rapl": rapl, "battery_w": slow["battery_w"],
@@ -427,7 +549,7 @@ class Sensors:
                 "temperatures": temperatures, "voltages": voltages,
                 "throttle": {"cpu": self.cpu_throttle(now),
                              "gpu": devices[0].get("throttle") if devices else None},
-                "load": list(os.getloadavg()), "uptime_s": number((read(self.proc / "uptime", "0")).split()[0])}
+                "load": list(os.getloadavg()), "uptime_s": number((read(self.proc / "uptime", "").split() or [None])[0])}
 
 
 class Sampler:
@@ -468,11 +590,12 @@ class Sampler:
             self.metrics = self.sensors.sample()
         except Exception as exc:
             error = str(exc)
+            self.metrics = {}  # drop the old sample so the UI shows N/A, not frozen values
         latest = {**self.caps, "metrics": self.metrics}
         if error:
             latest["error"] = error
-        if busy:
-            latest["stale"] = True  # firmware fields are from before the running hook
+        if busy or self.fw_error:
+            latest["stale"] = True  # firmware fields are from before the running hook or the failed read
         self.latest = latest
 
     def call_hook(self, caps):

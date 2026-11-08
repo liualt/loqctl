@@ -63,7 +63,7 @@ class Keyboard:
             return self._load_failed("no config yet")
         except OSError:
             return self._load_failed("config not readable")
-        except (json.JSONDecodeError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             return self._load_failed("config is not valid JSON")
         if not isinstance(data, dict):
             return self._load_failed("config is not a JSON object")
@@ -200,11 +200,18 @@ class Keyboard:
             self._thread.join(0.1)
 
     def set_brightness(self, value):
-        try:
-            self.brightness = clamp(int(value), 1, 2)
-        except ValueError as exc:
-            raise ControlError(f"brightness must be 1 or 2, not {value!r}.") from exc
+        self.brightness = _int_arg("brightness", value, 1, 2)
         return self._run(["--brightness", str(self.brightness)])
+
+
+def _int_arg(name, text, lo, hi):
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        value = None
+    if value is None or not lo <= value <= hi:
+        raise ControlError(f"{name} must be a number from {lo} to {hi}, not {text!r}.")
+    return value
 
 
 def kb_cli(argv):
@@ -234,9 +241,9 @@ def kb_cli(argv):
         while i < len(rest):
             token = rest[i]
             if token == "--brightness" and i + 1 < len(rest):
-                brightness = int(rest[i + 1]); i += 2; continue
+                brightness = _int_arg("--brightness", rest[i + 1], 1, 2); i += 2; continue
             if token == "--speed" and i + 1 < len(rest):
-                speed = int(rest[i + 1]); i += 2; continue
+                speed = _int_arg("--speed", rest[i + 1], 1, 4); i += 2; continue
             colors.append(rgb_to_hex(*hex_to_rgb(token)))
             i += 1
         if not colors:
@@ -246,8 +253,7 @@ def kb_cli(argv):
         kb.zones = colors[:Keyboard.ZONES]
         kb.effect = action
         kb.mark_dirty("effect", "zones", "brightness", *(("speed",) if action == "breath" else ()))
-        kb.brightness = clamp(brightness, 1, 2)
-        kb.speed = clamp(speed, 1, 4)
+        kb.brightness, kb.speed = brightness, speed
         return {"result": kb.apply_current(), **kb.status()}
     if action == "wave":
         direction = "ltr"
@@ -258,13 +264,13 @@ def kb_cli(argv):
             if token in ("ltr", "rtl"):
                 direction = token; i += 1; continue
             if token == "--brightness" and i + 1 < len(rest):
-                brightness = int(rest[i + 1]); i += 2; continue
+                brightness = _int_arg("--brightness", rest[i + 1], 1, 2); i += 2; continue
             if token == "--speed" and i + 1 < len(rest):
-                speed = int(rest[i + 1]); i += 2; continue
+                speed = _int_arg("--speed", rest[i + 1], 1, 4); i += 2; continue
             raise ControlError(f"Unexpected wave argument: {token}")
         kb.effect, kb.wave_dir = "wave", direction
         kb.mark_dirty("effect", "wave_dir", "speed", "brightness")
-        kb.brightness, kb.speed = clamp(brightness, 1, 2), clamp(speed, 1, 4)
+        kb.brightness, kb.speed = brightness, speed
         return {"result": kb.apply_current(), **kb.status()}
     if action == "hue":
         brightness, speed = kb.brightness, kb.speed
@@ -272,12 +278,12 @@ def kb_cli(argv):
         while i < len(rest):
             token = rest[i]
             if token == "--brightness" and i + 1 < len(rest):
-                brightness = int(rest[i + 1]); i += 2; continue
+                brightness = _int_arg("--brightness", rest[i + 1], 1, 2); i += 2; continue
             if token == "--speed" and i + 1 < len(rest):
-                speed = int(rest[i + 1]); i += 2; continue
+                speed = _int_arg("--speed", rest[i + 1], 1, 4); i += 2; continue
             raise ControlError(f"Unexpected hue argument: {token}")
         kb.effect = "hue"
         kb.mark_dirty("effect", "speed", "brightness")
-        kb.brightness, kb.speed = clamp(brightness, 1, 2), clamp(speed, 1, 4)
+        kb.brightness, kb.speed = brightness, speed
         return {"result": kb.apply_current(), **kb.status()}
     raise ControlError("kb usage: status|apply|off|brightness|static|breath|wave|hue …")

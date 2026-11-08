@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -50,6 +51,7 @@ class ParseTests(unittest.TestCase):
             for mode, value in zip(MODES, values):
                 self.assertEqual(table[mode][key], value, (mode, key))
         self.assertTrue(capdata.valid_table(table))
+        self.assertFalse(capdata.valid_table({mode: {} for mode in MODES}))
 
     def test_read_mode_table(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,6 +63,9 @@ class ParseTests(unittest.TestCase):
             table, reason = capdata.read_mode_table(tmp)
             self.assertIsNone(reason)
             self.assertEqual(table["performance"]["gpu_nv_ctgp"], 90)
+            (guid / "capdata").write_text(re.sub(r"dev:\s*\d+", "dev: 99", FIXTURE))
+            self.assertEqual(capdata.read_mode_table(tmp), (None, capdata.NOT_FOUND))  # foreign IDs
+            (guid / "capdata").write_text(FIXTURE)
             with patch.object(Path, "read_text", side_effect=PermissionError):
                 self.assertEqual(capdata.read_mode_table(tmp), (None, "needs root"))
             with patch.object(os, "listdir", side_effect=PermissionError):
@@ -114,6 +119,21 @@ class HardwareTests(Sim):
         self.assertEqual(caps["mode_limits"]["performance"]["ppt_pl1_spl"], 90)
         self.assertIsNone(caps["mode_limits_error"])
 
+    def test_other_profile_handler_gets_no_table(self):
+        self.add_table()
+        (self.root / "class/platform-profile/platform-profile-0/name").write_text("amd-pmf")
+        hw = m_hardware.Hardware(self.root)
+        with patch.object(hw, "mode_limits") as fetch:
+            caps = hw.capabilities()
+        fetch.assert_not_called()
+        self.assertIsNone(caps["mode_limits"])
+        self.assertEqual(caps["mode_limits_error"], "stock limits are known for lenovo-wmi-gamezone only")
+        self.assertIsNone(caps["attributes"]["ppt_pl1_spl"]["effective_value"])
+
+    def test_missing_product_name_is_none(self):
+        (self.root / "class/dmi/id/product_name").unlink()
+        self.assertIsNone(m_hardware.Hardware(self.root).capabilities()["model"])
+
     def test_retry_only_as_root(self):
         hw = m_hardware.Hardware(self.root)
         with patch.object(os, "geteuid", return_value=1000):
@@ -166,6 +186,16 @@ class SudoCacheTests(Sim):
         data = json.loads(path.read_text())
         self.assertEqual((data["version"], data["product"], data["bios"]), (1, "LOQ 15IRX9", "NECN44WW"))
 
+    def test_recursive_sudo_output_is_unreadable(self):
+        backend = self.backend()
+        with patch.object(capdata.json, "loads", side_effect=RecursionError):
+            self.load(backend, sudo_out("[[["))
+        self.assertIsNone(backend.hardware.capabilities()["attributes"]["ppt_pl1_spl"]["effective_value"])
+
+    def test_relative_xdg_cache_home_ignored(self):
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": "rel"}), patch.object(capdata.Path, "home", return_value=Path("/h")):
+            self.assertEqual(capdata.cache_path(), Path("/h/.cache/loqctl/mode-limits.json"))
+
     def test_cache_reused_without_sudo(self):
         capdata.save_cache(self.table(), self.root)
         backend = self.backend()
@@ -187,6 +217,8 @@ class SudoCacheTests(Sim):
             path.write_text(json.dumps({**data, **bad}))
             self.assertIsNone(capdata.load_cache(self.root), bad)
         path.write_text("not json")
+        self.assertIsNone(capdata.load_cache(self.root))
+        path.write_text("[" * 30000)
         self.assertIsNone(capdata.load_cache(self.root))
         backend = self.backend()
         run = self.load(backend, sudo_out(json.dumps(self.table())))  # mismatch -> refetch
@@ -224,6 +256,7 @@ class UiTests(Sim):
         dash.theme = m_ui.Theme(False)
         dash.history = {k: m_ui.collections.deque(maxlen=240) for k in ("cpu", "gpu", "cpu_w", "gpu_w")}
         dash.pending, dash.fields, dash.invalid, dash.selected = {}, {}, set(), 1
+        dash.sudo_expired = False
         dash.s = Mock()
         dash.s.getmaxyx.return_value = (h, w)
         dash.box = Mock()
@@ -240,8 +273,8 @@ class UiTests(Sim):
         dash = self.dash()
         dash.draw_controls(m_hardware.Hardware(self.root).capabilities(), 0, 0, 20, 70)
         text = self.text(dash)
-        self.assertIn("CPU sustained / PL1  60 W", text)
-        self.assertIn("balanced limit from firmware table · custom default 60", text)
+        self.assertRegex(text, r"balanced +custom")  # the stock value, then what custom mode holds
+        self.assertRegex(text, r"CPU sustained / PL1 +60 W +50 W")
 
     def test_stock_row_without_table_is_na(self):
         dash = self.dash()
@@ -252,8 +285,8 @@ class UiTests(Sim):
         state["mode_limits_error"] = "needs root"
         dash.draw_controls(state, 0, 0, 20, 70)
         text = self.text(dash)
-        self.assertIn("CPU sustained / PL1  N/A", text)
-        self.assertIn("Stock-mode limits need root: press s or run sudo loqctl serve", text)
+        self.assertRegex(text, r"CPU sustained / PL1 +N/A")
+        self.assertIn("Stock limits need root once per boot: press s", text)
 
     def test_limits_overlay(self):
         self.add_table()
@@ -261,8 +294,8 @@ class UiTests(Sim):
         state = m_hardware.Hardware(self.root).capabilities()
         dash.draw_limits(state)
         text = self.text(dash)
-        for mode in MODES:
-            self.assertIn(mode, text)
+        for head in ("low", "[bal]", "perf", "max", "custom"):  # short headers, the live mode bracketed
+            self.assertIn(head, text)
         row = [c for c in dash.calls if c[0].strip() in ("60", "119", "162", "65")]
         self.assertTrue(row)
         bold = [c[0].strip() for c in dash.calls if c[1] and c[0].strip().isdigit()]
@@ -277,7 +310,7 @@ class UiTests(Sim):
         dash = self.dash(42, 100)
         dash.view = "summary"
         marks = []
-        dash.chart_rows = lambda y, x, w, h, key, ceiling, color, markers=(): marks.append((key, [v for v, _ in markers]))
+        dash.chart_rows = lambda y, x, w, h, key, ceiling, color, markers=(), floor=0: marks.append((key, [v for v, _ in markers]))
         dash.history["cpu_w"].extend([20, 45])
         dash.history["gpu_w"].extend([30, 80])
         metrics = {"cpu": {"cores": {}}, "gpu": {"devices": [{"power_limit_w": 140}]}}

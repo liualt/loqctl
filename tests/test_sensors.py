@@ -33,9 +33,42 @@ class SensorsTests(helpers.SysfsCase):
         with patch.object(time, "monotonic", return_value=3):
             self.assertEqual(sensors.rapl_power()[1], 2)
 
+    def test_bad_proc_lines_are_skipped(self):
+        (self.root / "proc").mkdir()
+        (self.root / "proc/meminfo").write_text("garbage\nEmpty:\nMemTotal: 1024 kB\nMemAvailable: 512 kB")
+        (self.root / "proc/stat").write_text("cpu  1 2 x 4 5 6 7 8\ncpu0 1 2 3 4 5 6 7 8")
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        self.assertEqual(sensors.cpu_usage(), {"cpu0": None})
+        sensors.gpu = lambda: {"available": False}
+        self.assertEqual(sensors.sample()["memory"], {"total_mib": 1.0, "used_mib": 0.5})
+
+    def test_undecodable_file_reads_as_missing(self):
+        path = self.root / "bad"
+        path.write_bytes(b"\xff\xfe")
+        self.assertIsNone(m_common.read(path))
+
+    def test_failed_reads_drop_metrics_and_mark_stale(self):
+        sampler = m_sensors.Sampler(Mock(root=self.root, capabilities=Mock(side_effect=RuntimeError("fw"))))
+        sampler.metrics = {"cpu": {}}
+        with patch.object(sampler.sensors, "sample", side_effect=ValueError("bad")):
+            sampler.tick()
+        self.assertEqual(sampler.latest["metrics"], {})
+        self.assertTrue(sampler.latest["stale"])
+        self.assertEqual(sampler.latest["error"], "bad")
+
     def test_unsupported_sensor_values_are_null(self):
         for value in ("[N/A]", "nan", "inf", None, "Not Supported"):
             self.assertIsNone(m_common.number(value))
+
+    def test_gpu_mode_decodes_gsync_and_igpumode(self):
+        base = self.root / "devices/platform/legion"
+        self.assertIsNone(m_sensors.gpu_mode(self.root))
+        base.mkdir(parents=True)
+        for gsync, igpu, expected in (("0", "0", "dGPU only"), ("1", "0", "Hybrid"), ("1", "1", "iGPU only"),
+                                      ("1", "2", "Hybrid (auto)"), ("0", "1", None), ("1", "7", None)):
+            (base / "gsync").write_text(gsync)
+            (base / "igpumode").write_text(igpu)
+            self.assertEqual(m_sensors.gpu_mode(self.root), expected)
 
     def test_smt_siblings_counted_once(self):
         root = helpers.make_root(self)
@@ -160,7 +193,8 @@ class PortabilityTests(unittest.TestCase):
                 self.put(f"class/hwmon/hwmon{n}/temp{i}_label", label)
 
     def temp_of(self):
-        return m_sensors.Sensors.cpu_temperature(sorted((self.root / "class/hwmon").glob("hwmon*")))
+        return m_sensors.Sensors(self.root, self.root / "proc").cpu_temperature(
+            sorted((self.root / "class/hwmon").glob("hwmon*")))
 
     def test_cpu_temperature_labels(self):
         self.assertEqual(self.temp_of(), (None, None))
@@ -175,6 +209,44 @@ class PortabilityTests(unittest.TestCase):
         shutil.rmtree(self.root / "class")
         self.hwmon(0, "zenpower", [("Tdie", 55), ("Tctl", 75)])
         self.assertEqual(self.temp_of(), (55, "Tdie"))
+
+    def test_cpu_temperature_paths_cached_until_rescan(self):
+        self.hwmon(0, "coretemp", [("Package id 0", 60)])
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        hwmons = sorted((self.root / "class/hwmon").glob("hwmon*"))
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
+            self.assertEqual(sensors.cpu_temperature(hwmons), (60, "Package id"))
+            self.put("class/hwmon/hwmon0/temp2_input", "90000")
+            self.assertEqual(sensors.cpu_temperature(hwmons), (60, "Package id"))
+            clock[0] += m_sensors.DISCOVERY_INTERVAL
+            self.assertEqual(sensors.cpu_temperature(hwmons), (60, "Package id"))
+            self.put("class/hwmon/hwmon0/temp2_label", "Package id 1")
+            clock[0] += m_sensors.DISCOVERY_INTERVAL
+            self.assertEqual(sensors.cpu_temperature(hwmons)[0], 90)
+
+    def test_hwmon_name_read_once_until_rescan(self):
+        self.hwmon(0, "coretemp", [("Package id 0", 60)])
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
+            self.assertEqual(sensors.sample()["cpu"]["temperature_c"], 60)
+            self.put("class/hwmon/hwmon0/name", "other")
+            self.assertEqual(sensors.sample()["cpu"]["temperature_c"], 60)
+            clock[0] += m_sensors.DISCOVERY_INTERVAL
+            self.assertIsNone(sensors.sample()["cpu"]["temperature_c"])
+
+    def test_rapl_name_read_once_until_rescan(self):
+        self.put("class/powercap/intel-rapl:0/name", "package-0")
+        self.put("class/powercap/intel-rapl:0/energy_uj", "1000000")
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
+            self.assertIn("package-0", sensors.rapl_power()[0])
+            self.put("class/powercap/intel-rapl:0/name", "other")
+            self.assertIn("package-0", sensors.rapl_power()[0])
+            clock[0] += m_sensors.DISCOVERY_INTERVAL
+            self.assertIn("other", sensors.rapl_power()[0])
 
     def test_amd_rapl_package_power(self):
         self.hwmon(0, "k10temp", [("Tctl", 50)])
@@ -195,6 +267,25 @@ class PortabilityTests(unittest.TestCase):
         self.assertAlmostEqual(second["cpu"]["power_w"], 10.0)
         self.assertEqual(second["cpu"]["temperature_source"], "Tctl")
 
+    def test_battery_power_does_not_replace_cpu_power(self):
+        self.put("class/powercap/intel-rapl:0/name", "package-0")
+        self.put("class/powercap/intel-rapl:0/energy_uj", "1000000")
+        self.put("class/power_supply/BAT0/type", "Battery")
+        self.put("class/power_supply/BAT0/status", "Discharging")
+        self.put("class/power_supply/BAT0/power_now", "20000000")
+        self.put("proc/uptime", "10 5")
+        self.put("proc/meminfo", "MemTotal: 1024 kB\nMemAvailable: 512 kB")
+        sensors = m_sensors.Sensors(self.root, self.root / "proc")
+        sensors.gpu = lambda: {"available": False}
+        clock = [100.0]
+        with patch.object(time, "monotonic", side_effect=lambda: clock[0]):
+            sensors.sample()
+            self.put("class/powercap/intel-rapl:0/energy_uj", "21000000")
+            clock[0] = 102.0
+            second = sensors.sample()
+        self.assertAlmostEqual(second["cpu"]["power_w"], 10.0)
+        self.assertEqual(second["battery"][0]["power_w"], 20.0)
+
 
 class TelemetryTests(unittest.TestCase):
     def setUp(self):
@@ -212,6 +303,10 @@ class TelemetryTests(unittest.TestCase):
         s.gpu = lambda: {"available": False}
         return s
 
+    def test_empty_uptime_is_none(self):
+        self.put("proc/uptime", "")
+        self.assertIsNone(self.sensors().sample()["uptime_s"])
+
     def rapl(self, d, name, uj):
         self.put(f"class/powercap/{d}/name", name)
         self.put(f"class/powercap/{d}/energy_uj", str(uj))
@@ -222,7 +317,7 @@ class TelemetryTests(unittest.TestCase):
                      ("intel-rapl-mmio:0", "package-0")):
             self.rapl(d, n, 1000000)
         s = self.sensors()
-        with patch.object(time, "monotonic", side_effect=[0, 0, 0, 2, 2, 2]):
+        with patch.object(time, "monotonic", side_effect=[0, 0, 0, 0, 2, 2, 2, 2]):
             s.rapl_power()
             for d, uj in (("intel-rapl:0", 11000000), ("intel-rapl:0:0", 5000000), ("intel-rapl:1", 21000000),
                           ("intel-rapl-mmio:0", 99000000)):
@@ -233,6 +328,14 @@ class TelemetryTests(unittest.TestCase):
         self.assertAlmostEqual(rapl["package-0/core"], 2.0)
         self.assertAlmostEqual(rapl["psys"], 10.0)
         self.assertAlmostEqual(package, 5.0)
+
+    def test_device_scope_battery_is_skipped(self):
+        for name in ("BAT0", "hid-0003:046D:C52B.0001-battery"):
+            self.put(f"class/power_supply/{name}/type", "Battery")
+            self.put(f"class/power_supply/{name}/status", "Discharging")
+        self.put("class/power_supply/hid-0003:046D:C52B.0001-battery/scope", "Device")
+        out = self.sensors().sample()
+        self.assertEqual([b["name"] for b in out["battery"]], ["BAT0"])
 
     def test_battery_and_usbc_power(self):
         self.put("class/power_supply/BAT1/type", "Battery")
@@ -249,6 +352,115 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual((by["001"]["online"], by["001"]["watts"]), (True, 60.0))
         self.assertEqual((by["002"]["online"], by["002"]["volts"], by["002"]["amps"], by["002"]["watts"]),
                          (False, 5.0, None, None))
+
+    def test_battery_charge_limit(self):
+        self.put("class/power_supply/BAT1/type", "Battery")
+        bat = lambda: self.sensors().sample()["battery"][0]["charge_limit"]
+        self.assertIsNone(bat())
+        self.put("bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode", "1")
+        self.assertEqual(bat(), "on")
+        self.put("class/power_supply/BAT1/charge_control_end_threshold", "80")
+        self.assertEqual(bat(), "80%")
+
+    def test_battery_charge_type(self):
+        self.put("class/power_supply/BAT1/type", "Battery")
+        bat = lambda: self.sensors().sample()["battery"][0]
+        self.assertIsNone(bat()["charge_type"])
+        self.put("class/power_supply/BAT1/charge_types", "Fast Standard [Long_Life]")
+        self.assertEqual(bat()["charge_type"], "Long_Life")
+        self.put("class/power_supply/BAT1/charge_types", "Fast Standard Long_Life")
+        self.assertIsNone(bat()["charge_type"])
+        self.assertEqual((bat()["rapid_charge"], bat()["power_charge_mode"]), (None, None))
+        self.put("devices/platform/legion/rapidcharge", "1")
+        self.put("devices/platform/legion/powerchargemode", "2")
+        self.assertEqual((bat()["rapid_charge"], bat()["power_charge_mode"]), ("on", "2"))
+
+    def test_battery_health(self):
+        self.put("class/power_supply/BAT1/type", "Battery")
+        bat = lambda: self.sensors().sample()["battery"][0]
+        self.assertEqual([bat()[k] for k in ("cycles", "health_percent", "full_wh", "design_wh")], [None] * 4)
+        self.put("class/power_supply/BAT1/cycle_count", "77")
+        self.put("class/power_supply/BAT1/energy_full", "58880000")
+        self.put("class/power_supply/BAT1/energy_full_design", "60000000")
+        b = bat()
+        self.assertEqual((b["cycles"], b["full_wh"], b["design_wh"]), (77, 58.88, 60.0))
+        self.assertAlmostEqual(b["health_percent"], 98.13, 2)
+        self.put("class/power_supply/BAT1/energy_full_design", "0")
+        self.assertIsNone(bat()["health_percent"])
+        self.put("class/power_supply/BAT1/charge_full", "4000000")
+        self.put("class/power_supply/BAT1/charge_full_design", "5000000")
+        self.assertEqual(bat()["health_percent"], 80.0)
+        self.assertIsNone(bat()["full_wh"])
+
+    def test_battery_time_remaining(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Discharging"), ("energy_now", "30000000"),
+                        ("energy_full", "60000000"), ("power_now", "15000000")):
+            self.put(d + name, v)
+        s = self.sensors()
+        bat = lambda now: s.sample(now)["battery"][0]
+        b = bat(0)
+        self.assertEqual((b["time_remaining_min"], b["time_kind"]), (120, "to empty"))
+        self.put(d + "power_now", "45000000")
+        b = bat(10)  # smoothed over 15 W and 45 W
+        self.assertEqual((b["power_w"], b["power_avg_w"], b["time_remaining_min"]), (45.0, 30.0, 60))
+        self.assertEqual(bat(100)["time_remaining_min"], 40)  # old samples left the 30 s window
+        self.put(d + "status", "Charging")
+        b = bat(200)
+        self.assertEqual((b["time_remaining_min"], b["time_kind"]), (40, "to full"))
+        self.put(d + "charge_control_end_threshold", "80")
+        self.assertEqual(bat(205)["time_remaining_min"], 24)  # 48 Wh target, not 60
+        self.put(d + "energy_now", "50000000")
+        self.assertEqual((bat(206)["time_remaining_min"], bat(206)["time_kind"]), (None, None))  # at the limit
+        self.put(d + "energy_now", "30000000")
+        self.put(d + "time_to_full_now", "1800")
+        self.assertEqual(bat(210)["time_remaining_min"], 30)
+        (self.root / d / "time_to_full_now").unlink()
+        (self.root / d / "charge_control_end_threshold").unlink()
+        for status, power in (("Not charging", "15000000"), ("Full", "15000000"), ("Charging", "0")):
+            self.put(d + "status", status)
+            self.put(d + "power_now", power)
+            b = bat(300)
+            self.assertEqual((b["time_remaining_min"], b["time_kind"]), (None, None), status)
+        self.put(d + "status", "Discharging")
+        self.put(d + "power_now", "100000")
+        self.assertIsNone(bat(400)["time_remaining_min"])  # over 48 hours
+
+    def test_battery_time_to_full_needs_a_known_limit(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Charging"), ("energy_now", "30000000"),
+                        ("energy_full", "60000000"), ("power_now", "15000000")):
+            self.put(d + name, v)
+        self.put("bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode", "1")
+        b = self.sensors().sample(0)["battery"][0]
+        self.assertEqual((b["charge_limit"], b["time_remaining_min"], b["time_kind"]), ("on", None, None))
+
+    def test_battery_average_restarts_when_status_flips(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Discharging"), ("energy_now", "30000000"),
+                        ("energy_full", "60000000"), ("power_now", "45000000")):
+            self.put(d + name, v)
+        s = self.sensors()
+        s.sample(0)
+        self.put(d + "status", "Charging")
+        self.put(d + "power_now", "5000000")
+        b = s.sample(1)["battery"][0]
+        self.assertEqual((b["power_avg_w"], b["time_remaining_min"]), (5.0, 360))
+
+    def test_battery_time_needs_matching_files(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Discharging"), ("energy_now", "30000000"),
+                        ("current_now", "1000000")):
+            self.put(d + name, v)
+        b = self.sensors().sample(0)["battery"][0]
+        self.assertEqual((b["time_remaining_min"], b["time_kind"]), (None, None))
+
+    def test_battery_time_from_charge_files(self):
+        d = "class/power_supply/BAT1/"
+        for name, v in (("type", "Battery"), ("status", "Discharging"), ("charge_now", "2000000"),
+                        ("charge_full", "4000000"), ("current_now", "1000000")):
+            self.put(d + name, v)
+        self.assertEqual(self.sensors().sample(0)["battery"][0]["time_remaining_min"], 120)
 
     def test_temperature_groups(self):
         def hw(n, name, temps):
