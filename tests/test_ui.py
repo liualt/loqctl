@@ -1007,7 +1007,7 @@ class UiTests(helpers.SysfsCase):
                 self.assertEqual(any(t.startswith("Firmware values are stale.") for t in texts), stale, (h, w))
                 self.assertTrue(all(0 <= y < h and x + len(t) <= w for y, x, t in puts), (h, w))
 
-    def draw_rows(self, h, w, panel, state, expired=False):
+    def draw_rows(self, h, w, panel, state, expired=False, fan=None):
         puts = {}
         screen = Mock()
         screen.getmaxyx.return_value = (h, w)
@@ -1017,6 +1017,8 @@ class UiTests(helpers.SysfsCase):
             dash = m_ui.Dashboard(screen, Mock(notice="", remote=False), sudo_ok=not expired)
         dash.keyboard = m_keyboard.Keyboard(binary="/usr/bin/true", config=self.root / "legionaura.json")  # not the host's PATH
         dash.panel, dash.paused = panel, True
+        if fan:
+            dash.fan = fan
         with patch.object(m_ui.os, "geteuid", return_value=1000):
             dash.draw({"metrics": {}, "attributes": {}, "modes": [], **state})
         return ["".join(t for (y, x), t in sorted(puts.items()) if y == row) for row in range(h)]
@@ -1042,6 +1044,18 @@ class UiTests(helpers.SysfsCase):
         for h, w in ((20, 72), (24, 80)):
             rows = self.draw_rows(h, w, "main", {"attributes": None, "mode": None})
             self.assertIn("Mode unreadable", "".join(rows))
+
+    def test_missing_load_and_uptime_draw_without_error(self):
+        for h, w in ((20, 72), (24, 80)):
+            rows = self.draw_rows(h, w, "overview", {"metrics": {"load": [None, None], "uptime_s": None}})
+            self.assertEqual(len(rows), h)
+
+    def test_header_names_the_curve_mode_when_firmware_mode_is_unknown(self):
+        fan = {"available": True, "mode": "balanced", "points": [{"cpu_up": 80, "fan1": 40}]}
+        for h, w in ((20, 72), (24, 80)):
+            head = self.draw_rows(h, w, "fans", {"mode": None}, fan=fan)[0]
+            self.assertIn("balanced mode", head)
+            self.assertNotIn("Waiting for firmware", head)
 
     def test_footer_lists_only_working_keys(self):
         for h, w in ((20, 72), (24, 80)):
@@ -1331,6 +1345,26 @@ class ViewTests(unittest.TestCase):
         text = "\n".join(t for _, _, t in calls)
         for needle in ("Temperatures", "Core 0", "psys", "CPU 0 Vcore", "Throttle", "CPU", "GPU"):
             self.assertIn(needle, text)
+
+    def test_details_view_survives_entries_missing_keys(self):
+        dash, calls = self.stub_dash()
+        dash.draw_details({"battery": [{}], "temperatures": [{}], "voltages": [{}], "power": {"usbc": [{}]}}, 1, 0, 30, 60)
+        self.assertIn("Temperatures", "\n".join(t for _, _, t in calls))
+
+    def test_power_list_stays_above_the_detail_strip_in_a_short_box(self):
+        item = {"unit": "W", "available": True, "current_value": 55, "effective_value": 55, "min_value": 5,
+                "max_value": 140, "scalar_increment": 1, "default_value": 55}
+        attrs = {k: {**item, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS}
+        dash, calls = self.stub_dash(20, 72)
+        dash.selected, dash.show_limits, dash.keyboard = 0, False, Mock(last_seq=0)
+        dash.box = Mock()
+        dash.notice = ""
+        state = {"metrics": {}, "attributes": attrs, "modes": [], "mode": "custom"}
+        with patch.object(os, "geteuid", return_value=1000):
+            dash.draw_controls(state, 0, 0, 7, 72)
+        labels = [v[0] for v in m_common.FIELDS.values()]
+        low = [(y, t) for y, x, t in calls if y >= 7 - 4 and any(t.strip().startswith(label) for label in labels)]
+        self.assertEqual(low, [])  # list rows stop above the 4-row detail strip
 
     def test_details_view_shows_gpu_mode(self):
         for mode, shown in (("Hybrid", "mode Hybrid"), (None, "mode N/A")):
