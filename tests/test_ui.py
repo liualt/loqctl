@@ -186,7 +186,7 @@ class UiTests(helpers.SysfsCase):
             self.assertTrue(any(expected in text and color == 3 for text, color in calls), (mode, selected, calls))
         self.assertIn("held by legion_wmi", m_ui.limit_note({"gamezone_holder": "legion_wmi"}, {}))
 
-    def test_draw_dims_locked_rows(self):
+    def test_locked_rows_stay_readable(self):
         self.hw.set_mode("balanced")
         state = self.hw.capabilities()
         dashboard = self.dashboard()
@@ -195,8 +195,8 @@ class UiTests(helpers.SysfsCase):
         dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color, dim))
         dashboard.box = Mock()
         dashboard.draw_controls(state, 0, 0, 20, 50)
-        row = next(c for c in calls if "CPU sustained" in c[0] or "PL1" in c[0] or c[0].startswith("▶"))
-        self.assertEqual(row[1:], (7, True))
+        row = next(c for c in calls if "CPU sustained" in c[0])
+        self.assertFalse(row[2])  # not dimmed: A_DIM is near invisible in many terminals
         self.assertTrue(any("Locked in balanced mode" in c[0] for c in calls))
 
     def test_power_section_fits_grid_with_all_fields(self):
@@ -223,12 +223,12 @@ class UiTests(helpers.SysfsCase):
                     self.assertTrue(all(0 < y < h - 3 and len(t) <= w - 16 for y, t in calls), (mode, h, w, sel))
                     self.assertRegex(lines[1], r"Mode\s+")
                     if sel == 0:
-                        self.assertTrue(lines[1].endswith(f"{mode} → performance"), lines[1])
+                        self.assertIn(f"{mode} → performance", lines[1])
                     elif mode == "custom" or rows[sel] in ("ppt_pl1_spl", "ppt_pl2_sppt", "gpu_nv_ctgp"):
-                        self.assertTrue(any(t.startswith("▶") for t in lines.values()), (mode, h, w, sel))
+                        self.assertTrue(any(t == "▶" for y, t in calls if y > 1), (mode, h, w, sel))
                     if mode == "balanced":
-                        self.assertLessEqual(sum(t.startswith(("▶", " ")) for y, t in calls if y > 1), 4)
-                        self.assertTrue(any("select custom" in t.lower() for t in lines.values()))
+                        self.assertLessEqual(sum(t in ("▶", " ") for y, t in calls if y > 1), 4)
+                        self.assertTrue(any("custom" in t and "edit" in t for t in lines.values()))
 
     def test_stock_mode_cursor_visits_only_drawn_rows(self):
         self.hw.set_mode("balanced")
@@ -269,11 +269,19 @@ class UiTests(helpers.SysfsCase):
             dashboard.put = lambda y, x, text, color=0, bold=False, dim=False: calls.append((text, color))
             dashboard.box = Mock()
             dashboard.selected = dashboard.rows(state).index("ppt_pl1_spl")
-            dashboard.draw_controls(state, 0, 0, 20, 90)
+            dashboard.draw_controls(state, 0, 0, 20, 60)  # too narrow for the range column: the detail strip has it
             detail = next(text for text, _ in calls if "step" in text or "default" in text)
             for part in expected:
                 self.assertIn(part, detail, unreadable)
             self.assertNotIn("None", detail, unreadable)
+
+    def test_invalid_value_says_the_allowed_range(self):
+        self.add_attr("ppt_pl2_sppt", 60, 50, 100, 5, 60)
+        state = self.hw.capabilities()
+        dashboard = self.dashboard()
+        dashboard.set_field(state, "ppt_pl2_sppt", "61")
+        self.assertEqual(dashboard.notice, "61 W is not allowed. Use 50–100 W in steps of 5.")
+        self.assertIn("ppt_pl2_sppt", dashboard.invalid)
 
     def type_keys(self, dashboard, state, *keys):
         for key in keys:
@@ -530,16 +538,13 @@ class UiTests(helpers.SysfsCase):
             dashboard.selected = rows.index(key)
             dashboard.draw_controls(state, 0, 0, 20, 60)
         draw("ppt_pl1_spl")
-        self.assertIn("1 staged, 1 invalid", dashboard.box.call_args[0])
-        row = next(c for c in calls if c[0].startswith("▶"))
-        self.assertIn("→ 60_", row[0])
-        self.assertIn("→ 60_", row[0])
+        self.assertIn("1 staged, 1 invalid", dashboard.box.call_args_list[0][0])
+        row = next(c for c in calls if "→ 60_" in c[0])
         self.assertEqual(row[1], 1)
         staged = next(c for c in calls if "CPU" in c[0].upper() and "→ 90" in c[0])
         self.assertEqual(staged[1], 3)
         draw("gpu_temp")
-        row = next(c for c in calls if c[0].startswith("▶"))
-        self.assertIn("→ 7_", row[0])
+        row = next(c for c in calls if "→ 7_" in c[0])
         self.assertEqual(row[1], 5)
 
     def test_empty_state_does_not_crash_handle(self):
@@ -777,7 +782,7 @@ class UiTests(helpers.SysfsCase):
     def test_extra_limits_are_drawn_read_only_on_small_screens(self):
         template = {"label": "x", "unit": "W", "available": True, "current_value": 55, "min_value": 5,
                     "max_value": 140, "scalar_increment": 1, "default_value": 50, "effective_value": 55}
-        attrs = {k: {**template, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS}
+        attrs = {k: {**template, "label": m_common.FIELDS[k][0]} for k in m_common.FIELDS if k != "ppt_pl1_tau"}
         extras = [{"key": "cpu_l1_tau", "label": "CPU Tau", "unit": "s", "value": 56},
                   {"key": "gpu_ppab_powerlimit", "label": "GPU PPAB", "unit": "W", "value": 10}]
         for h, w in ((20, 72), (24, 80)):
@@ -795,9 +800,10 @@ class UiTests(helpers.SysfsCase):
             dash.selected = len(dash.rows(state)) - 1
             dash.draw(state)
             text = "\n".join("".join(r) for r in grid)
-            self.assertIn("CPU Tau", text, (h, w))
-            self.assertRegex(text, r"GPU PPAB\s+10 W")
-            self.assertEqual(dash.rows(state), ["mode"] + list(m_common.FIELDS))
+            self.assertRegex(text, r"CPU Tau\s+56 s", (h, w))
+            self.assertRegex(text, r"↑ \d+ more", (h, w))  # scrolled to the end: the cue says rows sit above
+            self.assertNotIn("GPU PPAB", text)  # the same limit is already the GPU dynamic boost row
+            self.assertEqual(dash.rows(state), ["mode"] + list(attrs))
 
     def test_power_page_status_mode_row_and_overlay_fit(self):
         modes = ["low-power", "balanced", "performance", "max-power", "custom"]
@@ -838,9 +844,9 @@ class UiTests(helpers.SysfsCase):
                     self.assertTrue(text[h - 2].startswith(" Read-only"), (h, w))  # box stays off the status row
                 else:
                     self.assertRegex(joined, r"Mode\s+low\s+\[balanced\]\s+perf\s+max\s+custom")
-                    self.assertEqual(joined.count("Select custom to edit"), 1, (h, w))
+                    self.assertEqual(joined.count("custom mode only"), 1, (h, w))
                     status = text[h - 2]
-                    self.assertIn("Error" if case == "error" else "Live", text[1])
+                    self.assertIn("Error" if case == "error" else "Read-only", text[1])
                     if case == "error":
                         self.assertIn("Could not read firmware attributes", status)
                         self.assertNotIn("Press s", status)
@@ -1293,10 +1299,10 @@ class ViewTests(unittest.TestCase):
             self.assertNotIn("gpu_temp", text)
             self.assertRegex(text, r"CPU sustained / PL1\s+50 W")
             if h < 26:
-                self.assertRegex(text, r"\d+/19", (h, w))
-            else:
-                self.assertIn("CPU 61°C 33.0 W", text)
-                self.assertNotRegex(text, r"\d+/19")
+                self.assertRegex(text, r"↓ \d+ more", (h, w))
+            else:  # every row fits, with the live CPU graph and its limits under them
+                self.assertIn("CPU 61°C · 33.0 W", text)
+                self.assertNotIn(" more", text)
 
     def test_details_view_draws_na(self):
         dash, calls = self.stub_dash()

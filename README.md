@@ -61,7 +61,7 @@ Or run it in place with `python3 loqctl.py`.
 loqctl
 ```
 
-A section list on the left (Overview, Power, Fans, Keyboard) picks the page on the right. Sections the laptop does not support are hidden. Overview shows telemetry only; Power holds the firmware controls. The graph titles carry the scale and time span (0-N W, 2 min), and the PL1/PL2 (CPU) and CTGP/limit (GPU) lines are labelled with their values at the right edge. On terminals 110 columns or wider, Overview adds a Sensors column (the hottest reading per sensor group, fan speeds, battery, memory, load and uptime). From 31 rows it also adds CPU and GPU temperature graphs marked with the firmware temperature limit. The badge at the top right says how loqctl runs: local as you, root as root, API against the daemon. Power scrolls with a row marker (6/19) in its title, and on tall terminals shows live CPU and GPU temperature and watts above the limits. With no sensor data Overview says so and points at `loqctl doctor`; CPU watts show … until the first sample.
+A section list on the left (Overview, Power, Fans, Keyboard) picks the page on the right. Sections the laptop does not support are hidden. Overview shows telemetry only; Power holds the firmware controls. The graph titles carry the scale and time span (0-N W, 2 min), and the PL1/PL2 (CPU) and CTGP/limit (GPU) lines are labelled with their values at the right edge. On terminals 110 columns or wider, Overview adds a Sensors column (the hottest reading per sensor group, fan speeds, battery, memory, load and uptime). From 31 rows it also adds CPU and GPU temperature graphs marked with the firmware temperature limit. The badge at the top right says how loqctl runs: local as you, root as root, API against the daemon. Power lists the limits with Range and Default columns when the terminal is wide enough. In a stock mode the columns show that mode's value next to the custom setting. When the list is longer than the screen, its last row says how many limits are above and below (↑ 2 more  ↓ 6 more). When rows are left over, live CPU and GPU power graphs with the limit lines sit under the list. Read-only legion_laptop values that repeat a listed limit are left out. With no sensor data Overview says so and points at `loqctl doctor`; CPU watts show … until the first sample.
 
 | Key | Action |
 | --- | --- |
@@ -310,6 +310,7 @@ Added:
 - One graph per Overview box, with the numbers in the title.
 - On wide terminals, a Sensors column next to the Overview graphs. On tall ones, CPU and GPU temperature graphs with their throttle limits.
 - The mode selector on top of Power, with limits grouped by CPU and GPU.
+- Range and Default columns on Power, live power graphs under the limits on tall terminals, and "↑ N more ↓ N more" when the list scrolls. An out-of-range value names the allowed range.
 - A slimmer Fans section: a graph box, one point line and a details table.
 - `t` opens a details view in place of the sensors toggle.
 - Battery cycle count and health, and the charge limit (read-only).
