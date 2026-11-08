@@ -532,14 +532,14 @@ class UiTests(helpers.SysfsCase):
         draw("ppt_pl1_spl")
         self.assertIn("1 staged, 1 invalid", dashboard.box.call_args[0])
         row = next(c for c in calls if c[0].startswith("▶"))
-        self.assertIn("\u0336", row[0])
-        self.assertIn("-> 60_", row[0])
+        self.assertIn("→ 60_", row[0])
+        self.assertIn("→ 60_", row[0])
         self.assertEqual(row[1], 1)
         staged = next(c for c in calls if "CPU" in c[0].upper() and "→ 90" in c[0])
         self.assertEqual(staged[1], 3)
         draw("gpu_temp")
         row = next(c for c in calls if c[0].startswith("▶"))
-        self.assertIn("-> 7_", row[0])
+        self.assertIn("→ 7_", row[0])
         self.assertEqual(row[1], 5)
 
     def test_empty_state_does_not_crash_handle(self):
