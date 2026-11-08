@@ -64,8 +64,8 @@ class SensorsTests(helpers.SysfsCase):
         base = self.root / "devices/platform/legion"
         self.assertIsNone(m_sensors.gpu_mode(self.root))
         base.mkdir(parents=True)
-        for gsync, igpu, expected in (("0", "0", "dGPU only"), ("1", "0", "Hybrid"), ("1", "1", "iGPU only"),
-                                      ("1", "2", "Hybrid (auto)"), ("0", "1", None), ("1", "7", None)):
+        for gsync, igpu, expected in (("0", "0", "dGPU only (unverified)"), ("1", "0", "Hybrid"),
+                                      ("1", "1", "iGPU only (unverified)"), ("1", "2", "Hybrid auto (unverified)"), ("0", "1", None), ("1", "7", None)):
             (base / "gsync").write_text(gsync)
             (base / "igpumode").write_text(igpu)
             self.assertEqual(m_sensors.gpu_mode(self.root), expected)
@@ -167,6 +167,7 @@ class PortabilityTests(unittest.TestCase):
         with patch.object(subprocess, "run") as run:
             gpu = sensors.gpu()
         self.assertTrue(gpu["suspended"])
+        self.assertEqual(sensors.gpu_power(), "suspended")
         self.assertFalse(gpu["available"])
         sensors.nvml.read.assert_not_called()
         run.assert_not_called()
