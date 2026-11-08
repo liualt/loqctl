@@ -614,7 +614,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.draw_fans({"mode": "custom"}, metrics, 1, 0, 17, 24)
         count = len(dash.fan_target())
         self.assertIn(f"Step {count} of {count}", "".join(cells.values()))
-        self.assertEqual(sum(c == "●" for c in cells.values()), count)
+        self.assertEqual(sum(c in "●◉" for c in cells.values()), count)
 
     def test_unavailable_or_empty_curve_lets_tab_leave_and_draws_without_error(self):
         state = {"mode": "custom", "model": "LOQ", "metrics": {"timestamp": time.time()}}
@@ -691,10 +691,10 @@ class FanCurveSurfaceTests(FanPanelFixture):
                         self.assertLessEqual(title[1], label, where)
                         continue
                     drawn = " ".join(t for y, x, t in calls)
-                    self.assertEqual(drawn.count("●"), len(dash.fan_points()), where)  # every step has its dot
+                    self.assertEqual(drawn.count("●") + drawn.count("◉"), len(dash.fan_points()), where)  # every step has its dot
                     self.assertEqual("CPU from" in drawn, details, where)
                     self.assertIn("Fan curve", drawn)
-                    for label in ("fan1 20% · fan2 19%", "cooler °C", "hotter °C"):
+                    for label in ("fan1 20% · fan2 19%", "cooler 40°C", "hotter 90°C"):
                         self.assertIn(label, drawn, where)
                     self.assertRegex(drawn, r"Step \d+ of \d+ · \d+°C → \d+%", where)
                     if mode == "balanced":
@@ -816,12 +816,13 @@ class FanCurveSurfaceTests(FanPanelFixture):
         text = {t for t, _ in cells.values()}
         self.assertIn("Step 3 of 10 · 75°C → 35% (was 34%) (fan 2 was 37%)", text)  # fan 2 is compared too
         self.assertEqual(dash.box.call_args.args[4], "Fan curve · fan1 20%")
-        self.assertTrue({"100%", " 80%", "  0%", "cooler °C", "hotter °C"} <= text)
+        self.assertTrue({"100%", " 80%", "  0%"} <= text)
+        self.assertTrue(any(t.startswith("cooler ") for t in text) and any(t.startswith("hotter ") for t in text))
         shown = " ".join(text)
         self.assertNotIn("RPM", shown)
         self.assertNotIn("CPU from", shown)  # per-sensor temperatures stay behind the details key
         self.assertFalse(any("GPU" in t and "from" in t for t in text))
-        marks = [(k, c) for k, (t, c) in cells.items() if t == "●"]
+        marks = [(k, c) for k, (t, c) in cells.items() if t in ("●", "◉")]
         self.assertEqual(len(marks), 10)  # one dot per step
         self.assertEqual(sum(c == dash.theme.WARN for _, c in marks), 1)  # the selected one
         rails = {x for (y, x), (t, _) in cells.items() if t == "┆"}
