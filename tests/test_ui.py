@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
 import shutil
 import struct
@@ -1099,7 +1100,8 @@ class UiTests(helpers.SysfsCase):
         dash.fan_graph(points, Scale("rpm", 10000), 0, 0, 60, 8)
         self.assertIn("100%", calls)
         self.assertEqual(calls.count("●"), 5)
-        self.assertFalse(any("°C" in c or "RPM" in c for c in calls))
+        self.assertIn("cooler °C", calls)  # axis words only; the step line carries the temperature
+        self.assertFalse(any(re.search(r"\d\s*°C|RPM", c) for c in calls))
 
     def test_arrows_leave_power_and_keyboard_at_the_edges(self):
         dash = self.dash()
