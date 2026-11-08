@@ -355,16 +355,18 @@ class Dashboard(FanPanel):
             self.put(0, mx + len(model) + 5, mode, self.theme.OK, True)
         self.put(0, w - len(access) - 3, f" {access} ", self.theme.GPU if access == "API" else self.theme.WARN)
 
-        self.draw_nav(state, 1, 0, h - 3, self.NAV_W)
+        # An error status gets a blank row above the keys when the screen has one to spare and no overlay covers it.
+        gap = int(bool(state.get("error")) and h > self.MIN_H and not (self.help or self.show_results or self.show_limits))
+        self.draw_nav(state, 1, 0, h - 3 - gap, self.NAV_W)
         cx, cw = self.NAV_W + 1, w - self.NAV_W - 1
         if self.panel == "keyboard":
-            self.draw_keyboard(1, cx, h - 3, cw)
+            self.draw_keyboard(1, cx, h - 3 - gap, cw)
         elif self.panel == "fans":
-            self.draw_fans(state, metrics, 1, cx, h - 3, cw)
+            self.draw_fans(state, metrics, 1, cx, h - 3 - gap, cw)
         elif self.panel == "overview":
-            self.draw_overview(state, metrics, 1, cx, h - 3, cw)
+            self.draw_overview(state, metrics, 1, cx, h - 3 - gap, cw)
         else:
-            self.draw_main(state, metrics, 1, cx, h - 3, cw)
+            self.draw_main(state, metrics, 1, cx, h - 3 - gap, cw)
 
         # Status + keys
         stamp = metrics.get("timestamp")
@@ -381,7 +383,7 @@ class Dashboard(FanPanel):
             status, warn = "Read-only. Press s to unlock.", True
         if len(status) > w - 3:  # cut at a word boundary
             status = status[: w - 3].rsplit(" ", 1)[0].rstrip(" ,;:.") if " " in status[: w - 3] else status[: w - 3]
-        self.put(h - 2, 1, status, self.theme.WARN if warn else self.theme.TEXT)
+        self.put(h - 2 - gap, 1, status, self.theme.WARN if warn else self.theme.TEXT)
         keys = "? or Esc close  q quit" if self.help else self.footer_hint(w - 3, state)
         self.put(h - 1, 1, keys, self.theme.ACCENT)
 
