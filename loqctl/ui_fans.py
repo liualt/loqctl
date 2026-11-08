@@ -363,7 +363,7 @@ class FanPanel:
         scale = self.fan_scale()
         now = [round(f["rpm"] * 100 / (scale.max_rpm or 1)) for f in (metrics.get("fans") or [])[:2]
                if f.get("rpm") is not None]
-        parts = ["Fan curve"] + (["now " + " · ".join(f"{v}%" for v in now)] if now else [])
+        parts = ["Fan curve"] + [f"fan{i + 1} {v}%" for i, v in enumerate(now)]
         ix, iw = x + 2, width - 4
         if not self.fan_points():
             loading = self.fan_loading
@@ -376,7 +376,10 @@ class FanPanel:
             lines = textwrap.wrap(UNAVAILABLE + ".", max(20, iw))
             for k, line in enumerate(lines):
                 self.put(y + 2 + k, ix, line, self.theme.WARN)
-            self.put(y + 3 + len(lines), ix, ("(" + self.fan.get("reason", "") + ")")[:iw], self.theme.TEXT, dim=True)
+            reason = self.fan.get("reason", "")
+            if reason and "legion_laptop" not in reason:  # the paragraph above already names the module
+                for k, line in enumerate(textwrap.wrap(reason, max(20, iw))):
+                    self.put(y + 3 + len(lines) + k, ix, line, self.theme.TEXT, dim=True)
             return
         right = ""
         if self.fan_edit is not None:
@@ -407,6 +410,8 @@ class FanPanel:
         exact temperatures it starts at."""
         p = target[self.fan_sel]
         parts = [f"Step {self.fan_sel + 1} of {len(target)}", self.fan_pct_text(scale, p.get("fan1"))]
+        if p.get("cpu_up") is not None:
+            parts[-1] = f"{p['cpu_up']}°C → {parts[-1]}"
         current = self.fan_points()
         old = current[self.fan_sel] if self.fan_sel < len(current) else {}
         for field, tag in (("fan1", ""), ("fan2", "fan 2 ")):
@@ -443,8 +448,8 @@ class FanPanel:
             self.put(r, x, f"{value}%".rjust(label_w - 2), dim, dim=True)
             self.put(r, gx - 1, "┤", dim, dim=True)
         self.put(y + h, gx - 1, "└" + "─" * gw, dim, dim=True)
-        self.put(y + h + 1, gx, "cooler", dim, dim=True)
-        self.put(y + h + 1, gx + gw - len("hotter"), "hotter", dim, dim=True)
+        self.put(y + h + 1, gx, "cooler °C", dim, dim=True)
+        self.put(y + h + 1, gx + gw - len("hotter °C"), "hotter °C", dim, dim=True)
         for i, c in enumerate(cols):
             chosen = i == self.fan_sel
             for r in range(h):
@@ -466,8 +471,10 @@ class FanPanel:
         lines = []
         if self.fan_locked(state):
             mode = state.get("mode")
-            text = next((t for t in (f"This is the {mode} curve. Select custom to edit.",
-                                     "Select custom to edit.") if len(t) <= w), "Select custom to edit.")
+            texts = (f"This is the {mode} curve. Select custom to edit.", "Select custom to edit.")
+            if mode is None:
+                texts = ("Mode unreadable. Select custom to edit.", "Mode unreadable.")
+            text = next((t for t in texts if len(t) <= w), texts[-1])
             lines.append((text, self.theme.WARN))
         errors = validate_curve(target, scale)
         if self.fan_edit is not None and errors:

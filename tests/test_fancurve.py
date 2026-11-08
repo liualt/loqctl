@@ -588,7 +588,7 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.draw_fans({"mode": "custom"}, {"fans": [{"rpm": 1800.0}, {"rpm": None}]}, 1, 0, 25, 100)
         text = "\n".join(dash.puts)
         self.assertIn("LenovoLegionLinux legion_laptop", text)
-        self.assertEqual(dash.box.call_args.args[4], "Fan curve · now 18%")  # RPM shows as percent of the top speed
+        self.assertEqual(dash.box.call_args.args[4], "Fan curve · fan1 18%")  # RPM shows as percent of the top speed
         self.assertIn("enable_platformprofile=0", text)
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 25, 100)
 
@@ -694,6 +694,9 @@ class FanCurveSurfaceTests(FanPanelFixture):
                     self.assertEqual(drawn.count("●"), len(dash.fan_points()), where)  # every step has its dot
                     self.assertEqual("CPU from" in drawn, details, where)
                     self.assertIn("Fan curve", drawn)
+                    for label in ("fan1 20% · fan2 19%", "cooler °C", "hotter °C"):
+                        self.assertIn(label, drawn, where)
+                    self.assertRegex(drawn, r"Step \d+ of \d+ · \d+°C → \d+%", where)
                     if mode == "balanced":
                         self.assertIn("Select custom to edit.", drawn)
                         self.assertIn(" Read-only ", drawn)
@@ -811,12 +814,12 @@ class FanCurveSurfaceTests(FanPanelFixture):
         dash.put = lambda y, x, text, color=None, *a, **k: cells.update({(y, x): (str(text), color)})
         dash.draw_fans({"mode": "custom"}, {"cpu": {"temperature_c": 67.4}, "fans": [{"rpm": 2000.0}]}, 1, 0, 30, 110)
         text = {t for t, _ in cells.values()}
-        self.assertIn("Step 3 of 10 · 35% (was 34%) (fan 2 was 37%)", text)  # fan 2 is compared too
-        self.assertEqual(dash.box.call_args.args[4], "Fan curve · now 20%")
-        self.assertTrue({"100%", " 80%", "  0%", "cooler", "hotter"} <= text)
+        self.assertIn("Step 3 of 10 · 75°C → 35% (was 34%) (fan 2 was 37%)", text)  # fan 2 is compared too
+        self.assertEqual(dash.box.call_args.args[4], "Fan curve · fan1 20%")
+        self.assertTrue({"100%", " 80%", "  0%", "cooler °C", "hotter °C"} <= text)
         shown = " ".join(text)
         self.assertNotIn("RPM", shown)
-        self.assertNotIn("°C", shown)  # temperatures stay behind the details key
+        self.assertNotIn("CPU from", shown)  # per-sensor temperatures stay behind the details key
         self.assertFalse(any("GPU" in t and "from" in t for t in text))
         marks = [(k, c) for k, (t, c) in cells.items() if t == "●"]
         self.assertEqual(len(marks), 10)  # one dot per step
@@ -827,12 +830,12 @@ class FanCurveSurfaceTests(FanPanelFixture):
         self.keys(dash, {"mode": "custom"}, "t")
         dash.draw_fans({"mode": "custom"}, {}, 1, 0, 30, 110)
         text = {t for t, _ in cells.values()}
-        self.assertIn("Step 3 of 10 · 35% (was 34%) (fan 2 was 37%) · CPU from 75°C · GPU from 75°C · Heatsink from 65°C", text)
+        self.assertIn("Step 3 of 10 · 75°C → 35% (was 34%) (fan 2 was 37%) · CPU from 75°C · GPU from 75°C · Heatsink from 65°C", text)
         self.assertFalse(any("RPM" in t for t in text))
         self.assertEqual(dash.box.call_args.args[6], "Unsaved changes")
         dash.draw_fans({"mode": "balanced"}, {"fans": [{"rpm": 1800.0}, {"rpm": 1700.0}], "cpu": {"temperature_c": 61.0},
                                               "gpu": {"devices": [{"temperature_c": 55.0}]}}, 1, 0, 17, 72)
-        self.assertEqual(dash.box.call_args.args[4], "Fan curve · now 18% · 17%")
+        self.assertEqual(dash.box.call_args.args[4], "Fan curve · fan1 18% · fan2 17%")
         self.assertIn("This is the balanced curve. Select custom to edit.", {t for t, _ in cells.values()})
 
     def test_curve_is_read_again_when_the_mode_changes(self):
