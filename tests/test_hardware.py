@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import helpers
+from loqctl import battery as m_battery
 from loqctl import common as m_common
 from loqctl import hardware as m_hardware
 from loqctl import ui as m_ui
@@ -217,6 +218,50 @@ class HardwareTests(helpers.SysfsCase):
         with self.assertRaisesRegex(m_common.ControlError, r"'turbo'\. Choose one of .*balanced"):
             self.hw.set_mode("turbo")
 
+    def battery_files(self, conservation="0", rapid="0"):
+        legion = self.root / "devices/platform/legion"
+        ideapad = self.root / "bus/platform/drivers/ideapad_acpi/VPC2004:00"
+        legion.mkdir(parents=True)
+        ideapad.mkdir(parents=True)
+        (ideapad / "conservation_mode").write_text(conservation + "\n")
+        (legion / "rapidcharge").write_text(rapid + "\n")
+        return ideapad / "conservation_mode", legion / "rapidcharge"
+
+    def test_battery_mode_switch_clears_the_other_and_verifies(self):
+        conservation, rapid = self.battery_files(rapid="1")
+        self.assertEqual(self.hw.battery(), {"available": True, "mode": "rapid",
+                                             "choices": ["normal", "conservation", "rapid"]})
+        result = self.hw.write_battery("conservation")
+        self.assertEqual((conservation.read_text(), rapid.read_text()), ("1\n", "0\n"))
+        self.assertEqual((result["previous"], result["current"], result["verified"]), ("rapid", "conservation", True))
+        self.hw.write_battery("normal")
+        self.assertEqual((conservation.read_text(), rapid.read_text()), ("0\n", "0\n"))
+
+    def test_battery_rejects_bad_mode_and_missing_choice_and_reports_na(self):
+        self.assertEqual(self.hw.battery(), {"available": False, "mode": None, "choices": []})
+        with self.assertRaises(m_common.ControlError):
+            self.hw.write_battery("normal")
+        conservation, rapid = self.battery_files()
+        rapid.unlink()
+        self.assertEqual(self.hw.battery()["choices"], ["normal", "conservation"])
+        for bad in ("rapid", "2", 1, None):
+            with self.assertRaises(m_common.ControlError):
+                self.hw.write_battery(bad)
+        self.assertEqual(conservation.read_text(), "0\n")
+
+    def test_battery_failed_second_write_leaves_both_off(self):
+        conservation, rapid = self.battery_files(rapid="1")
+        real = m_battery._write
+
+        def fail_on_one(path, value):
+            if value == 1:
+                raise m_common.ControlError("Firmware rejected the write: boom")
+            real(path, value)
+        with patch.object(m_battery, "_write", fail_on_one):
+            with self.assertRaises(m_common.ControlError):
+                self.hw.write_battery("conservation")
+        self.assertEqual((conservation.read_text(), rapid.read_text()), ("0\n", "0\n"))
+
     def test_set_mode_rejects_non_str_and_empty_choices(self):
         for bad in (None, 5):
             with self.assertRaisesRegex(m_common.ControlError, "Choose one of"):
@@ -230,6 +275,40 @@ class HardwareTests(helpers.SysfsCase):
             with self.assertRaises(m_common.ControlError):
                 self.hw.set_value(key, 60)
         self.assertEqual((self.attr / "current_value").read_text(), "50")
+
+    def add_toggles(self):
+        for rel, value in {"bus/platform/devices/VPC2004:00/fn_lock": "0", "devices/platform/legion/winkey": "1",
+                           "class/leds/platform::ioport/brightness": "0"}.items():
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value)
+        (self.root / "class/leds/platform::ioport/max_brightness").write_text("2")
+
+    def test_toggles_list_only_present_switches(self):
+        self.assertEqual(self.hw.toggles(), [])
+        self.add_toggles()
+        self.assertEqual([(t["name"], t["value"], t["max"]) for t in self.hw.toggles()],
+                         [("fn_lock", 0, 1), ("winkey", 1, 1), ("port_light", 0, 2)])
+
+    def test_toggle_led_without_max_brightness_is_hidden(self):
+        self.add_toggles()
+        (self.root / "class/leds/platform::ioport/max_brightness").unlink()
+        self.assertNotIn("port_light", [t["name"] for t in self.hw.toggles()])
+        with self.assertRaises(m_common.ControlError):
+            self.hw.set_toggle("port_light", 1)
+
+    def test_toggle_write_is_bounded_allowlisted_and_verified(self):
+        self.add_toggles()
+        self.assertTrue(self.hw.set_toggle("port_light", 2)["verified"])
+        self.assertEqual((self.root / "class/leds/platform::ioport/brightness").read_text().strip(), "2")
+        for name, value in (("port_light", 3), ("fn_lock", 2), ("fn_lock", True), ("fn_lock", -1),
+                            ("camera", 1), ("../x", 1)):
+            with self.assertRaises(m_common.ControlError):
+                self.hw.set_toggle(name, value)
+        self.assertEqual((self.root / "bus/platform/devices/VPC2004:00/fn_lock").read_text(), "0")
+        with patch("pathlib.Path.write_text", lambda path, text: None):
+            with self.assertRaises(m_common.ControlError):
+                self.hw.set_toggle("fn_lock", 1)
 
     def test_missing_limits_never_write(self):
         (self.attr / "max_value").unlink()

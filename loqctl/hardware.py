@@ -10,8 +10,10 @@ import sys
 import threading
 import time
 
+from .battery import read_battery, write_battery
 from .capdata import effective_value, read_mode_table
 from .common import FIELDS, ControlError, read, scaled
+from .toggles import list_toggles, set_toggle
 from .fancurve import curve_scale, find_legion_hwmon, read_curve, write_curve
 
 REDISCOVER_SECONDS = 5
@@ -261,6 +263,13 @@ class Hardware:
                     "current": int(actual), "verified": True}
 
 
+    def toggles(self):
+        return list_toggles(self.root)
+
+    def set_toggle(self, name, value):
+        with self.lock:
+            return set_toggle(self.root, name, value)
+
     def fancurve(self):
         """Fan curve and RPM from the legion_laptop hwmon, or {"available": False, "reason": ...}.
 
@@ -279,6 +288,13 @@ class Hardware:
                 return {"available": False, "reason": f"the fan curve could not be read in {mode} mode"}
             return {"available": True, "mode": mode, "hwmon": str(hwmon), "unit": scale.unit, "max_rpm": scale.max_rpm,
                     "points": points, "rpm": [scaled(hwmon / f"fan{n}_input") for n in (1, 2)]}
+
+    def battery(self):
+        return read_battery(self.root)
+
+    def write_battery(self, mode):
+        with self.lock:
+            return write_battery(self.root, mode)
 
     def write_fancurve(self, points):
         with self.lock:

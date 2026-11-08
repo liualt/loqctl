@@ -15,7 +15,7 @@ import threading
 from threading import Lock
 
 from .api import http_client
-from .common import ControlError, _lazy, clamp, fit_parts, fmt
+from .common import FANCURVE_TIMEOUT, ControlError, _lazy, clamp, fit_parts, fmt
 from .curvestore import (check_curve, clear_active, curve_options, mark_written, read_stock, save_active, save_named,
                          save_stock)
 from .fancurve import SPEEDS, WRITABLE, Scale, merge_curve, min_speed, validate_curve
@@ -183,7 +183,7 @@ class FanPanel:
         if self.fan_edit is None:
             self.notice = "No pending changes."
             return
-        errors = validate_curve(self.fan_edit, self.fan_scale())
+        errors = validate_curve(self.fan_edit, self.fan_scale(), self.fan_points())
         if errors:
             self.fan_sel = errors[0][0]
             self.notice = errors[0][2]
@@ -304,7 +304,7 @@ class FanPanel:
         self.fan_refresh_options()
 
     def run_sudo_fancurve(self, points):
-        stdout, stderr = self.sudo_call(["_fancurve", json.dumps(points)])
+        stdout, stderr = self.sudo_call(["_fancurve", json.dumps(points)], FANCURVE_TIMEOUT)
         try:
             results = json.loads(stdout)
             if not isinstance(results, list) or not all(isinstance(r, dict) and "status" in r for r in results):
@@ -552,7 +552,7 @@ class FanPanel:
                 texts = ("Mode unreadable. Select custom to edit.", "Mode unreadable.")
             text = next((t for t in texts if len(t) <= w), texts[-1])
             lines.append((text, self.theme.WARN))
-        errors = validate_curve(target, scale)
+        errors = validate_curve(target, scale, self.fan_points())
         if self.fan_edit is not None and errors:
             lines.append((errors[0][2], self.theme.BAD))
         for k, (text, color) in enumerate(lines[-2:]):

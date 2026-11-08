@@ -51,6 +51,24 @@ class KeyboardWorkerTests(unittest.TestCase):
             kb.load(force=True)
             self.assertEqual(kb.zones, ["aaaaaa"] * 4)
 
+    def test_colorless_effect_in_config_keeps_known_zone_colors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            kb = self.kb(config)
+            kb.zones = ["ff9e00", "ffa900", "ff9d00", "ffa10b"]
+            # what LegionAura saves after a hue effect is applied
+            config.write_text(json.dumps({"version": 1, "effect": "hue", "speed": 1, "brightness": 1,
+                                          "waveDir": "none", "zones": ["000000"] * 4}))
+            kb.load()
+            self.assertEqual(kb.effect, "hue")
+            self.assertEqual(kb.zones, ["ff9e00", "ffa900", "ff9d00", "ffa10b"])
+            self.assertNotIn("zones", kb.problem)
+            kb.effect = "static"
+            self.assertEqual(kb.command()[1:5], ["ff9e00", "ffa900", "ff9d00", "ffa10b"])  # not black
+            config.write_text(json.dumps({"effect": "static", "zones": ["aaaaaa"] * 4}))
+            kb.load()
+            self.assertEqual(kb.zones, ["aaaaaa"] * 4)  # a static config still sets the colors
+
     def test_keyboard_worker_latest_wins_single_process(self):
         kb = self.kb()
         release, started = threading.Event(), threading.Event()
