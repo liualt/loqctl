@@ -289,6 +289,13 @@ class UiTests(helpers.SysfsCase):
         missing = dash.help_lines({"mode": "custom"})
         self.assertEqual(missing[-1], "Fan curves need the legion_laptop module.")
         self.assertFalse(any(line.startswith(("←→", "↑↓", "Enter")) for line in missing))
+        dash.panel = "overview"
+        self.assertFalse(any(line.startswith("s ") for line in dash.help_lines({"mode": "custom"})))
+        dash.panel = "main"
+        with patch.object(m_ui.os, "geteuid", return_value=1000):
+            self.assertTrue(any(line.startswith("s ") for line in dash.help_lines({"mode": "custom"})))
+        dash.backend.remote = True
+        self.assertFalse(any(line.startswith("s ") for line in dash.help_lines({"mode": "custom"})))
 
     def test_invalid_value_says_the_allowed_range(self):
         self.add_attr("ppt_pl2_sppt", 60, 50, 100, 5, 60)
@@ -862,7 +869,7 @@ class UiTests(helpers.SysfsCase):
                     self.assertRegex(joined, r"Mode\s+low\s+\[balanced\]\s+perf\s+max\s+custom")
                     self.assertEqual(joined.count("custom mode only"), 1, (h, w))
                     status = text[h - 2]
-                    self.assertIn("Error" if case == "error" else "Read-only", text[1])
+                    status = text[h - 2 - (case == "error" and h > 20)]
                     if case == "error":
                         self.assertIn("Could not read firmware attributes", status)
                         self.assertNotIn("Press s", status)
@@ -1054,7 +1061,7 @@ class UiTests(helpers.SysfsCase):
             rows = self.draw_rows(h, w, "main", {**locked, "stale": True}, expired=True)
             self.assertEqual(rows[h - 2].strip(), "Firmware values are stale. Wait for the next refresh.")
             rows = self.draw_rows(h, w, "main", {"error": "Backend down"})
-            self.assertIn("Backend down. Run loqctl doctor for details.", rows[h - 2])
+            self.assertIn("Backend down. Run loqctl doctor for details.", rows[h - 2 - (h > 20)])
             self.assertEqual(rows[h - 1].strip(), "? help  Tab page  q quit")  # no dead keys while the backend is down
 
     def test_power_page_survives_an_empty_state(self):
@@ -1154,6 +1161,53 @@ class UiTests(helpers.SysfsCase):
                             "Hardware shows the true color."))
         self.assertIn("zone 1  HSV picker", rows)
         self.assertFalse(any("swatch" in r for r in rows))
+        top = next(i for i, r in enumerate(rows) if r.startswith("brightness"))
+        self.assertTrue(rows[top + 1].startswith("zones"))  # no blank rows between the groups on a short screen
+        self.assertTrue(rows[rows.index("zone 1  HSV picker") - 1].startswith("#"))
+
+    def test_power_error_marks_last_known_values_and_footer_offers_s(self):
+        for h, w in ((20, 72), (24, 80)):
+            puts = []
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append(text[:n])
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            dash.panel = "main"
+            self.add_attr("ppt_pl1_spl", 55, 5, 80, 1, 55)
+            state = {**self.hw.capabilities(), "mode": "balanced", "mode_limits_error": "needs root: stock limits"}
+            with patch.object(m_ui.os, "geteuid", return_value=1000):
+                dash.draw(state)
+                self.assertTrue(any("s unlock" in t for t in puts), (h, w))
+                puts.clear()
+                dash.draw({**state, "error": "API connection failed: socket missing"})
+            self.assertTrue(any("last known" in t for t in puts), (h, w))
+            rows = {c[0][0]: c[0][2] for c in screen.addnstr.call_args_list}
+            gap = 1 if h > 20 else 0  # a blank row above the keys when there is room; 72x20 has none
+            self.assertTrue(rows[h - 2 - gap].startswith("API connection failed"))
+            self.assertFalse(rows.get(h - 2).strip() if gap else False)
+
+    def test_read_only_power_help_hides_edit_keys_at_72x20_and_80x24(self):
+        for h, w in ((20, 72), (24, 80)):
+            screen = Mock()
+            screen.getmaxyx.return_value = (h, w)
+            puts = []
+            screen.addnstr.side_effect = lambda y, x, text, n, attr=0: puts.append(text[:n])
+            with patch.object(curses, "curs_set"), patch.object(curses, "meta"), \
+                    patch.object(curses, "has_colors", return_value=False):
+                dash = m_ui.Dashboard(screen, Mock(notice="", remote=False))
+            dash.panel, dash.help = "main", True
+            self.add_attr("ppt_pl1_spl", 55, 5, 80, 1, 55)
+            dash.draw({**self.hw.capabilities(), "mode": "balanced", "error": "API connection failed: x"})
+            text = "\n".join(puts)
+            self.assertIn("custom mode only", text)
+            self.assertNotIn("discard", text, (h, w))
+            self.assertNotIn("0-9", text, (h, w))
+
+    def test_backend_error_names_the_cause(self):
+        self.assertIn("socket missing", m_backend.Backend.cause(FileNotFoundError(2, "No such file")))
+        self.assertIn("permission denied", m_backend.Backend.cause(PermissionError(13, "denied")))
 
     def test_overview_arrows_switch_section_but_never_edit(self):
         dash = self.dash()
