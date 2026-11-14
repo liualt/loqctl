@@ -355,16 +355,18 @@ class Dashboard(FanPanel):
             self.put(0, mx + len(model) + 5, mode, self.theme.OK, True)
         self.put(0, w - len(access) - 3, f" {access} ", self.theme.GPU if access == "API" else self.theme.WARN)
 
-        self.draw_nav(state, 1, 0, h - 3, self.NAV_W)
+        # An error status gets a blank row above the keys when the screen has one to spare and no overlay covers it.
+        gap = int(bool(state.get("error")) and h > self.MIN_H and not (self.help or self.show_results or self.show_limits))
+        self.draw_nav(state, 1, 0, h - 3 - gap, self.NAV_W)
         cx, cw = self.NAV_W + 1, w - self.NAV_W - 1
         if self.panel == "keyboard":
-            self.draw_keyboard(1, cx, h - 3, cw)
+            self.draw_keyboard(1, cx, h - 3 - gap, cw)
         elif self.panel == "fans":
-            self.draw_fans(state, metrics, 1, cx, h - 3, cw)
+            self.draw_fans(state, metrics, 1, cx, h - 3 - gap, cw)
         elif self.panel == "overview":
-            self.draw_overview(state, metrics, 1, cx, h - 3, cw)
+            self.draw_overview(state, metrics, 1, cx, h - 3 - gap, cw)
         else:
-            self.draw_main(state, metrics, 1, cx, h - 3, cw)
+            self.draw_main(state, metrics, 1, cx, h - 3 - gap, cw)
 
         # Status + keys
         stamp = metrics.get("timestamp")
@@ -381,7 +383,7 @@ class Dashboard(FanPanel):
             status, warn = "Read-only. Press s to unlock.", True
         if len(status) > w - 3:  # cut at a word boundary
             status = status[: w - 3].rsplit(" ", 1)[0].rstrip(" ,;:.") if " " in status[: w - 3] else status[: w - 3]
-        self.put(h - 2, 1, status, self.theme.WARN if warn else self.theme.TEXT)
+        self.put(h - 2 - gap, 1, status, self.theme.WARN if warn else self.theme.TEXT)
         keys = "? or Esc close  q quit" if self.help else self.footer_hint(w - 3, state)
         self.put(h - 1, 1, keys, self.theme.ACCENT)
 
@@ -481,7 +483,7 @@ class Dashboard(FanPanel):
         locked = self.locked(state)
         pending_n = len(self.pending)
         stamp = (state.get("metrics") or {}).get("timestamp")
-        right = ("Error" if state.get("error") else "No data" if stamp is None and not state.get("mode")
+        right = (("Error, last known values" if attrs else "Error") if state.get("error") else "No data" if stamp is None and not state.get("mode")
                  else "Stale" if state.get("stale") else "Read-only" if locked else "")
         if pending_n or self.invalid:
             right = ", ".join(([f"{pending_n} staged"] if pending_n else []) + (
@@ -600,8 +602,7 @@ class Dashboard(FanPanel):
         if note_h:  # one line saying why a limit is N/A; "select custom" is said once, below
             reason = state.get("mode_limits_error")
             note = limit_note(state, {k: attrs[k] for k in shown if k in attrs}) or (
-                "Stock limits need root once per boot: press s" if reason and reason.startswith("needs root")
-                and os.geteuid() != 0 else reason or "N/A")
+                "Stock limits need root once per boot: press s" if self.stock_needs_root(state) else reason or "N/A")
             self.put(list_end, ix, note[:iw], self.theme.WARN)
             list_end += 1
 
@@ -957,8 +958,10 @@ class Dashboard(FanPanel):
         wave = f"  wave {kb.wave_dir}" if kb.effect == "wave" else ""
         self.put(y + 2, ix, fit_parts([f"brightness  {bright}", f"speed {kb.speed}/4", wave.strip()], iw, "   "), self.theme.TEXT, dim=True)
 
-        # Zones
-        self.put(y + 4, ix, "zones", self.theme.TEXT, dim=True)
+        # Zones; a tall box spaces the groups apart, a short one packs them
+        gap = 1 if height >= 28 else 0
+        zy = y + 3 + gap
+        self.put(zy, ix, "zones", self.theme.TEXT, dim=True)
         for zi, hexcolor in enumerate(kb.zones):
             try:
                 r, g, b = hex_to_rgb(hexcolor)
@@ -968,10 +971,10 @@ class Dashboard(FanPanel):
             chosen = zi == self.kb_zone
             zx = ix + zi * max(12, iw // 4)
             border = "▶" if chosen else " "
-            self.put(y + 5, zx, f"[Z{zi + 1}]" if chosen else f" Z{zi + 1} ", self.theme.GPU if chosen else self.theme.TEXT, bold=chosen)
+            self.put(zy + 1, zx, f"[Z{zi + 1}]" if chosen else f" Z{zi + 1} ", self.theme.GPU if chosen else self.theme.TEXT, bold=chosen)
             if self.theme.enabled:
-                self.put(y + 6, zx, "████", pair, True)
-            self.put(y + 7, zx, f"#{hexcolor}", self.theme.TEXT, dim=not chosen)
+                self.put(zy + 2, zx, "████", pair, True)
+            self.put(zy + 3, zx, f"#{hexcolor}", self.theme.TEXT, dim=not chosen)
 
         # HSV channels for selected zone
         try:
@@ -980,7 +983,7 @@ class Dashboard(FanPanel):
             rgb = (255, 255, 255)
         h_deg, s_pct, v_pct = rgb_to_hsv(*rgb)
         channels = (("H", h_deg, 360, "°"), ("S", s_pct, 100, "%"), ("V", v_pct, 100, "%"))
-        cy = y + 9
+        cy = zy + 4 + gap
         self.put(cy, ix, f"zone {self.kb_zone + 1}  HSV picker"[:iw], self.theme.ACCENT)
         for i, (name, value, ceiling, unit) in enumerate(channels):
             yy = cy + 1 + i
@@ -998,7 +1001,6 @@ class Dashboard(FanPanel):
     HELP_GLOBAL = (
         "Tab       next page   Shift+Tab  previous page",
         "Esc       back one level, close a box, clear a row",
-        "s         authenticate sudo (Power, Fans, Keyboard)",
         "?         this help   q  quit",
         "Top right: local, root or API (how loqctl runs)",
     )
@@ -1078,6 +1080,14 @@ class Dashboard(FanPanel):
         return (self.sudo_expired and self.panel in ("main", "fans") and not self.page_missing()
                 and not self.backend.remote and os.geteuid() != 0)
 
+    def can_unlock(self):
+        "True where s does something: a page that writes, with a local backend and no root."
+        return self.panel in ("main", "fans", "keyboard") and not self.backend.remote and os.geteuid() != 0
+
+    def stock_needs_root(self, state):
+        reason = state.get("mode_limits_error")
+        return bool(reason and reason.startswith("needs root") and os.geteuid() != 0)
+
     def footer_hint(self, width, state):
         missing = self.page_missing()
         if missing or self.no_data(state):
@@ -1103,7 +1113,7 @@ class Dashboard(FanPanel):
             if self.panel == "keyboard":
                 if self.keyboard.effect == "wave":
                     entries.insert(-1, "w wave")
-        if self.needs_unlock():
+        if self.needs_unlock() or (self.panel == "main" and self.stock_needs_root(state)):
             entries.insert(0, "s unlock")
         while entries and len("  ".join(["? help", *entries, "q quit"])) > width:
             entries.pop()
@@ -1112,11 +1122,13 @@ class Dashboard(FanPanel):
     def help_lines(self, state=None):
         "The global keys, then only the keys that work on this page right now."
         if self.page_missing():
-            return (*self.HELP_GLOBAL, "", self.MISSING_TEXT[self.panel])
+            sudo = ("s         authenticate sudo",) if self.can_unlock() else ()
+            return (*self.HELP_GLOBAL, *sudo, "", self.MISSING_TEXT[self.panel])
         page = self.HELP_PAGES.get(self.panel, self.HELP_PAGES["main"])
         if state is not None and self.locked(state) and self.panel in self.HELP_READONLY:
             page = self.HELP_READONLY[self.panel]
-        return (*self.HELP_GLOBAL, "", *page)
+        sudo = ("s         authenticate sudo",) if self.can_unlock() else ()
+        return (*self.HELP_GLOBAL, *sudo, "", *page)
 
     def draw_help(self, state=None):
         "Fills the content area only, so the nav column and the status and key lines stay visible."
