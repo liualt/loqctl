@@ -490,9 +490,11 @@ class FanPanel:
             changed = any(scale.show(old.get(f)) != scale.show(p.get(f)) for f in ("fan1", "fan2"))
             if scale.show(old.get("fan1")) != scale.show(p.get("fan1")):
                 speed = f"{self.fan_pct_text(scale, old.get('fan1'))} → {speed}"
-            if self.fan_pct(scale, p.get("fan2")) != self.fan_pct(scale, p.get("fan1")):
-                speed += f", fan 2 {self.fan_pct_text(scale, p.get('fan2'))}"
             line = f"{'▶' if chosen else ' '} {i + 1:<5}{temp('cpu_up'):>5}{temp('gpu_up'):>5}{temp('ic_up'):>6}  {speed}"
+            if self.fan_pct(scale, p.get("fan2")) != self.fan_pct(scale, p.get("fan1")):
+                fan2 = f", fan 2 {self.fan_pct_text(scale, p.get('fan2'))}"
+                if len(line) + len(fan2) <= w:  # the step line names fan 2 when there is no room
+                    line += fan2
             self.put(y + 1 + i - start, x, line[:w], self.theme.WARN if changed else self.theme.ACCENT if chosen
                      else self.theme.TEXT, chosen)
 
