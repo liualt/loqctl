@@ -1251,6 +1251,22 @@ class UiTests(helpers.SysfsCase):
         self.assertIn("  °C", calls)  # the tick row is labelled once
         self.assertFalse(any("RPM" in c for c in calls))
 
+    def test_fan_table_drops_fan2_text_that_does_not_fit(self):
+        from loqctl.fancurve import Scale
+        dash = self.dash()
+        dash.fan_sel = 0
+        dash.theme = Mock(TEXT=7, ACCENT=1, WARN=3, INFO=6, BAD=2)
+        lines = []
+        dash.put = lambda y, x, text, color=0, bold=False, dim=False: lines.append(str(text))
+        points = [{"cpu_up": 60, "gpu_up": 50, "ic_up": 40, "fan1": 25, "fan2": 50}]
+        dash.fan_points = lambda: points
+        dash.fan_table(points, Scale("percent", 100), 0, 0, 80, 3)
+        self.assertIn("fan 2 ", lines[1])
+        lines.clear()
+        dash.fan_table(points, Scale("percent", 100), 0, 0, 34, 3)
+        self.assertNotIn("fan 2", lines[1])
+        self.assertTrue(lines[1].rstrip().endswith("%"))
+
     def test_arrows_leave_power_and_keyboard_at_the_edges(self):
         dash = self.dash()
         dash.fan = {"available": False}
